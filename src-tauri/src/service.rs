@@ -205,23 +205,26 @@ impl Service {
             tokio::spawn(async move {
                 // The key is known only once the harness reports the session
                 // id; anything said before that is held back until then.
-                let mut early = Vec::new();
+                let mut early = std::collections::VecDeque::new();
                 let key = loop {
                     tokio::select! {
+                        // Once the key is known, stop buffering.
+                        biased;
                         key = &mut key_rx => match key {
                             Ok(key) => break key,
                             Err(_) => return, // the start failed
                         },
-                        Some(event) = rx.recv() => early.push(event),
+                        Some(event) = rx.recv() => early.push_back(event),
                     }
                 };
-                for event in early {
-                    emit(SessionEvent {
-                        key: key.clone(),
-                        event,
-                    });
-                }
-                while let Some(event) = rx.recv().await {
+                loop {
+                    let event = match early.pop_front() {
+                        Some(event) => event,
+                        None => match rx.recv().await {
+                            Some(event) => event,
+                            None => return,
+                        },
+                    };
                     if matches!(event, HarnessEvent::Exited { .. }) {
                         let mut open = open.lock().await;
                         let current = open.get(&key).is_some_and(|o| o.generation == generation);
