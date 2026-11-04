@@ -1,4 +1,13 @@
 #!/bin/sh
 # Runs every check before a push (there is no CI). Skip once with
 # `git push --no-verify`.
+
+# Apple's /usr/bin/git sets SDKROOT for its hooks, which can point the Rust
+# linker at a Command Line Tools SDK that does not match the selected Xcode.
+unset SDKROOT
+
+# Git GUIs and editors may not load the shell profile that puts rustup's
+# cargo on PATH.
+[ -d "$HOME/.cargo/bin" ] && PATH="$HOME/.cargo/bin:$PATH"
+
 exec pnpm check
