@@ -46,7 +46,9 @@ pnpm check                                   # everything: lint, types, formatti
 cargo run -p panoptes-pi --example smoke     # one real round trip with your Pi
 ```
 
-There is no CI; run `pnpm check` before pushing.
+There is no CI. A pre-push hook (installed by `pnpm install`) runs
+`pnpm check`. Agents: see [AGENTS.md](AGENTS.md); decisions are in
+[docs/decisions.md](docs/decisions.md).
 
 ## Layout
 

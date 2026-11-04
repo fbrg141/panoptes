@@ -13,7 +13,8 @@
     "format": "biome check --write .",
     "typecheck": "tsc --noEmit",
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:rust"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:rust",
+    "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs every check before a push (there is no CI). Skip once with
+# `git push --no-verify`.
+exec pnpm check
