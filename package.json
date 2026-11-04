@@ -11,7 +11,9 @@
     "test": "vitest run",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:rust"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

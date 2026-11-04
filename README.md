@@ -42,13 +42,11 @@ shows the UI with fixture data and no agent (`src/dev/mockBackend.ts`). This
 is useful for design work.
 
 ```bash
-pnpm lint && pnpm typecheck && pnpm test     # UI
-cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                       # Rust, including a scripted fake Pi
+pnpm check                                   # everything: lint, types, formatting, clippy, all tests
 cargo run -p panoptes-pi --example smoke     # one real round trip with your Pi
 ```
 
-CI runs the same checks on every push and pull request.
+There is no CI; run `pnpm check` before pushing.
 
 ## Layout
 
