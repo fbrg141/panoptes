@@ -20,7 +20,13 @@ describe("applyEvent", () => {
     const done = [
       {
         type: "messageCompleted",
-        message: { id: "live-1", role: "assistant", blocks: [{ type: "text", text: "Hello!" }], timestamp: 1, error: null },
+        message: {
+          id: "live-1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "Hello!" }],
+          timestamp: 1,
+          error: null,
+        },
       },
       { type: "runSettled", aborted: false },
     ] satisfies HarnessEvent[];
@@ -40,8 +46,19 @@ describe("applyEvent", () => {
 });
 
 const session = (over: Partial<SidebarSession>): SidebarSession => ({
-  key: "pi:x", harness: "pi", id: "x", locator: "", cwd: "/r", title: "t", createdAt: 0,
-  updatedAt: 0, messageCount: 0, parentLocator: null, projectRoot: "/r", pinned: false, open: false,
+  key: "pi:x",
+  harness: "pi",
+  id: "x",
+  locator: "",
+  cwd: "/r",
+  title: "t",
+  createdAt: 0,
+  updatedAt: 0,
+  messageCount: 0,
+  parentLocator: null,
+  projectRoot: "/r",
+  pinned: false,
+  open: false,
   ...over,
 });
 

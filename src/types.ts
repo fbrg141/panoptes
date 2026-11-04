@@ -19,6 +19,26 @@ export interface Message {
 
 export type NoticeLevel = "info" | "warning" | "error";
 
+export type QuestionKind =
+  | { type: "select"; options: string[] }
+  | { type: "confirm" }
+  | { type: "input"; placeholder: string | null }
+  | { type: "editor"; prefill: string | null };
+
+export interface Question {
+  id: string;
+  title: string;
+  message: string | null;
+  kind: QuestionKind;
+  /** Unix ms after which the harness stops waiting and picks a default. */
+  expiresAt: number | null;
+}
+
+export type Answer =
+  | { type: "value"; value: string }
+  | { type: "confirmed"; confirmed: boolean }
+  | { type: "cancelled" };
+
 export type HarnessEvent =
   | { type: "runStarted" }
   | { type: "messageStarted"; messageId: string; role: Role }
@@ -37,6 +57,7 @@ export type HarnessEvent =
   | { type: "runSettled"; aborted: boolean }
   | { type: "titleChanged"; title: string | null }
   | { type: "notice"; level: NoticeLevel; text: string }
+  | { type: "question"; question: Question }
   | { type: "exited"; code: number | null; stderrTail: string }
   | { type: "raw"; payload: unknown };
 
@@ -59,6 +80,12 @@ export interface SidebarSession {
   projectRoot: string;
   pinned: boolean;
   open: boolean;
+}
+
+export interface Listing {
+  sessions: SidebarSession[];
+  /** One line per harness whose sessions could not be listed. */
+  errors: string[];
 }
 
 export interface SessionRef {
@@ -87,3 +114,5 @@ export interface AppInfo {
 }
 
 export type PromptMode = "start" | "steer" | "followUp";
+
+export type PromptOutcome = "started" | "queued" | "handled";

@@ -8,7 +8,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -16,9 +19,12 @@
     "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.16"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.4",
     "@tailwindcss/vite": "^4.3.4",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
@@ -30,5 +36,6 @@
     "vitest": "^5.1.0"
   },
   "license": "MIT",
-  "description": "A harness-agnostic desktop environment for coding agents, starting with Pi"
+  "description": "A harness-agnostic desktop environment for coding agents, starting with Pi",
+  "packageManager": "pnpm@11.8.0"
 }

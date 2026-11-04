@@ -1,0 +1,192 @@
+//! The adapter against a scripted stand-in for `pi --mode rpc`
+//! (`fixtures/fake_pi.py`), so the process and protocol handling are tested
+//! without a real Pi or a model.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use panoptes_harness::{
+    AgentSession, Answer, Block, Harness, HarnessEvent, PromptMode, PromptOutcome, QuestionKind,
+    Role, StartSession,
+};
+use panoptes_pi::{PiHarness, PiInstall};
+use tokio::sync::mpsc::UnboundedReceiver;
+
+fn fake_harness() -> PiHarness {
+    let install = PiInstall {
+        program: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_pi.py"),
+        version: "1.0.0".to_string(),
+        path_env: std::env::var_os("PATH").unwrap_or_default(),
+    };
+    PiHarness::with_sessions_dir(install, PathBuf::from("/nonexistent"))
+}
+
+async fn start() -> (Box<dyn AgentSession>, UnboundedReceiver<HarnessEvent>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let request = StartSession::New {
+        cwd: std::env::temp_dir(),
+    };
+    let session = fake_harness().start_session(request, tx).await.unwrap();
+    (session, rx)
+}
+
+/// Collects events until one matches `done`, failing after a few seconds.
+async fn until(
+    rx: &mut UnboundedReceiver<HarnessEvent>,
+    done: impl Fn(&HarnessEvent) -> bool,
+) -> Vec<HarnessEvent> {
+    let mut events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = rx.recv().await {
+            let finished = done(&event);
+            events.push(event);
+            if finished {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out; events so far: {events:?}"));
+    events
+}
+
+fn text_of(events: &[HarnessEvent]) -> String {
+    events
+        .iter()
+        .find_map(|event| match event {
+            HarnessEvent::MessageCompleted { message } if message.role == Role::Assistant => {
+                match &message.blocks[0] {
+                    Block::Text { text } => Some(text.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("an assistant message")
+}
+
+#[tokio::test]
+async fn a_prompt_streams_and_settles() {
+    let (session, mut rx) = start().await;
+    assert_eq!(session.session_ref().id, "fake-session");
+
+    let outcome = session
+        .prompt("hi".into(), PromptMode::Start)
+        .await
+        .unwrap();
+    assert_eq!(outcome, PromptOutcome::Started);
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+
+    assert!(matches!(events[0], HarnessEvent::RunStarted));
+    // The U+2028 inside the text must not have split the record.
+    assert_eq!(text_of(&events), "echo: hi\u{2028}done");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::BlockDelta { .. }))
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn history_is_fetched_incrementally() {
+    let (session, mut rx) = start().await;
+    assert!(session.history().await.unwrap().is_empty());
+
+    session
+        .prompt("one".into(), PromptMode::Start)
+        .await
+        .unwrap();
+    until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    let ids: Vec<_> = session
+        .history()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(ids, ["e1", "e2"]);
+
+    session
+        .prompt("two".into(), PromptMode::Start)
+        .await
+        .unwrap();
+    until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    let ids: Vec<_> = session
+        .history()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(ids, ["e1", "e2", "e3", "e4"]);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn questions_are_answered_through_the_session() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("ask".into(), PromptMode::Start)
+        .await
+        .unwrap();
+
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::Question { .. })).await;
+    let Some(HarnessEvent::Question { question }) = events.last() else {
+        unreachable!()
+    };
+    assert_eq!(question.kind, QuestionKind::Confirm);
+    assert_eq!(question.title, "Proceed?");
+
+    session
+        .answer(question.id.clone(), Answer::Confirmed { confirmed: true })
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert_eq!(text_of(&events), "confirmed=True");
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_crash_reports_the_exit_code_and_stderr() {
+    let (session, mut rx) = start().await;
+    let error = session
+        .prompt("crash".into(), PromptMode::Start)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("exited"), "{error}");
+
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;
+    let Some(HarnessEvent::Exited { code, stderr_tail }) = events.last() else {
+        unreachable!()
+    };
+    assert_eq!(*code, Some(7));
+    assert!(stderr_tail.contains("fake pi crashed"));
+    assert!(
+        session
+            .prompt("again".into(), PromptMode::Start)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn shutdown_ends_the_process_cleanly() {
+    let (session, mut rx) = start().await;
+    session.shutdown().await;
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;
+    assert!(matches!(
+        events.last(),
+        Some(HarnessEvent::Exited { code: Some(0), .. })
+    ));
+}
+
+#[tokio::test]
+async fn commands_after_shutdown_fail_fast() {
+    let (session, _rx) = start().await;
+    session.abort().await.unwrap();
+    session.shutdown().await;
+    let started = std::time::Instant::now();
+    assert!(session.abort().await.is_err());
+    assert!(started.elapsed() < Duration::from_secs(1));
+}

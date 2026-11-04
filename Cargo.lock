@@ -2390,6 +2390,7 @@ name = "panoptes"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "panoptes-harness",
  "panoptes-pi",
  "serde",
@@ -2398,6 +2399,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tempfile",
  "tokio",
 ]
 
@@ -2421,6 +2423,7 @@ dependencies = [
  "panoptes-harness",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

@@ -27,7 +27,11 @@ impl Index {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Self { path, file, project_roots: HashMap::new() }
+        Self {
+            path,
+            file,
+            project_roots: HashMap::new(),
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

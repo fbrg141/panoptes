@@ -3,6 +3,7 @@ name = "panoptes-harness"
 description = "Harness-neutral session, message and event types, and the adapter traits every agent harness implements"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 

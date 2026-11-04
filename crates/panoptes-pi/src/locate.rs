@@ -32,7 +32,9 @@ impl PiInstall {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 /// The search path for Pi and for the processes it starts: the inherited
@@ -85,7 +87,11 @@ pub fn locate(bundled: Option<&Path>) -> anyhow::Result<PiInstall> {
     }
     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    Ok(PiInstall { program, version, path_env })
+    Ok(PiInstall {
+        program,
+        version,
+        path_env,
+    })
 }
 
 /// Pi's config folder, `~/.pi/agent` unless overridden.
@@ -95,10 +101,79 @@ pub fn agent_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".pi/agent"))
 }
 
-/// Where Pi stores sessions. A `sessionDir` set in Pi's settings file is not
-/// read yet; only the environment override and the default are honoured.
+/// Where Pi stores sessions: `$PI_CODING_AGENT_SESSION_DIR`, else the
+/// `sessionDir` in Pi's global settings, else `<agent dir>/sessions`.
+///
+/// A relative `sessionDir` resolves against each session's working folder,
+/// so there is no single folder to list; it falls back to the default.
 pub fn sessions_dir() -> PathBuf {
-    std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| agent_dir().join("sessions"))
+    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR") {
+        return PathBuf::from(dir);
+    }
+    let agent_dir = agent_dir();
+    configured_sessions_dir(&agent_dir.join("settings.json"), &home())
+        .unwrap_or_else(|| agent_dir.join("sessions"))
+}
+
+fn configured_sessions_dir(settings: &Path, home: &Path) -> Option<PathBuf> {
+    let settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(settings).ok()?).ok()?;
+    let dir = settings["sessionDir"].as_str()?;
+    if let Some(rest) = dir.strip_prefix("~/") {
+        return Some(home.join(rest));
+    }
+    let dir = PathBuf::from(dir);
+    dir.is_absolute().then_some(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(contents: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, contents).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn reads_absolute_and_home_relative_session_dirs() {
+        let home = Path::new("/Users/me");
+        let (_dir, path) = settings(r#"{"sessionDir": "/data/pi"}"#);
+        assert_eq!(
+            configured_sessions_dir(&path, home),
+            Some("/data/pi".into())
+        );
+        let (_dir, path) = settings(r#"{"sessionDir": "~/pi-sessions"}"#);
+        assert_eq!(
+            configured_sessions_dir(&path, home),
+            Some("/Users/me/pi-sessions".into())
+        );
+    }
+
+    #[test]
+    fn ignores_relative_or_missing_session_dirs() {
+        let home = Path::new("/Users/me");
+        let (_dir, path) = settings(r#"{"sessionDir": ".pi/sessions"}"#);
+        assert_eq!(configured_sessions_dir(&path, home), None);
+        let (_dir, path) = settings(r#"{"theme": "dark"}"#);
+        assert_eq!(configured_sessions_dir(&path, home), None);
+        assert_eq!(
+            configured_sessions_dir(Path::new("/nonexistent"), home),
+            None
+        );
+    }
+
+    #[test]
+    fn supported_versions_follow_the_major() {
+        let install = |version: &str| PiInstall {
+            program: PathBuf::from("pi"),
+            version: version.to_string(),
+            path_env: OsString::new(),
+        };
+        assert!(install("1.4.0").is_supported());
+        assert!(!install("2.0.0").is_supported());
+        assert!(!install("garbage").is_supported());
+    }
 }

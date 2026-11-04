@@ -1,6 +1,8 @@
 //! Translating Pi's messages and RPC events into the neutral harness types.
 
-use panoptes_harness::{Block, DeltaKind, HarnessEvent, Message, NoticeLevel, Role};
+use panoptes_harness::{
+    Block, DeltaKind, HarnessEvent, Message, NoticeLevel, Question, QuestionKind, Role,
+};
 use serde_json::Value;
 
 /// Tool output beyond this many bytes is cut for display.
@@ -52,12 +54,16 @@ fn result_text(result: &Value) -> String {
 
 fn content_blocks(content: &Value) -> Vec<Block> {
     let Some(blocks) = content.as_array() else {
-        return user_text(content).map(|text| vec![Block::Text { text }]).unwrap_or_default();
+        return user_text(content)
+            .map(|text| vec![Block::Text { text }])
+            .unwrap_or_default();
     };
     blocks
         .iter()
         .filter_map(|block| match block["type"].as_str()? {
-            "text" => Some(Block::Text { text: block["text"].as_str()?.to_string() }),
+            "text" => Some(Block::Text {
+                text: block["text"].as_str()?.to_string(),
+            }),
             "thinking" => Some(Block::Thinking {
                 text: block["thinking"].as_str().unwrap_or_default().to_string(),
             }),
@@ -84,7 +90,10 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
         "assistant" => {
             let error = match value["stopReason"].as_str() {
                 Some("error") => Some(
-                    value["errorMessage"].as_str().unwrap_or("The model request failed").to_string(),
+                    value["errorMessage"]
+                        .as_str()
+                        .unwrap_or("The model request failed")
+                        .to_string(),
                 ),
                 Some("aborted") => Some("Stopped".to_string()),
                 _ => None,
@@ -106,7 +115,9 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
             let output = value["output"].as_str().unwrap_or_default();
             (
                 Role::Other,
-                vec![Block::Text { text: truncate(format!("$ {command}\n{output}")) }],
+                vec![Block::Text {
+                    text: truncate(format!("$ {command}\n{output}")),
+                }],
                 None,
             )
         }
@@ -119,7 +130,13 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
             (Role::Other, vec![Block::Text { text }], None)
         }
     };
-    Some(Message { id, role, blocks, timestamp, error })
+    Some(Message {
+        id,
+        role,
+        blocks,
+        timestamp,
+        error,
+    })
 }
 
 /// Turns the Pi event stream into harness events. Pi does not give
@@ -145,7 +162,10 @@ impl EventMapper {
                 self.current = Some(id.clone());
                 match message(&event["message"], id.clone()) {
                     Some(started) => {
-                        vec![HarnessEvent::MessageStarted { message_id: id, role: started.role }]
+                        vec![HarnessEvent::MessageStarted {
+                            message_id: id,
+                            role: started.role,
+                        }]
                     }
                     None => Vec::new(),
                 }
@@ -188,7 +208,10 @@ impl EventMapper {
             }],
             "auto_retry_end" if event["success"] == false => vec![HarnessEvent::Notice {
                 level: NoticeLevel::Error,
-                text: event["finalError"].as_str().unwrap_or("Retries failed").to_string(),
+                text: event["finalError"]
+                    .as_str()
+                    .unwrap_or("Retries failed")
+                    .to_string(),
             }],
             "compaction_start" => vec![HarnessEvent::Notice {
                 level: NoticeLevel::Info,
@@ -226,10 +249,18 @@ impl EventMapper {
             kind,
             delta: update["delta"].as_str().unwrap_or_default().to_string(),
         };
-        let started = |block| HarnessEvent::BlockStarted { message_id: message_id.clone(), index, block };
+        let started = |block| HarnessEvent::BlockStarted {
+            message_id: message_id.clone(),
+            index,
+            block,
+        };
         match update["type"].as_str().unwrap_or_default() {
-            "text_start" => vec![started(Block::Text { text: String::new() })],
-            "thinking_start" => vec![started(Block::Thinking { text: String::new() })],
+            "text_start" => vec![started(Block::Text {
+                text: String::new(),
+            })],
+            "thinking_start" => vec![started(Block::Thinking {
+                text: String::new(),
+            })],
             "toolcall_start" => vec![started(Block::ToolCall {
                 call_id: update["id"].as_str().unwrap_or_default().to_string(),
                 name: update["toolName"].as_str().unwrap_or_default().to_string(),
@@ -243,6 +274,61 @@ impl EventMapper {
             _ => Vec::new(),
         }
     }
+}
+
+/// Translates an `extension_ui_request`. Dialogs become questions the user
+/// answers; `notify` becomes a notice; status, widget and title updates have
+/// no neutral meaning yet.
+pub fn extension_ui(request: &Value, now_ms: i64) -> Vec<HarnessEvent> {
+    let text = |key: &str| request[key].as_str().map(str::to_string);
+    let kind = match request["method"].as_str().unwrap_or_default() {
+        "select" => QuestionKind::Select {
+            options: request["options"]
+                .as_array()
+                .map(|options| {
+                    options
+                        .iter()
+                        .filter_map(|option| option.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        },
+        "confirm" => QuestionKind::Confirm,
+        "input" => QuestionKind::Input {
+            placeholder: text("placeholder"),
+        },
+        "editor" => QuestionKind::Editor {
+            prefill: text("prefill"),
+        },
+        "notify" => {
+            let level = match request["notifyType"].as_str() {
+                Some("error") => NoticeLevel::Error,
+                Some("warning") => NoticeLevel::Warning,
+                _ => NoticeLevel::Info,
+            };
+            return vec![HarnessEvent::Notice {
+                level,
+                text: text("message").unwrap_or_default(),
+            }];
+        }
+        _ => {
+            return vec![HarnessEvent::Raw {
+                payload: request.clone(),
+            }];
+        }
+    };
+    let Some(id) = text("id") else {
+        return Vec::new();
+    };
+    vec![HarnessEvent::Question {
+        question: Question {
+            id,
+            title: text("title").unwrap_or_else(|| "An extension needs your input".to_string()),
+            message: text("message"),
+            kind,
+            expires_at: request["timeout"].as_i64().map(|timeout| now_ms + timeout),
+        },
+    }]
 }
 
 /// The active branch of a session, oldest first, from `get_entries` data.
@@ -270,7 +356,9 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>) -> Vec<Message> {
                 "compaction" => Some(Message {
                     id,
                     role: Role::Other,
-                    blocks: vec![Block::Text { text: "Earlier context was compacted.".to_string() }],
+                    blocks: vec![Block::Text {
+                        text: "Earlier context was compacted.".to_string(),
+                    }],
                     timestamp: None,
                     error: None,
                 }),
@@ -289,11 +377,17 @@ mod tests {
     fn streams_text_under_one_live_id() {
         let mut mapper = EventMapper::default();
         let started = mapper.map(json!({"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}));
-        assert!(matches!(&started[0], HarnessEvent::MessageStarted { message_id, role: Role::Assistant } if message_id == "live-1"));
+        assert!(
+            matches!(&started[0], HarnessEvent::MessageStarted { message_id, role: Role::Assistant } if message_id == "live-1")
+        );
         let delta = mapper.map(json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hi"}}));
-        assert!(matches!(&delta[0], HarnessEvent::BlockDelta { message_id, delta, .. } if message_id == "live-1" && delta == "Hi"));
+        assert!(
+            matches!(&delta[0], HarnessEvent::BlockDelta { message_id, delta, .. } if message_id == "live-1" && delta == "Hi")
+        );
         let done = mapper.map(json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}],"stopReason":"stop"}}));
-        assert!(matches!(&done[0], HarnessEvent::MessageCompleted { message } if message.id == "live-1" && message.error.is_none()));
+        assert!(
+            matches!(&done[0], HarnessEvent::MessageCompleted { message } if message.id == "live-1" && message.error.is_none())
+        );
     }
 
     #[test]
@@ -304,12 +398,49 @@ mod tests {
             json!({"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"abandoned"}]}}),
             json!({"type":"session_info","id":"d","parentId":"b","name":"x"}),
         ];
-        let ids: Vec<_> = history(&entries, Some("d")).into_iter().map(|m| m.id).collect();
+        let ids: Vec<_> = history(&entries, Some("d"))
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert_eq!(ids, ["a", "b"]);
     }
 
     #[test]
     fn hides_system_messages() {
         assert!(message(&json!({"role":"system","content":""}), "s".into()).is_none());
+    }
+
+    #[test]
+    fn dialogs_become_questions_with_a_deadline() {
+        let events = extension_ui(
+            &json!({"type":"extension_ui_request","id":"q1","method":"select","title":"Allow?","options":["Allow","Block"],"timeout":10000}),
+            1_000,
+        );
+        let [HarnessEvent::Question { question }] = events.as_slice() else {
+            panic!("expected one question, got {events:?}");
+        };
+        assert_eq!(question.id, "q1");
+        assert_eq!(question.expires_at, Some(11_000));
+        assert_eq!(
+            question.kind,
+            QuestionKind::Select {
+                options: vec!["Allow".into(), "Block".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn notify_becomes_a_notice() {
+        let events = extension_ui(
+            &json!({"type":"extension_ui_request","id":"n","method":"notify","message":"Blocked","notifyType":"warning"}),
+            0,
+        );
+        assert_eq!(
+            events,
+            vec![HarnessEvent::Notice {
+                level: NoticeLevel::Warning,
+                text: "Blocked".into()
+            }]
+        );
     }
 }

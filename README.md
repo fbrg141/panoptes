@@ -15,9 +15,12 @@ by a design system.
 - Opens or resumes any session, and starts new ones in a folder you pick.
   Sessions are Pi's own files, so the CLI (`pi --continue`, `/resume`) sees
   the same history.
-- Streams replies, thinking and tool calls. While the agent is working,
-  Enter steers it and Esc stops it.
-- Each open session runs in its own `pi --mode rpc` process.
+- Streams replies (rendered as markdown), thinking and tool calls. While the
+  agent is working, Enter steers it and Esc stops it.
+- Questions from Pi extensions (confirm, select, input, editor) appear above
+  the composer and are answered in place.
+- Each open session runs in its own `pi --mode rpc` process; opening the same
+  session twice never starts a second one.
 
 ## Requirements
 
@@ -39,10 +42,13 @@ shows the UI with fixture data and no agent (`src/dev/mockBackend.ts`). This
 is useful for design work.
 
 ```bash
-pnpm test                    # UI logic
-cargo test --workspace       # Rust
-cargo run -p panoptes-pi --example smoke   # talks to your real Pi
+pnpm lint && pnpm typecheck && pnpm test     # UI
+cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                       # Rust, including a scripted fake Pi
+cargo run -p panoptes-pi --example smoke     # one real round trip with your Pi
 ```
+
+CI runs the same checks on every push and pull request.
 
 ## Layout
 
@@ -50,8 +56,8 @@ cargo run -p panoptes-pi --example smoke   # talks to your real Pi
 |---|---|
 | `crates/panoptes-harness` | The harness-neutral interface: sessions, messages, events, and the `Harness` / `AgentSession` traits |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `src-tauri` | The app: Tauri commands, open-session registry, Panoptes' own index (pins) |
-| `src` | React UI: sidebar, chat pane, event reducer |
+| `src-tauri` | The app: `service.rs` (open sessions, event forwarding, Panoptes' own index of pins), exposed as Tauri commands in `lib.rs` |
+| `src` | React UI: `conversation.ts` folds events into state, `store.ts` talks to the app, `components/` renders |
 
 The UI only ever sees the neutral types, so a new harness means a new adapter
 crate and nothing else.

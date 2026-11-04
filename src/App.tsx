@@ -14,7 +14,9 @@ export default function App() {
   }, [init]);
 
   const pi = info?.harnesses.find((h) => h.id === "pi");
-  const banner = info?.errors[0] ?? (pi && !pi.supported ? `Pi ${pi.version} is not a supported version; expect problems.` : null);
+  const banner =
+    info?.errors[0] ??
+    (pi && !pi.supported ? `Pi ${pi.version} is not a supported version; expect problems.` : null);
 
   return (
     <div className="flex h-full flex-col">
@@ -22,7 +24,9 @@ export default function App() {
       {error && (
         <div className="flex justify-between bg-red-100 px-4 py-1 text-xs text-red-900">
           <span>{error}</span>
-          <button onClick={dismissError}>Dismiss</button>
+          <button type="button" onClick={dismissError}>
+            Dismiss
+          </button>
         </div>
       )}
       <div className="flex min-h-0 flex-1">

@@ -5,28 +5,60 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
-use panoptes_harness::{EventSink, HarnessEvent, NoticeLevel};
+use panoptes_harness::{EventSink, HarnessEvent};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::process::Command;
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 use crate::locate::PiInstall;
-use crate::map::EventMapper;
+use crate::map::{self, EventMapper};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long Pi gets to exit after stdin closes before it is killed.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 const STDERR_TAIL: usize = 4096;
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
+/// Commands waiting for their response, by id. `None` once Pi's stdout has
+/// closed: no response can arrive after that, so new commands fail at once.
+type Pending = Arc<Mutex<Option<HashMap<String, oneshot::Sender<Value>>>>>;
+
+/// `None` while the process runs; `Some(code)` once it has exited, where
+/// `code` is `None` if it was ended by a signal.
+type ExitState = Option<Option<i32>>;
 
 pub struct RpcProcess {
+    /// Dropping the sender closes Pi's stdin, its signal to shut down.
     stdin: std::sync::Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
     pending: Pending,
     next_id: AtomicU64,
-    child: Mutex<Child>,
+    /// Sending (or dropping) this kills the process.
+    kill: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+    exit: watch::Receiver<ExitState>,
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn encode(record: &Value) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec(record).expect("JSON values always serialize");
+    bytes.push(b'\n');
+    bytes
+}
+
+async fn wait_for_exit(exit: &mut watch::Receiver<ExitState>, limit: Duration) -> ExitState {
+    let exited = tokio::time::timeout(limit, exit.wait_for(Option::is_some)).await;
+    match exited {
+        Ok(Ok(state)) => *state,
+        _ => None,
+    }
 }
 
 impl RpcProcess {
@@ -55,8 +87,6 @@ impl RpcProcess {
         let stdout = child.stdout.take().context("pi stdout")?;
         let mut stderr = child.stderr.take().context("pi stderr")?;
 
-        // Writer: owns stdin, so dropping the sender closes it, which is
-        // Pi's signal for an orderly shutdown.
         let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         tokio::spawn(async move {
             while let Some(record) = stdin_rx.recv().await {
@@ -66,8 +96,21 @@ impl RpcProcess {
             }
         });
 
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        let (exit_tx, exit_rx) = watch::channel::<ExitState>(None);
+        tokio::spawn(async move {
+            let status = tokio::select! {
+                status = child.wait() => status,
+                _ = kill_rx => {
+                    let _ = child.start_kill();
+                    child.wait().await
+                }
+            };
+            let _ = exit_tx.send(Some(status.ok().and_then(|status| status.code())));
+        });
+
         let stderr_tail = Arc::new(std::sync::Mutex::new(String::new()));
-        {
+        let stderr_done = {
             let stderr_tail = stderr_tail.clone();
             tokio::spawn(async move {
                 let mut buffer = [0u8; 4096];
@@ -85,53 +128,22 @@ impl RpcProcess {
                         tail.drain(..cut);
                     }
                 }
-            });
-        }
+            })
+        };
 
-        let pending: Pending = Arc::default();
+        let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         {
             let pending = pending.clone();
-            let stdin_tx = stdin_tx.clone();
+            let mut exit = exit_rx.clone();
             tokio::spawn(async move {
-                // Split strictly on LF bytes: U+2028/U+2029 are valid inside
-                // JSON strings and must not end a record.
-                let mut stdout = BufReader::new(stdout);
-                let mut line = Vec::new();
-                let mut mapper = EventMapper::default();
-                loop {
-                    line.clear();
-                    match stdout.read_until(b'\n', &mut line).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    let record = line.strip_suffix(b"\n").unwrap_or(&line);
-                    let record = record.strip_suffix(b"\r").unwrap_or(record);
-                    let Ok(record) = serde_json::from_slice::<Value>(record) else {
-                        continue;
-                    };
-                    match record["type"].as_str() {
-                        Some("response") => {
-                            if let Some(id) = record["id"].as_str() {
-                                if let Some(waiter) = pending.lock().await.remove(id) {
-                                    let _ = waiter.send(record);
-                                }
-                            }
-                        }
-                        Some("extension_ui_request") => {
-                            handle_extension_ui(&record, &stdin_tx, &events);
-                        }
-                        _ => {
-                            for event in mapper.map(record) {
-                                let _ = events.send(event);
-                            }
-                        }
-                    }
-                }
-                // Stdout closed: the process is gone or going. Fail every
-                // outstanding command by dropping its waiter.
-                pending.lock().await.clear();
-                let tail = stderr_tail.lock().unwrap().clone();
-                let _ = events.send(HarnessEvent::Exited { code: None, stderr_tail: tail });
+                read_stdout(stdout, &pending, &events).await;
+                // Stdout closed: Pi is gone or going. Dropping the waiters
+                // fails every outstanding command.
+                pending.lock().await.take();
+                let code = wait_for_exit(&mut exit, SHUTDOWN_GRACE).await.flatten();
+                let _ = tokio::time::timeout(Duration::from_secs(1), stderr_done).await;
+                let stderr_tail = stderr_tail.lock().unwrap().clone();
+                let _ = events.send(HarnessEvent::Exited { code, stderr_tail });
             });
         }
 
@@ -139,36 +151,48 @@ impl RpcProcess {
             stdin: std::sync::Mutex::new(Some(stdin_tx)),
             pending,
             next_id: AtomicU64::new(1),
-            child: Mutex::new(child),
+            kill: std::sync::Mutex::new(Some(kill_tx)),
+            exit: exit_rx,
         })
+    }
+
+    async fn forget(&self, id: &str) {
+        if let Some(pending) = self.pending.lock().await.as_mut() {
+            pending.remove(id);
+        }
+    }
+
+    /// Writes one record to Pi. Returns `false` once stdin is closed.
+    fn write(&self, record: &Value) -> bool {
+        self.stdin
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|stdin| stdin.send(encode(record)).is_ok())
     }
 
     /// Sends a command and waits for its response. Returns `data` on success.
     pub async fn call(&self, mut command: Value) -> anyhow::Result<Value> {
         let id = format!("panoptes-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let kind = command["type"].as_str().unwrap_or("command").to_string();
         command["id"] = json!(id);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id.clone(), tx);
+        match self.pending.lock().await.as_mut() {
+            Some(pending) => pending.insert(id.clone(), tx),
+            None => bail!("Pi is not running"),
+        };
 
-        let mut record = serde_json::to_vec(&command)?;
-        record.push(b'\n');
-        let sent = self
-            .stdin
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|stdin| stdin.send(record).is_ok());
-        if !sent {
-            self.pending.lock().await.remove(&id);
+        if !self.write(&command) {
+            self.forget(&id).await;
             bail!("Pi is not running");
         }
 
         let response = match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
             Ok(Ok(response)) => response,
-            Ok(Err(_)) => bail!("Pi exited before answering `{}`", command["type"]),
+            Ok(Err(_)) => bail!("Pi exited before answering `{kind}`"),
             Err(_) => {
-                self.pending.lock().await.remove(&id);
-                bail!("Pi did not answer `{}` in time", command["type"]);
+                self.forget(&id).await;
+                bail!("Pi did not answer `{kind}` in time");
             }
         };
         if response["success"] == true {
@@ -176,53 +200,67 @@ impl RpcProcess {
         } else {
             Err(anyhow!(
                 "{}",
-                response["error"].as_str().unwrap_or("Pi rejected the command")
+                response["error"]
+                    .as_str()
+                    .unwrap_or("Pi rejected the command")
             ))
         }
     }
 
-    /// Closes stdin and gives Pi a moment to exit before killing it.
+    /// Sends a record that Pi does not answer, such as an
+    /// `extension_ui_response`.
+    pub fn notify(&self, record: Value) -> anyhow::Result<()> {
+        if self.write(&record) {
+            Ok(())
+        } else {
+            bail!("Pi is not running")
+        }
+    }
+
+    /// Closes stdin and gives Pi a moment to exit cleanly before killing it.
     pub async fn shutdown(&self) {
         self.stdin.lock().unwrap().take();
-        let mut child = self.child.lock().await;
-        if tokio::time::timeout(Duration::from_secs(3), child.wait()).await.is_err() {
-            let _ = child.kill().await;
+        let mut exit = self.exit.clone();
+        if wait_for_exit(&mut exit, SHUTDOWN_GRACE).await.is_none() {
+            if let Some(kill) = self.kill.lock().unwrap().take() {
+                let _ = kill.send(());
+            }
+            wait_for_exit(&mut exit, SHUTDOWN_GRACE).await;
         }
     }
 }
 
-/// Extension dialogs are not supported yet: they are cancelled straight away
-/// so Pi never waits on them, and the user is told what was skipped.
-fn handle_extension_ui(
-    request: &Value,
-    stdin: &mpsc::UnboundedSender<Vec<u8>>,
-    events: &EventSink,
-) {
-    let method = request["method"].as_str().unwrap_or_default();
-    match method {
-        "select" | "confirm" | "input" | "editor" => {
-            let response = json!({"type": "extension_ui_response", "id": request["id"], "cancelled": true});
-            if let Ok(mut record) = serde_json::to_vec(&response) {
-                record.push(b'\n');
-                let _ = stdin.send(record);
+async fn read_stdout(stdout: tokio::process::ChildStdout, pending: &Pending, events: &EventSink) {
+    // Split strictly on LF bytes: U+2028 and U+2029 are valid inside JSON
+    // strings and must not end a record.
+    let mut stdout = BufReader::new(stdout);
+    let mut line = Vec::new();
+    let mut mapper = EventMapper::default();
+    loop {
+        line.clear();
+        match stdout.read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let record = line.strip_suffix(b"\n").unwrap_or(&line);
+        let record = record.strip_suffix(b"\r").unwrap_or(record);
+        let Ok(record) = serde_json::from_slice::<Value>(record) else {
+            continue;
+        };
+        let mapped = match record["type"].as_str() {
+            Some("response") => {
+                if let Some(id) = record["id"].as_str()
+                    && let Some(waiter) = pending.lock().await.as_mut().and_then(|p| p.remove(id))
+                {
+                    let _ = waiter.send(record);
+                }
+                continue;
             }
-            let title = request["title"].as_str().unwrap_or(method);
-            let _ = events.send(HarnessEvent::Notice {
-                level: NoticeLevel::Warning,
-                text: format!("An extension asked for input ({title}); dialogs are not supported yet, so it was cancelled."),
-            });
-        }
-        "notify" => {
-            let level = match request["notifyType"].as_str() {
-                Some("error") => NoticeLevel::Error,
-                Some("warning") => NoticeLevel::Warning,
-                _ => NoticeLevel::Info,
-            };
-            let text = request["message"].as_str().unwrap_or_default().to_string();
-            let _ = events.send(HarnessEvent::Notice { level, text });
-        }
-        _ => {
-            let _ = events.send(HarnessEvent::Raw { payload: request.clone() });
+            Some("extension_ui_request") => map::extension_ui(&record, now_ms()),
+            _ => mapper.map(record),
+        };
+        for event in mapped {
+            let _ = events.send(event);
         }
     }
 }
