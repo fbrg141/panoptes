@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["src-tauri", "crates/panoptes-harness", "crates/panoptes-pi"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Uros Dimitrijevic"]
+repository = "https://github.com/fbrg141/panoptes"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "time", "fs"] }
+panoptes-harness = { path = "crates/panoptes-harness" }
+panoptes-pi = { path = "crates/panoptes-pi" }
+
+# See https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

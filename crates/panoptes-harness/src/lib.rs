@@ -1,0 +1,185 @@
+//! The boundary between Panoptes and the agent harnesses it drives.
+//!
+//! Everything the app and the UI see is expressed in these types. A harness
+//! adapter (Pi first, others later) maps its own protocol onto them, so no
+//! harness-specific detail leaks past this crate. Features that only one
+//! harness has travel as [`HarnessEvent::Raw`] until they earn a neutral type.
+
+use std::path::PathBuf;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
+
+/// A session as listed in the sidebar, before it is opened.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    /// Which harness owns the session, e.g. `"pi"`.
+    pub harness: String,
+    /// The harness's own session id.
+    pub id: String,
+    /// Opaque harness-specific handle used to resume the session
+    /// (for Pi, the session file path).
+    pub locator: String,
+    /// Working directory the session runs in.
+    pub cwd: String,
+    /// Display name, or the first user message when the session has no name.
+    pub title: String,
+    /// Creation time, Unix milliseconds.
+    pub created_at: i64,
+    /// Last activity, Unix milliseconds.
+    pub updated_at: i64,
+    pub message_count: u32,
+    /// Locator of the session this one was forked or cloned from.
+    pub parent_locator: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Role {
+    User,
+    Assistant,
+    Tool,
+    /// Anything else a harness stores in the conversation (summaries,
+    /// extension messages). Rendered as a muted note.
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Block {
+    Text { text: String },
+    Thinking { text: String },
+    #[serde(rename_all = "camelCase")]
+    ToolCall { call_id: String, name: String, args: Value },
+    #[serde(rename_all = "camelCase")]
+    ToolResult { call_id: String, name: String, output: String, is_error: bool },
+    #[serde(rename_all = "camelCase")]
+    Image { mime_type: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    /// Stable id from the harness's history when known; a live id
+    /// (see [`HarnessEvent::MessageStarted`]) while a message streams.
+    pub id: String,
+    pub role: Role,
+    pub blocks: Vec<Block>,
+    /// Unix milliseconds.
+    pub timestamp: Option<i64>,
+    /// Set when the harness reports the message failed (provider error, abort).
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeltaKind {
+    Text,
+    Thinking,
+    ToolArgs,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoticeLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+/// Everything a running session reports. Streaming state is rebuilt from
+/// these, and the completed forms replace the streamed ones.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HarnessEvent {
+    /// The agent started working on a prompt.
+    RunStarted,
+    #[serde(rename_all = "camelCase")]
+    MessageStarted { message_id: String, role: Role },
+    #[serde(rename_all = "camelCase")]
+    BlockStarted { message_id: String, index: usize, block: Block },
+    #[serde(rename_all = "camelCase")]
+    BlockDelta { message_id: String, index: usize, kind: DeltaKind, delta: String },
+    /// The authoritative final message. Replaces whatever was streamed under
+    /// the same `message.id`.
+    MessageCompleted { message: Message },
+    #[serde(rename_all = "camelCase")]
+    ToolStarted { call_id: String, name: String, args: Value },
+    #[serde(rename_all = "camelCase")]
+    ToolUpdated { call_id: String, output: String },
+    #[serde(rename_all = "camelCase")]
+    ToolFinished { call_id: String, output: String, is_error: bool },
+    /// The agent will do no more work until the next prompt.
+    RunSettled { aborted: bool },
+    TitleChanged { title: Option<String> },
+    Notice { level: NoticeLevel, text: String },
+    /// The harness process ended. The session can be reopened.
+    #[serde(rename_all = "camelCase")]
+    Exited { code: Option<i32>, stderr_tail: String },
+    /// A harness-specific record with no neutral meaning yet.
+    Raw { payload: Value },
+}
+
+pub type EventSink = UnboundedSender<HarnessEvent>;
+
+pub enum StartSession {
+    New { cwd: PathBuf },
+    Resume { locator: String, cwd: PathBuf },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptMode {
+    /// Start a run. Fails if the agent is busy.
+    Start,
+    /// Deliver while the agent is running, before its next model call.
+    Steer,
+    /// Deliver once the agent has finished.
+    FollowUp,
+}
+
+/// Identity of a started session.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRef {
+    pub harness: String,
+    pub id: String,
+    pub locator: String,
+    pub cwd: String,
+}
+
+/// An installed harness: lists its sessions and starts them.
+#[async_trait]
+pub trait Harness: Send + Sync {
+    /// Short stable name, e.g. `"pi"`.
+    fn id(&self) -> &'static str;
+
+    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>>;
+
+    /// Starts (or resumes) a session. Its events go to `events` until the
+    /// session shuts down or the harness exits.
+    async fn start_session(
+        &self,
+        request: StartSession,
+        events: EventSink,
+    ) -> anyhow::Result<Box<dyn AgentSession>>;
+}
+
+/// A live, open session.
+#[async_trait]
+pub trait AgentSession: Send + Sync {
+    fn session_ref(&self) -> SessionRef;
+
+    /// The active conversation, oldest first, with stable message ids.
+    async fn history(&self) -> anyhow::Result<Vec<Message>>;
+
+    async fn prompt(&self, text: String, mode: PromptMode) -> anyhow::Result<()>;
+
+    async fn abort(&self) -> anyhow::Result<()>;
+
+    /// Ends the session's process. The session stays resumable.
+    async fn shutdown(&self);
+}
