@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { ChatPane } from "./components/ChatPane";
 import { Sidebar } from "./components/Sidebar";
 import { useStore } from "./store";
@@ -8,10 +8,23 @@ export default function App() {
   const info = useStore((s) => s.info);
   const error = useStore((s) => s.error);
   const dismissError = useStore((s) => s.dismissError);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
     void init();
   }, [init]);
+
+  // Cmd/Ctrl+B toggles the session panel, whatever has focus.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "b" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        setSidebarOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const pi = info?.harnesses.find((h) => h.id === "pi");
   const banner =
@@ -30,7 +43,19 @@ export default function App() {
         </div>
       )}
       <div className="flex min-h-0 flex-1">
-        <Sidebar />
+        {sidebarOpen ? (
+          <Sidebar onHide={() => setSidebarOpen(false)} />
+        ) : (
+          <button
+            type="button"
+            className="flex w-9 shrink-0 flex-col items-center justify-center border-r border-neutral-200 bg-neutral-50 text-lg text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+            onClick={() => setSidebarOpen(true)}
+            title="Show the session panel (Cmd/Ctrl+B)"
+            aria-label="Show the session panel"
+          >
+            »
+          </button>
+        )}
         <ChatPane />
       </div>
     </div>

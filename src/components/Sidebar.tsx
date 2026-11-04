@@ -15,7 +15,7 @@ async function pickFolder(): Promise<string | null> {
   return typeof folder === "string" ? folder : null;
 }
 
-export function Sidebar() {
+export function Sidebar({ onHide }: { onHide: () => void }) {
   const sessions = useStore((s) => s.sessions);
   const drafts = useStore((s) => s.drafts);
   const listErrors = useStore((s) => s.listErrors);
@@ -48,6 +48,15 @@ export function Sidebar() {
           title="New session in a folder"
         >
           New
+        </button>
+        <button
+          type="button"
+          className="rounded px-1.5 py-1 text-lg leading-none text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+          onClick={onHide}
+          title="Hide the session panel (Cmd/Ctrl+B)"
+          aria-label="Hide the session panel"
+        >
+          «
         </button>
       </div>
       {listErrors.map((error) => (
