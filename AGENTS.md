@@ -17,6 +17,7 @@ this way.
 | `src/store.ts` | Zustand store: talks to the backend through `src/api.ts` |
 | `src/components/` | Rendering only |
 | `src/dev/mockBackend.ts` | Fixture backend used when the UI runs in a plain browser |
+| `packages/design-system` | Tokens, fonts, logos, app icons and React components; its `GUIDE.md` is the brand and usage guide |
 
 ## Rules
 
@@ -37,6 +38,14 @@ this way.
   `index.json` in the app data folder, keyed by `<harness>:<session id>`.
 - **One process per open session.** `Service::open` serialises opens of the
   same key. Never start a second process on a session that is already open.
+- **Style only through the design system.** Use its components first
+  (`Button`, `Input`, `AgentRow`, `StatusPill`, `LoopMark`, `Icon`, ...),
+  then Tailwind utilities mapped to its tokens (`bg-surface`,
+  `text-ink-muted`, `border-line`, `text-caption`). No raw colours, no
+  Tailwind palette colours (`neutral-500` and the like), no emoji. Status
+  words are exactly Running, Waiting, Failed and Done. Files under
+  `packages/design-system` are exported by the design tool; change the design
+  system there and re-export rather than editing them here.
 - Logic goes where it can be tested without a window: the adapter, the
   service, or the reducer. Keep Tauri commands and React components thin.
 - Add or update a test with every behaviour change. The Pi adapter is tested

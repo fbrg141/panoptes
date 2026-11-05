@@ -1,0 +1,5 @@
+/* Everything a page needs: fonts, tokens (both themes, set data-theme on
+   <html>) and the component styles. */
+@import "./fonts/fonts.css";
+@import "./tokens/tokens.css";
+@import "./src/components.css";

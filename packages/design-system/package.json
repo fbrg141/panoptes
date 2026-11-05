@@ -1,0 +1,26 @@
+{
+  "name": "@panoptes/design-system",
+  "version": "0.1.0",
+  "description": "Panoptes tokens, fonts, logos, app icons and React components",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./styles.css": "./styles.css",
+    "./tokens.css": "./tokens/tokens.css",
+    "./tokens.json": "./tokens/tokens.json",
+    "./assets/*": "./assets/*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}

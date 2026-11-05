@@ -1,3 +1,4 @@
+import type { AgentStatus } from "@panoptes/design-system";
 import type { Block, HarnessEvent, Message, NoticeLevel, Question } from "./types";
 
 export interface ToolRun {
@@ -143,4 +144,13 @@ export function removeQuestion(conversation: Conversation, questionId: string): 
     ...conversation,
     questions: conversation.questions.filter((q) => q.id !== questionId),
   };
+}
+
+/** A session's status in the design system's words: Running, Waiting, Failed, or idle. */
+export function sessionStatus(conversation: Conversation | undefined): AgentStatus {
+  if (!conversation) return "idle";
+  if (conversation.questions.length > 0) return "waiting";
+  if (conversation.busy) return "running";
+  if (conversation.exited) return "failed";
+  return "idle";
 }

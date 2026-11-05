@@ -1,0 +1,631 @@
+{
+ "$description": "Panoptes design tokens in the W3C Design Tokens (DTCG) format. Generated from tokens.json: regenerate, never edit by hand.",
+ "theme": {
+  "dark": {
+   "color": {
+    "brand-pupil": {
+     "$type": "color",
+     "$value": "#070F10",
+     "$description": "Brand constant. Near-black with a teal cast: the logo's dark ink and the app's dark ground. Same in both themes."
+    },
+    "brand-bone": {
+     "$type": "color",
+     "$value": "#EBDCC8",
+     "$description": "Brand constant. Warm bone; the default app icon ground and the dark theme's text. Same in both themes."
+    },
+    "brand-cobalt": {
+     "$type": "color",
+     "$value": "#3347BD",
+     "$description": "Brand constant. Poster cobalt; app icon grounds, marketing fields. Too dark for text on the dark theme: use focus there."
+    },
+    "brand-red": {
+     "$type": "color",
+     "$value": "#FF2B24",
+     "$description": "Brand constant. Signal red; the logo on dark grounds and the one primary action per screen. A fill, never body text."
+    },
+    "brand-paper": {
+     "$type": "color",
+     "$value": "#E6E1DA",
+     "$description": "Brand constant. Neutral paper for print and presentation boards."
+    },
+    "bg": {
+     "$type": "color",
+     "$value": "#070F10",
+     "$description": "App ground: the window behind every panel. Editor and conversation panes sit on it."
+    },
+    "surface": {
+     "$type": "color",
+     "$value": "#0A1214",
+     "$description": "Sidebar, title bar and inspector panels, one step off bg."
+    },
+    "surface-raised": {
+     "$type": "color",
+     "$value": "#10191B",
+     "$description": "Inputs, popovers, menus, the command palette and cards that float over bg or surface."
+    },
+    "surface-sunken": {
+     "$type": "color",
+     "$value": "#04090A",
+     "$description": "Terminal, logs and code blocks, recessed below bg."
+    },
+    "line": {
+     "$type": "color",
+     "$value": "#1A2628",
+     "$description": "Hairlines between panels, rows and table cells. Decorative only."
+    },
+    "line-strong": {
+     "$type": "color",
+     "$value": "#5B7276",
+     "$description": "Control borders (inputs, secondary buttons, checkboxes) on bg and surface; at least 3:1 there."
+    },
+    "ink": {
+     "$type": "color",
+     "$value": "#EBDCC8",
+     "$description": "Primary text and icons on bg, surface, surface-raised and surface-sunken."
+    },
+    "ink-muted": {
+     "$type": "color",
+     "$value": "#93A7A6",
+     "$description": "Secondary text: metadata, file paths, timestamps, helper text. Holds 4.5:1 on every surface."
+    },
+    "ink-faint": {
+     "$type": "color",
+     "$value": "#6F8786",
+     "$description": "Disabled labels and placeholder hints only, never information; at least 3:1 on bg and surface."
+    },
+    "primary": {
+     "$type": "color",
+     "$value": "{color.brand-cobalt}",
+     "$description": "Primary action fill (Run, Approve, Merge). One per screen. Alias of brand-cobalt."
+    },
+    "primary-hover": {
+     "$type": "color",
+     "$value": "#3E52C9",
+     "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.8:1."
+    },
+    "on-primary": {
+     "$type": "color",
+     "$value": "{color.brand-bone}",
+     "$description": "Label and icon on a primary fill (5.6:1)."
+    },
+    "red": {
+     "$type": "color",
+     "$value": "{color.brand-red}",
+     "$description": "Live: the badge shown while an agent acts in your shell, and the logo's red. Never a button fill. Alias of brand-red."
+    },
+    "on-red": {
+     "$type": "color",
+     "$value": "#070F10",
+     "$description": "Label and glyph on the red Live badge (5.2:1). Never bone or white on red."
+    },
+    "focus": {
+     "$type": "color",
+     "$value": "#8C9BFF",
+     "$description": "Focus ring (2px solid, 2px offset), the active tab marker and the selected app icon. At least 5:1 on every surface."
+    },
+    "link": {
+     "$type": "color",
+     "$value": "{color.focus}",
+     "$description": "Links and inline actions in text. Alias of focus."
+    },
+    "on-focus": {
+     "$type": "color",
+     "$value": "{color.bg}",
+     "$description": "Check marks and glyphs on a focus fill (a checked checkbox). Alias of bg."
+    },
+    "selection": {
+     "$type": "color",
+     "$value": "#1C284F",
+     "$description": "Selected list row, selected text and the current search hit, behind ink."
+    },
+    "running": {
+     "$type": "color",
+     "$value": "#8C9BFF",
+     "$description": "Status: an agent is working. Text, dot and progress on any surface; pair with the word Running."
+    },
+    "running-soft": {
+     "$type": "color",
+     "$value": "#111832",
+     "$description": "Status pill fill behind running text."
+    },
+    "waiting": {
+     "$type": "color",
+     "$value": "#F2B84B",
+     "$description": "Status: an agent needs you (approval, input). Pair with the word Waiting and a hollow dot."
+    },
+    "waiting-soft": {
+     "$type": "color",
+     "$value": "#281E0B",
+     "$description": "Status pill fill behind waiting text."
+    },
+    "error": {
+     "$type": "color",
+     "$value": "#FF6B5E",
+     "$description": "Status and validation errors, failed runs, destructive text. Lighter than brand-red so the two never read as one."
+    },
+    "error-soft": {
+     "$type": "color",
+     "$value": "#2A110F",
+     "$description": "Status pill and inline error fill behind error text."
+    },
+    "done": {
+     "$type": "color",
+     "$value": "#7FC8A3",
+     "$description": "Status: finished cleanly. Pair with a check icon and the word Done, never colour alone."
+    },
+    "done-soft": {
+     "$type": "color",
+     "$value": "#0E251D",
+     "$description": "Status pill fill behind done text."
+    },
+    "diff-add": {
+     "$type": "color",
+     "$value": "#0F291F",
+     "$description": "Added line background in diffs, behind ink."
+    },
+    "diff-remove": {
+     "$type": "color",
+     "$value": "#2C1311",
+     "$description": "Removed line background in diffs, behind ink."
+    },
+    "scrim": {
+     "$type": "color",
+     "$value": "#020607B3",
+     "$description": "Backdrop behind dialogs and the command palette. Never behind text you need to read."
+    }
+   },
+   "shadow": {
+    "shadow-pop": {
+     "$value": "0 6px 16px #00000080, 0 0 0 1px #1A2628"
+    },
+    "shadow-icon": {
+     "$value": "0 24px 48px #0000004D, 0 4px 10px #00000033"
+    }
+   }
+  },
+  "light": {
+   "color": {
+    "brand-pupil": {
+     "$type": "color",
+     "$value": "#070F10",
+     "$description": "Brand constant. Near-black with a teal cast: the logo's dark ink and the app's dark ground. Same in both themes."
+    },
+    "brand-bone": {
+     "$type": "color",
+     "$value": "#EBDCC8",
+     "$description": "Brand constant. Warm bone; the default app icon ground and the dark theme's text. Same in both themes."
+    },
+    "brand-cobalt": {
+     "$type": "color",
+     "$value": "#3347BD",
+     "$description": "Brand constant. Poster cobalt; app icon grounds, marketing fields. Too dark for text on the dark theme: use focus there."
+    },
+    "brand-red": {
+     "$type": "color",
+     "$value": "#FF2B24",
+     "$description": "Brand constant. Signal red; the logo on dark grounds and the one primary action per screen. A fill, never body text."
+    },
+    "brand-paper": {
+     "$type": "color",
+     "$value": "#E6E1DA",
+     "$description": "Brand constant. Neutral paper for print and presentation boards."
+    },
+    "bg": {
+     "$type": "color",
+     "$value": "#F4EEE4",
+     "$description": "App ground: the window behind every panel. Editor and conversation panes sit on it."
+    },
+    "surface": {
+     "$type": "color",
+     "$value": "#EDE4D6",
+     "$description": "Sidebar, title bar and inspector panels, one step off bg."
+    },
+    "surface-raised": {
+     "$type": "color",
+     "$value": "#FBF8F2",
+     "$description": "Inputs, popovers, menus, the command palette and cards that float over bg or surface."
+    },
+    "surface-sunken": {
+     "$type": "color",
+     "$value": "#E7DCCB",
+     "$description": "Terminal, logs and code blocks, recessed below bg."
+    },
+    "line": {
+     "$type": "color",
+     "$value": "#D8CCBA",
+     "$description": "Hairlines between panels, rows and table cells. Decorative only."
+    },
+    "line-strong": {
+     "$type": "color",
+     "$value": "#8A7C6B",
+     "$description": "Control borders (inputs, secondary buttons, checkboxes) on bg and surface; at least 3:1 there."
+    },
+    "ink": {
+     "$type": "color",
+     "$value": "#070F10",
+     "$description": "Primary text and icons on bg, surface, surface-raised and surface-sunken."
+    },
+    "ink-muted": {
+     "$type": "color",
+     "$value": "#4E5D5E",
+     "$description": "Secondary text: metadata, file paths, timestamps, helper text. Holds 4.5:1 on every surface."
+    },
+    "ink-faint": {
+     "$type": "color",
+     "$value": "#6E7A7A",
+     "$description": "Disabled labels and placeholder hints only, never information; at least 3:1 on bg and surface."
+    },
+    "primary": {
+     "$type": "color",
+     "$value": "{color.brand-cobalt}",
+     "$description": "Primary action fill (Run, Approve, Merge). One per screen. Alias of brand-cobalt."
+    },
+    "primary-hover": {
+     "$type": "color",
+     "$value": "#3E52C9",
+     "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.8:1."
+    },
+    "on-primary": {
+     "$type": "color",
+     "$value": "{color.brand-bone}",
+     "$description": "Label and icon on a primary fill (5.6:1)."
+    },
+    "red": {
+     "$type": "color",
+     "$value": "{color.brand-red}",
+     "$description": "Live: the badge shown while an agent acts in your shell, and the logo's red. Never a button fill. Alias of brand-red."
+    },
+    "on-red": {
+     "$type": "color",
+     "$value": "#070F10",
+     "$description": "Label and glyph on the red Live badge (5.2:1). Never bone or white on red."
+    },
+    "focus": {
+     "$type": "color",
+     "$value": "#3347BD",
+     "$description": "Focus ring (2px solid, 2px offset), the active tab marker and the selected app icon. At least 5:1 on every surface."
+    },
+    "link": {
+     "$type": "color",
+     "$value": "{color.focus}",
+     "$description": "Links and inline actions in text. Alias of focus."
+    },
+    "on-focus": {
+     "$type": "color",
+     "$value": "{color.bg}",
+     "$description": "Check marks and glyphs on a focus fill (a checked checkbox). Alias of bg."
+    },
+    "selection": {
+     "$type": "color",
+     "$value": "#D9DEF6",
+     "$description": "Selected list row, selected text and the current search hit, behind ink."
+    },
+    "running": {
+     "$type": "color",
+     "$value": "#3347BD",
+     "$description": "Status: an agent is working. Text, dot and progress on any surface; pair with the word Running."
+    },
+    "running-soft": {
+     "$type": "color",
+     "$value": "#E2E5F8",
+     "$description": "Status pill fill behind running text."
+    },
+    "waiting": {
+     "$type": "color",
+     "$value": "#7F5300",
+     "$description": "Status: an agent needs you (approval, input). Pair with the word Waiting and a hollow dot."
+    },
+    "waiting-soft": {
+     "$type": "color",
+     "$value": "#F6E7C6",
+     "$description": "Status pill fill behind waiting text."
+    },
+    "error": {
+     "$type": "color",
+     "$value": "#B3261E",
+     "$description": "Status and validation errors, failed runs, destructive text. Lighter than brand-red so the two never read as one."
+    },
+    "error-soft": {
+     "$type": "color",
+     "$value": "#F8DEDA",
+     "$description": "Status pill and inline error fill behind error text."
+    },
+    "done": {
+     "$type": "color",
+     "$value": "#276B4A",
+     "$description": "Status: finished cleanly. Pair with a check icon and the word Done, never colour alone."
+    },
+    "done-soft": {
+     "$type": "color",
+     "$value": "#DCEFE4",
+     "$description": "Status pill fill behind done text."
+    },
+    "diff-add": {
+     "$type": "color",
+     "$value": "#DDEFE3",
+     "$description": "Added line background in diffs, behind ink."
+    },
+    "diff-remove": {
+     "$type": "color",
+     "$value": "#F7E0DC",
+     "$description": "Removed line background in diffs, behind ink."
+    },
+    "scrim": {
+     "$type": "color",
+     "$value": "#070F1066",
+     "$description": "Backdrop behind dialogs and the command palette. Never behind text you need to read."
+    }
+   },
+   "shadow": {
+    "shadow-pop": {
+     "$value": "0 6px 16px #070F101A, 0 0 0 1px #D8CCBA"
+    },
+    "shadow-icon": {
+     "$value": "0 24px 48px #0000004D, 0 4px 10px #00000033"
+    }
+   }
+  }
+ },
+ "space": {
+  "space-1": {
+   "$type": "dimension",
+   "$value": "4px",
+   "$description": "Icon to label gap, pill padding."
+  },
+  "space-2": {
+   "$type": "dimension",
+   "$value": "8px",
+   "$description": "Gap between related controls; row padding."
+  },
+  "space-3": {
+   "$type": "dimension",
+   "$value": "12px",
+   "$description": "Control horizontal padding; list row inset."
+  },
+  "space-4": {
+   "$type": "dimension",
+   "$value": "16px",
+   "$description": "Pane padding; gap between groups."
+  },
+  "space-6": {
+   "$type": "dimension",
+   "$value": "24px",
+   "$description": "Dialog padding; section gaps."
+  },
+  "space-8": {
+   "$type": "dimension",
+   "$value": "32px",
+   "$description": "Empty-state spacing."
+  },
+  "space-12": {
+   "$type": "dimension",
+   "$value": "48px",
+   "$description": "Onboarding and marketing layout."
+  }
+ },
+ "radius": {
+  "radius-xs": {
+   "$type": "dimension",
+   "$value": "2px",
+   "$description": "Keyboard keys, checkboxes, inline code."
+  },
+  "radius-sm": {
+   "$type": "dimension",
+   "$value": "4px",
+   "$description": "Buttons, inputs, pills, badges, rows, menu items."
+  },
+  "radius-md": {
+   "$type": "dimension",
+   "$value": "6px",
+   "$description": "Panels, cards, terminals, menus, popovers, the command palette."
+  },
+  "radius-lg": {
+   "$type": "dimension",
+   "$value": "8px",
+   "$description": "Dialogs and the onboarding sheet. The largest corner in the interface."
+  },
+  "radius-icon": {
+   "$type": "dimension",
+   "$value": "22.5%",
+   "$description": "App icon squircle, as a share of the icon's side."
+  },
+  "radius-full": {
+   "$type": "dimension",
+   "$value": "999px",
+   "$description": "Status dots and avatars only. Never pills or buttons."
+  }
+ },
+ "size": {
+  "control-sm": {
+   "$type": "dimension",
+   "$value": "24px",
+   "$description": "Toolbar icon buttons, pills."
+  },
+  "control": {
+   "$type": "dimension",
+   "$value": "28px",
+   "$description": "Default buttons, inputs, tabs, list rows."
+  },
+  "control-lg": {
+   "$type": "dimension",
+   "$value": "32px",
+   "$description": "Primary dialog actions, the palette input."
+  },
+  "icon-ui": {
+   "$type": "dimension",
+   "$value": "16px",
+   "$description": "Lucide icons in controls, at a 1.5px stroke."
+  },
+  "titlebar": {
+   "$type": "dimension",
+   "$value": "38px",
+   "$description": "Window title bar height."
+  }
+ },
+ "motion": {
+  "duration-fast": {
+   "$type": "duration",
+   "$value": "120ms",
+   "$description": "Hover and press."
+  },
+  "duration-base": {
+   "$type": "duration",
+   "$value": "200ms",
+   "$description": "Panels, popovers, tab changes."
+  },
+  "duration-glance": {
+   "$type": "duration",
+   "$value": "2400ms",
+   "$description": "One cycle of the thinking motion."
+  },
+  "duration-loop": {
+   "$type": "duration",
+   "$value": "1400ms",
+   "$description": "One lap of the loading motion."
+  },
+  "ease-out": {
+   "$type": "cubicBezier",
+   "$value": "cubic-bezier(0.2, 0, 0, 1)",
+   "$description": "Default easing for anything entering."
+  }
+ },
+ "font": {
+  "display": {
+   "$type": "fontFamily",
+   "$value": "\"Gloock\", \"Iowan Old Style\", Georgia, serif"
+  },
+  "sans": {
+   "$type": "fontFamily",
+   "$value": "\"IBM Plex Sans\", -apple-system, system-ui, sans-serif"
+  },
+  "mono": {
+   "$type": "fontFamily",
+   "$value": "\"IBM Plex Mono\", ui-monospace, \"SF Mono\", Menlo, monospace"
+  }
+ },
+ "typography": {
+  "display-xl": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.display}",
+    "fontSize": "56px",
+    "lineHeight": "60px",
+    "fontWeight": 400,
+    "letterSpacing": "-0.01em"
+   },
+   "$description": "Splash, onboarding, marketing."
+  },
+  "display": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.display}",
+    "fontSize": "32px",
+    "lineHeight": "38px",
+    "fontWeight": 400
+   },
+   "$description": "Empty states and the About window."
+  },
+  "wordmark": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.display}",
+    "fontSize": "20px",
+    "lineHeight": "24px",
+    "fontWeight": 400
+   },
+   "$description": "The name beside the mark in the title bar."
+  },
+  "title": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.sans}",
+    "fontSize": "18px",
+    "lineHeight": "24px",
+    "fontWeight": 600,
+    "letterSpacing": "-0.01em"
+   },
+   "$description": "Pane titles and the onboarding sheet."
+  },
+  "heading": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.sans}",
+    "fontSize": "14px",
+    "lineHeight": "20px",
+    "fontWeight": 600
+   },
+   "$description": "Dialog titles and section headings inside panes."
+  },
+  "body": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.sans}",
+    "fontSize": "13px",
+    "lineHeight": "20px",
+    "fontWeight": 400
+   },
+   "$description": "Default UI and conversation text."
+  },
+  "body-strong": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.sans}",
+    "fontSize": "13px",
+    "lineHeight": "20px",
+    "fontWeight": 500
+   },
+   "$description": "Emphasis, button labels, row names."
+  },
+  "label": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.sans}",
+    "fontSize": "12px",
+    "lineHeight": "16px",
+    "fontWeight": 500
+   },
+   "$description": "Field labels, tab labels, pills."
+  },
+  "caption": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.sans}",
+    "fontSize": "11px",
+    "lineHeight": "14px",
+    "fontWeight": 500,
+    "letterSpacing": "0.06em"
+   },
+   "$description": "Sidebar group headers, set in capitals."
+  },
+  "code": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.mono}",
+    "fontSize": "12.5px",
+    "lineHeight": "19px",
+    "fontWeight": 400
+   },
+   "$description": "Terminal, logs, diffs, code blocks."
+  },
+  "code-sm": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.mono}",
+    "fontSize": "11.5px",
+    "lineHeight": "16px",
+    "fontWeight": 400
+   },
+   "$description": "Paths, hashes and shortcuts inline in UI."
+  },
+  "code-strong": {
+   "$type": "typography",
+   "$value": {
+    "fontFamily": "{font.mono}",
+    "fontSize": "12.5px",
+    "lineHeight": "19px",
+    "fontWeight": 500
+   },
+   "$description": "Prompts and exit codes inside the terminal."
+  }
+ }
+}

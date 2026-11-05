@@ -1,5 +1,6 @@
+import { Button, Icon, LoopMark, StatusPill } from "@panoptes/design-system";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ToolRun } from "../conversation";
+import { sessionStatus, type ToolRun } from "../conversation";
 import { useStore } from "../store";
 import type { Block, Message } from "../types";
 import { Markdown } from "./Markdown";
@@ -18,6 +19,7 @@ export function ChatPane() {
   const scroller = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(PAGE);
   const messages = conversation?.messages;
+  const status = sessionStatus(conversation);
 
   // Tool results render inside the call that produced them, not on their own.
   const { visible, results } = useMemo(() => {
@@ -53,8 +55,10 @@ export function ChatPane() {
 
   if (!activeKey) {
     return (
-      <main className="flex flex-1 items-center justify-center text-sm text-neutral-500">
-        Pick a session, or start a new one.
+      <main className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+        <LoopMark size={96} />
+        <h1 className="text-display">Panoptes</h1>
+        <p className="text-ink-muted">Pick a session, or start a new one with the + button.</p>
       </main>
     );
   }
@@ -63,21 +67,33 @@ export function ChatPane() {
 
   return (
     <main className="flex min-w-0 flex-1 flex-col">
-      <header className="border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
-        <div className="truncate text-sm font-medium">{session?.title ?? "Session"}</div>
-        <div className="truncate text-xs text-neutral-500">{session?.cwd}</div>
+      <header className="flex h-[var(--titlebar)] items-center gap-3 border-b border-line px-4">
+        {status === "running" && <LoopMark size={20} state="thinking" tone="current" />}
+        <div className="min-w-0 flex-1">
+          <div className="text-body-strong truncate">{session?.title ?? "Session"}</div>
+        </div>
+        <span className="text-code-sm truncate text-ink-muted" title={session?.cwd}>
+          {session?.cwd}
+        </span>
+        {status !== "idle" && <StatusPill status={status} />}
       </header>
-      <div ref={scroller} className="flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scroller} className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto flex max-w-3xl flex-col gap-4">
-          {!conversation && <p className="text-sm text-neutral-500">Starting the agent…</p>}
+          {!conversation && (
+            <div className="flex items-center gap-3 text-ink-muted">
+              <LoopMark size={20} state="loading" tone="current" />
+              Starting the agent…
+            </div>
+          )}
           {hidden > 0 && (
-            <button
-              type="button"
-              className="self-center text-xs text-neutral-500 hover:underline"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="self-center"
               onClick={() => setShown((n) => n + PAGE)}
             >
               Show {Math.min(PAGE, hidden)} earlier messages ({hidden} hidden)
-            </button>
+            </Button>
           )}
           {visible.slice(hidden).map((m) => (
             <MessageView
@@ -94,26 +110,28 @@ export function ChatPane() {
           // Notices are append-only and capped, so the index is stable.
           // biome-ignore lint/suspicious/noArrayIndexKey: see above
           key={i}
-          className={`border-t px-4 py-1 text-xs ${
+          className={`flex items-center gap-2 border-t border-line px-4 py-1 ${
             notice.level === "error"
-              ? "border-red-200 text-red-700 dark:border-red-900 dark:text-red-400"
+              ? "bg-error-soft text-error"
               : notice.level === "warning"
-                ? "border-amber-200 text-amber-700 dark:border-amber-900 dark:text-amber-400"
-                : "border-neutral-200 text-neutral-500 dark:border-neutral-800"
+                ? "bg-waiting-soft text-waiting"
+                : "text-ink-muted"
           }`}
         >
+          {notice.level !== "info" && <Icon name="circle-alert" size={14} />}
           {notice.text}
         </div>
       ))}
       {conversation?.exited && (
         <div
-          className="border-t border-neutral-200 px-4 py-1 text-xs text-neutral-500 dark:border-neutral-800"
+          className="flex items-center gap-2 border-t border-line bg-error-soft px-4 py-1 text-error"
           title={conversation.exited}
         >
-          The agent process stopped. Sending a message restarts it.
+          <Icon name="circle-alert" size={14} />
+          The agent process stopped. Send a message to restart it.
         </div>
       )}
-      <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
+      <div className="border-t border-line bg-surface p-3">
         {conversation?.questions.map((q) => (
           <QuestionCard key={q.id} question={q} />
         ))}
@@ -134,7 +152,7 @@ function MessageView({
 }) {
   if (message.role === "user") {
     return (
-      <div className="max-w-[85%] self-end whitespace-pre-wrap rounded-lg bg-neutral-100 px-3 py-2 text-sm dark:bg-neutral-800">
+      <div className="max-w-[85%] self-end whitespace-pre-wrap rounded-md border border-line bg-surface-raised px-3 py-2">
         {message.blocks
           .map((b) => (b?.type === "text" ? b.text : b?.type === "image" ? "[image]" : ""))
           .join("\n")}
@@ -143,13 +161,13 @@ function MessageView({
   }
   if (message.role === "other") {
     return (
-      <div className="whitespace-pre-wrap border-l-2 border-neutral-300 pl-3 text-xs text-neutral-500 dark:border-neutral-700">
+      <div className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-ink-muted">
         {message.blocks.map((b) => (b?.type === "text" ? b.text : "")).join("\n")}
       </div>
     );
   }
   return (
-    <div className="flex flex-col gap-2 text-sm">
+    <div className="flex flex-col gap-2">
       {message.blocks.map((block, i) => {
         if (!block) return null;
         // Blocks are positional (a message's content index), so the index
@@ -161,8 +179,8 @@ function MessageView({
           case "thinking":
             return block.text ? (
               // biome-ignore lint/suspicious/noArrayIndexKey: see above
-              <details key={i} className="text-xs text-neutral-500">
-                <summary className="cursor-default">Thinking</summary>
+              <details key={i} className="text-ink-muted">
+                <summary className="text-label cursor-default">Thinking</summary>
                 <div className="whitespace-pre-wrap pt-1">{block.text}</div>
               </details>
             ) : null;
@@ -181,7 +199,10 @@ function MessageView({
         }
       })}
       {message.error && (
-        <div className="text-xs text-red-600 dark:text-red-400">{message.error}</div>
+        <div className="flex items-center gap-2 text-error">
+          <Icon name="circle-alert" size={14} />
+          {message.error}
+        </div>
       )}
     </div>
   );
@@ -199,30 +220,37 @@ function ToolCallView({
   const args = block.args ? JSON.stringify(block.args, null, 2) : (block.argsText ?? "");
   const output = result?.output ?? run?.output ?? "";
   const status = result ? (result.isError ? "error" : "done") : (run?.status ?? "pending");
-  const icon = { error: "✗", done: "✓", running: "…", pending: "…" }[status];
-  const color = {
-    error: "text-red-600",
-    done: "text-green-600",
-    running: "text-blue-500",
-    pending: "text-neutral-400",
-  }[status];
   return (
-    <details className="rounded border border-neutral-200 text-xs dark:border-neutral-800">
-      <summary className="flex cursor-default items-center gap-2 px-2 py-1 font-mono">
-        <span className={color}>{icon}</span>
-        <span className="font-semibold">{block.name}</span>
-        <span className="truncate text-neutral-500">{summarizeArgs(block.args)}</span>
+    <details className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+      <summary className="flex h-[var(--control)] cursor-default items-center gap-2 px-2">
+        <ToolStatus status={status} />
+        <span className="text-code-strong">{block.name}</span>
+        <span className="text-code-sm truncate text-ink-muted">{summarizeArgs(block.args)}</span>
       </summary>
-      <pre className="overflow-x-auto border-t border-neutral-200 p-2 dark:border-neutral-800">
-        {args}
-      </pre>
+      <pre className="text-code overflow-x-auto border-t border-line p-3">{args}</pre>
       {output && (
-        <pre className="max-h-80 overflow-auto border-t border-neutral-200 p-2 dark:border-neutral-800">
-          {output}
-        </pre>
+        <pre className="text-code max-h-80 overflow-auto border-t border-line p-3">{output}</pre>
       )}
     </details>
   );
+}
+
+function ToolStatus({ status }: { status: "running" | "pending" | "done" | "error" }) {
+  switch (status) {
+    case "done":
+      return <Icon name="check" size={14} className="text-done" title="Done" />;
+    case "error":
+      return <Icon name="circle-alert" size={14} className="text-error" title="Failed" />;
+    default:
+      return (
+        <Icon
+          name="loader-circle"
+          size={14}
+          className="animate-spin text-running"
+          title="Running"
+        />
+      );
+  }
 }
 
 /** The first string argument, as a one-line hint of what a tool call does. */
@@ -247,11 +275,10 @@ function Composer({ busy, sending }: { busy: boolean; sending: boolean }) {
   return (
     <div className="mx-auto flex max-w-3xl items-end gap-2">
       <textarea
-        className="max-h-60 min-h-10 flex-1 resize-none rounded border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+        aria-label="Message"
+        className="max-h-60 min-h-[var(--control-lg)] flex-1 resize-none rounded-sm border border-line-strong bg-surface-raised px-3 py-[6px] text-ink placeholder:text-ink-faint focus:border-focus focus:outline-2 focus:outline-offset-1 focus:outline-focus"
         rows={Math.min(8, Math.max(1, text.split("\n").length))}
-        placeholder={
-          busy ? "Steer the agent (Enter)" : "Message (Enter to send, Shift+Enter for a new line)"
-        }
+        placeholder={busy ? "Steer the agent" : "Message the agent (Shift+Enter for a new line)"}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
@@ -262,15 +289,20 @@ function Composer({ busy, sending }: { busy: boolean; sending: boolean }) {
           if (e.key === "Escape" && busy) void abort();
         }}
       />
-      {busy && (
-        <button
-          type="button"
-          className="rounded border border-neutral-300 px-3 py-2 text-sm hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          onClick={() => void abort()}
-          title="Stop the current run (Esc)"
-        >
+      {busy ? (
+        <Button size="lg" kbd={["Esc"]} onClick={() => void abort()}>
           Stop
-        </button>
+        </Button>
+      ) : (
+        <Button
+          variant="primary"
+          size="lg"
+          kbd={["↵"]}
+          disabled={!text.trim() || sending}
+          onClick={submit}
+        >
+          Send
+        </Button>
       )}
     </div>
   );

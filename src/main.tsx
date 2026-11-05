@@ -9,6 +9,14 @@ if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
   installMockBackend();
 }
 
+// The design system is dark first; follow the system when it asks for light.
+const light = window.matchMedia("(prefers-color-scheme: light)");
+const applyTheme = () => {
+  document.documentElement.dataset.theme = light.matches ? "light" : "dark";
+};
+applyTheme();
+light.addEventListener("change", applyTheme);
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />

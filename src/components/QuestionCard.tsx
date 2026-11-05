@@ -1,9 +1,7 @@
+import { Button, Input, StatusPill } from "@panoptes/design-system";
 import { useEffect, useState } from "react";
 import { useStore } from "../store";
 import type { Question } from "../types";
-
-const buttonClass =
-  "rounded border border-neutral-300 px-3 py-1 text-sm hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800";
 
 /** A question from the harness, shown until answered or until it expires. */
 export function QuestionCard({ question }: { question: Question }) {
@@ -23,72 +21,74 @@ export function QuestionCard({ question }: { question: Question }) {
 
   if (expired) return null;
 
-  const cancel = () => void answer(question.id, { type: "cancelled" });
+  const dismiss = () => void answer(question.id, { type: "cancelled" });
   const submitText = () => void answer(question.id, { type: "value", value: text });
+  const { kind } = question;
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-3xl rounded border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950/40">
-      <div className="font-medium">{question.title}</div>
+    <section
+      aria-label={question.title}
+      className="mx-auto mb-3 w-full max-w-3xl rounded-md border border-line bg-surface-raised p-4 shadow-[var(--shadow-pop)]"
+    >
+      <div className="flex items-center gap-2">
+        <StatusPill status="waiting" />
+        <h2 className="text-heading">{question.title}</h2>
+      </div>
       {question.message && (
-        <div className="mt-1 whitespace-pre-wrap text-neutral-600 dark:text-neutral-400">
-          {question.message}
-        </div>
+        <p className="mt-2 whitespace-pre-wrap text-ink-muted">{question.message}</p>
       )}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {question.kind.type === "select" &&
-          question.kind.options.map((option) => (
-            <button
-              type="button"
+      {kind.type === "input" && (
+        <Input
+          className="mt-3"
+          aria-label={question.title}
+          placeholder={kind.placeholder ?? ""}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submitText()}
+        />
+      )}
+      {kind.type === "editor" && (
+        <textarea
+          aria-label={question.title}
+          className="text-code mt-3 min-h-24 w-full rounded-sm border border-line-strong bg-surface-sunken p-2 text-ink focus:border-focus focus:outline-2 focus:outline-offset-1 focus:outline-focus"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+      )}
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-line pt-3">
+        <Button variant="ghost" onClick={dismiss}>
+          Dismiss
+        </Button>
+        {kind.type === "select" &&
+          kind.options.map((option) => (
+            <Button
               key={option}
-              className={buttonClass}
               onClick={() => void answer(question.id, { type: "value", value: option })}
             >
               {option}
-            </button>
+            </Button>
           ))}
-        {question.kind.type === "confirm" && (
+        {kind.type === "confirm" && (
           <>
-            <button
-              type="button"
-              className={buttonClass}
-              onClick={() => void answer(question.id, { type: "confirmed", confirmed: true })}
-            >
-              Yes
-            </button>
-            <button
-              type="button"
-              className={buttonClass}
+            <Button
               onClick={() => void answer(question.id, { type: "confirmed", confirmed: false })}
             >
-              No
-            </button>
+              Decline
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void answer(question.id, { type: "confirmed", confirmed: true })}
+            >
+              Approve
+            </Button>
           </>
         )}
-        {question.kind.type === "input" && (
-          <input
-            className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-700 dark:bg-neutral-950"
-            placeholder={question.kind.placeholder ?? ""}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submitText()}
-          />
-        )}
-        {question.kind.type === "editor" && (
-          <textarea
-            className="min-h-24 w-full rounded border border-neutral-300 bg-white px-2 py-1 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-950"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-        )}
-        {(question.kind.type === "input" || question.kind.type === "editor") && (
-          <button type="button" className={buttonClass} onClick={submitText}>
+        {(kind.type === "input" || kind.type === "editor") && (
+          <Button variant="primary" onClick={submitText}>
             Submit
-          </button>
+          </Button>
         )}
-        <button type="button" className={`${buttonClass} ml-auto`} onClick={cancel}>
-          Dismiss
-        </button>
       </div>
-    </div>
+    </section>
   );
 }

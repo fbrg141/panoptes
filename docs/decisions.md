@@ -53,6 +53,20 @@ Sessions stay in each harness's own storage. Panoptes keeps only its own
 small index (pins now; groups and tags later), keyed by
 `<harness>:<session id>`, so new organisation features need no migration.
 
+## The design system lives in the repo as a package
+
+*Decided 2026-11-05.*
+
+`packages/design-system` (`@panoptes/design-system`, a pnpm workspace
+package) holds the tokens, fonts, logos, app icons and components, exported
+from the design tool. Keeping it in the same repository means one commit can
+change a token and the screens that use it, and it can still be published to
+npm later. The app maps its tokens onto Tailwind colour names in
+`src/index.css`, so utilities and components share one source of values.
+
+The bundled app icon is `pupil-on-bone`, the design system's default; the
+other seven are in the package for a future icon picker.
+
 ## Known gap: RPC cannot list sessions
 
 Pi's RPC mode has no command that lists sessions; only the SDK's
