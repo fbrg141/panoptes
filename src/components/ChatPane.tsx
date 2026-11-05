@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { sessionStatus, type ToolRun } from "../conversation";
 import { useStore } from "../store";
 import type { Block, Message } from "../types";
+import { Composer } from "./Composer";
 import { Markdown } from "./Markdown";
 import { QuestionCard } from "./QuestionCard";
 
@@ -258,81 +259,4 @@ function summarizeArgs(args: unknown): string {
   if (!args || typeof args !== "object") return "";
   const first = Object.values(args).find((v): v is string => typeof v === "string");
   return first ? first.split("\n")[0].slice(0, 120) : "";
-}
-
-/** Fit the composer to its content, including lines wrapped by the layout. */
-function resizeComposer(el: HTMLTextAreaElement) {
-  el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
-}
-
-function Composer({ busy, sending }: { busy: boolean; sending: boolean }) {
-  const send = useStore((s) => s.send);
-  const abort = useStore((s) => s.abort);
-  const input = useRef<HTMLTextAreaElement>(null);
-  const [text, setText] = useState("");
-
-  // Size after the controlled value is rendered, so sending also collapses it.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the text value drives the measurement
-  useEffect(() => {
-    if (input.current) resizeComposer(input.current);
-  }, [text]);
-
-  const submit = () => {
-    const trimmed = text.trim();
-    if (!trimmed || sending) return;
-    setText("");
-    void send(trimmed);
-  };
-
-  return (
-    <form
-      className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-lg border border-line bg-surface-raised p-2 transition-colors duration-[var(--duration-fast)] focus-within:border-line-strong"
-      onSubmit={(e) => {
-        e.preventDefault();
-        submit();
-      }}
-    >
-      <span id="composer-help" className="sr-only">
-        Enter to send. Shift+Enter for a new line. Escape to stop a running agent.
-      </span>
-      <textarea
-        ref={input}
-        aria-label="Message"
-        aria-describedby="composer-help"
-        enterKeyHint="send"
-        className="max-h-60 min-h-[var(--control-lg)] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1 text-ink placeholder:text-ink-faint focus:outline-none"
-        placeholder={busy ? "Steer the agent" : "Message the agent"}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            submit();
-          }
-          if (e.key === "Escape" && busy) void abort();
-        }}
-      />
-      {busy ? (
-        <Button
-          variant="secondary"
-          icon="square"
-          iconOnly
-          title="Stop (Esc)"
-          aria-label="Stop"
-          onClick={() => void abort()}
-        />
-      ) : (
-        <Button
-          type="submit"
-          variant="primary"
-          icon="arrow-up"
-          iconOnly
-          disabled={!text.trim() || sending}
-          title="Send (Enter)"
-          aria-label="Send"
-        />
-      )}
-    </form>
-  );
 }

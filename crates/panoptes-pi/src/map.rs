@@ -1,7 +1,8 @@
 //! Translating Pi's messages and RPC events into the neutral harness types.
 
 use panoptes_harness::{
-    Block, DeltaKind, HarnessEvent, Message, NoticeLevel, Question, QuestionKind, Role,
+    Block, ContextUsage, DeltaKind, HarnessEvent, Message, ModelInfo, NoticeLevel, Question,
+    QuestionKind, Role,
 };
 use serde_json::Value;
 
@@ -368,6 +369,37 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>) -> Vec<Message> {
         .collect()
 }
 
+/// A Pi model object. Its id is `<provider>/<model id>`, which
+/// [`model_ref`] splits again; model ids may contain slashes, providers not.
+pub fn model(value: &Value) -> Option<ModelInfo> {
+    let provider = value["provider"].as_str()?;
+    let id = value["id"].as_str()?;
+    Some(ModelInfo {
+        id: format!("{provider}/{id}"),
+        name: value["name"].as_str().unwrap_or(id).to_string(),
+        provider: provider.to_string(),
+        context_window: value["contextWindow"].as_u64(),
+        images: value["input"]
+            .as_array()
+            .is_some_and(|input| input.iter().any(|kind| kind == "image")),
+    })
+}
+
+/// Splits a [`ModelInfo::id`] back into Pi's provider and model id.
+pub fn model_ref(id: &str) -> Option<(&str, &str)> {
+    id.split_once('/')
+        .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
+}
+
+/// `contextUsage` from `get_session_stats` data.
+pub fn context_usage(stats: &Value) -> Option<ContextUsage> {
+    let usage = &stats["contextUsage"];
+    Some(ContextUsage {
+        tokens: usage["tokens"].as_u64(),
+        window: usage["contextWindow"].as_u64()?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +474,40 @@ mod tests {
                 text: "Blocked".into()
             }]
         );
+    }
+
+    #[test]
+    fn models_round_trip_through_their_id() {
+        let info = model(&json!({
+            "id": "anthropic/claude-x",
+            "name": "Claude X",
+            "provider": "openrouter",
+            "contextWindow": 200000,
+            "input": ["text", "image"]
+        }))
+        .unwrap();
+        assert_eq!(info.id, "openrouter/anthropic/claude-x");
+        assert_eq!(info.context_window, Some(200_000));
+        assert!(info.images);
+        assert_eq!(
+            model_ref(&info.id),
+            Some(("openrouter", "anthropic/claude-x"))
+        );
+        assert_eq!(model_ref("no-provider"), None);
+    }
+
+    #[test]
+    fn context_usage_needs_a_window() {
+        let known = json!({"contextUsage": {"tokens": 60000, "contextWindow": 200000}});
+        assert_eq!(
+            context_usage(&known),
+            Some(ContextUsage {
+                tokens: Some(60_000),
+                window: 200_000
+            })
+        );
+        let compacted = json!({"contextUsage": {"tokens": null, "contextWindow": 200000}});
+        assert_eq!(context_usage(&compacted).unwrap().tokens, None);
+        assert_eq!(context_usage(&json!({})), None);
     }
 }

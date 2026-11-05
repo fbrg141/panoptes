@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use panoptes_harness::{
-    AgentSession, Answer, Block, Harness, HarnessEvent, PromptMode, PromptOutcome, QuestionKind,
-    Role, StartSession,
+    AgentSession, Answer, Block, ContextUsage, Harness, HarnessEvent, ImageAttachment, PromptMode,
+    PromptOutcome, QuestionKind, Role, StartSession,
 };
 use panoptes_pi::{PiHarness, PiInstall};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -71,7 +71,7 @@ async fn a_prompt_streams_and_settles() {
     assert_eq!(session.session_ref().id, "fake-session");
 
     let outcome = session
-        .prompt("hi".into(), PromptMode::Start)
+        .prompt("hi".into(), Vec::new(), PromptMode::Start)
         .await
         .unwrap();
     assert_eq!(outcome, PromptOutcome::Started);
@@ -94,7 +94,7 @@ async fn history_is_fetched_incrementally() {
     assert!(session.history().await.unwrap().is_empty());
 
     session
-        .prompt("one".into(), PromptMode::Start)
+        .prompt("one".into(), Vec::new(), PromptMode::Start)
         .await
         .unwrap();
     until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
@@ -108,7 +108,7 @@ async fn history_is_fetched_incrementally() {
     assert_eq!(ids, ["e1", "e2"]);
 
     session
-        .prompt("two".into(), PromptMode::Start)
+        .prompt("two".into(), Vec::new(), PromptMode::Start)
         .await
         .unwrap();
     until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
@@ -127,7 +127,7 @@ async fn history_is_fetched_incrementally() {
 async fn questions_are_answered_through_the_session() {
     let (session, mut rx) = start().await;
     session
-        .prompt("ask".into(), PromptMode::Start)
+        .prompt("ask".into(), Vec::new(), PromptMode::Start)
         .await
         .unwrap();
 
@@ -151,7 +151,7 @@ async fn questions_are_answered_through_the_session() {
 async fn a_crash_reports_the_exit_code_and_stderr() {
     let (session, mut rx) = start().await;
     let error = session
-        .prompt("crash".into(), PromptMode::Start)
+        .prompt("crash".into(), Vec::new(), PromptMode::Start)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("exited"), "{error}");
@@ -164,7 +164,7 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
     assert!(stderr_tail.contains("fake pi crashed"));
     assert!(
         session
-            .prompt("again".into(), PromptMode::Start)
+            .prompt("again".into(), Vec::new(), PromptMode::Start)
             .await
             .is_err()
     );
@@ -189,4 +189,53 @@ async fn commands_after_shutdown_fail_fast() {
     let started = std::time::Instant::now();
     assert!(session.abort().await.is_err());
     assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn images_travel_with_the_prompt() {
+    let (session, mut rx) = start().await;
+    let image = ImageAttachment {
+        mime_type: "image/png".into(),
+        data: "iVBORw0K".into(),
+    };
+    session
+        .prompt("look".into(), vec![image], PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert_eq!(text_of(&events), "echo: look\u{2028}done [1 image/png]");
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn model_and_thinking_level_can_be_changed() {
+    let (session, _rx) = start().await;
+    let settings = session.settings().await.unwrap();
+    assert_eq!(settings.model.unwrap().id, "fake/small");
+    assert_eq!(settings.thinking_level.as_deref(), Some("medium"));
+    assert_eq!(settings.thinking_levels, ["off", "low", "medium", "high"]);
+    assert_eq!(
+        settings.context,
+        Some(ContextUsage {
+            tokens: Some(1200),
+            window: 32_000
+        })
+    );
+
+    let models = session.models().await.unwrap();
+    let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["fake/small", "fake/vendor/large"]);
+    assert!(!models[0].images);
+    assert!(models[1].images);
+
+    session.set_model("fake/vendor/large".into()).await.unwrap();
+    session.set_thinking_level("high".into()).await.unwrap();
+    let settings = session.settings().await.unwrap();
+    assert_eq!(settings.model.unwrap().name, "Large");
+    assert_eq!(settings.thinking_level.as_deref(), Some("high"));
+    assert_eq!(settings.context.unwrap().window, 200_000);
+
+    assert!(session.set_model("fake/missing".into()).await.is_err());
+    assert!(session.set_model("no-provider".into()).await.is_err());
+    session.shutdown().await;
 }

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use panoptes_harness::{
-    AgentSession, Answer, EventSink, Harness, Message, PromptMode, PromptOutcome, SessionRef,
-    SessionSummary, StartSession,
+    AgentSession, Answer, EventSink, Harness, ImageAttachment, Message, ModelInfo, PromptMode,
+    PromptOutcome, SessionRef, SessionSettings, SessionSummary, StartSession,
 };
 use serde_json::{Value, json};
 
@@ -148,8 +148,19 @@ impl AgentSession for PiSession {
         Ok(map::history(&cache.entries, data["leafId"].as_str()))
     }
 
-    async fn prompt(&self, text: String, mode: PromptMode) -> anyhow::Result<PromptOutcome> {
+    async fn prompt(
+        &self,
+        text: String,
+        images: Vec<ImageAttachment>,
+        mode: PromptMode,
+    ) -> anyhow::Result<PromptOutcome> {
         let mut command = json!({"type": "prompt", "message": text});
+        if !images.is_empty() {
+            command["images"] = images
+                .into_iter()
+                .map(|image| json!({"type": "image", "data": image.data, "mimeType": image.mime_type}))
+                .collect();
+        }
         match mode {
             PromptMode::Start => {}
             PromptMode::Steer => command["streamingBehavior"] = json!("steer"),
@@ -178,6 +189,59 @@ impl AgentSession for PiSession {
             Answer::Cancelled => response["cancelled"] = json!(true),
         }
         self.process.notify(response)
+    }
+
+    async fn settings(&self) -> anyhow::Result<SessionSettings> {
+        let (state, levels, stats) = tokio::join!(
+            self.process.call(json!({"type": "get_state"})),
+            self.process
+                .call(json!({"type": "get_available_thinking_levels"})),
+            self.process.call(json!({"type": "get_session_stats"})),
+        );
+        let state = state?;
+        let thinking_levels = levels?["levels"]
+            .as_array()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| Some(level.as_str()?.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(SessionSettings {
+            model: map::model(&state["model"]),
+            thinking_level: state["thinkingLevel"].as_str().map(str::to_string),
+            thinking_levels,
+            // Usage is a nicety: a session without stats still has settings.
+            context: stats.ok().as_ref().and_then(map::context_usage),
+        })
+    }
+
+    async fn models(&self) -> anyhow::Result<Vec<ModelInfo>> {
+        let data = self
+            .process
+            .call(json!({"type": "get_available_models"}))
+            .await?;
+        Ok(data["models"]
+            .as_array()
+            .map(|models| models.iter().filter_map(map::model).collect())
+            .unwrap_or_default())
+    }
+
+    async fn set_model(&self, model_id: String) -> anyhow::Result<()> {
+        let (provider, model) =
+            map::model_ref(&model_id).with_context(|| format!("Unknown model {model_id}"))?;
+        self.process
+            .call(json!({"type": "set_model", "provider": provider, "modelId": model}))
+            .await
+            .map(|_| ())
+    }
+
+    async fn set_thinking_level(&self, level: String) -> anyhow::Result<()> {
+        self.process
+            .call(json!({"type": "set_thinking_level", "level": level}))
+            .await
+            .map(|_| ())
     }
 
     async fn shutdown(&self) {

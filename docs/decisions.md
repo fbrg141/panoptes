@@ -77,6 +77,22 @@ is less stable than the protocol. The scanner sits behind
 `Harness::list_sessions`, so it can be replaced once Pi gains a
 `list_sessions` command, which would be worth proposing upstream.
 
+## Composer: settings per session, files by path
+
+Model and thinking level belong to the session, as they do in Pi: changing
+them in one session leaves the others and new sessions alone, and a change
+applies from the next message. A global default waits for Settings (#8).
+Shift+Tab cycles the thinking level, as in Pi's terminal UI. While the agent
+runs, Enter steers it and Option+Enter queues a follow-up for when it
+finishes; both show as chips until the agent reads them.
+
+Images go to the model inline. Any other attached file is appended to the
+prompt as an `@path` mention, so the agent reads it with its own tools and no
+harness needs a file-attachment command. @-mentions are plain text drawn as
+chips by a backdrop behind the text field, which keeps the field a native
+`textarea`. Slash commands are left for later: they need Pi to list its
+commands over RPC.
+
 ## Open gaps
 
 - No automated test drives the real app window; the UI is tested through its

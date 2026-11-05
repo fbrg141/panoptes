@@ -1,5 +1,5 @@
 import type { AgentStatus } from "@panoptes/design-system";
-import type { Block, HarnessEvent, Message, NoticeLevel, Question } from "./types";
+import type { Block, HarnessEvent, Message, NoticeLevel, PromptMode, Question } from "./types";
 
 export interface ToolRun {
   status: "running" | "done" | "error";
@@ -11,6 +11,12 @@ export interface Notice {
   text: string;
 }
 
+/** A prompt the harness holds until the agent can take it. */
+export interface QueuedPrompt {
+  text: string;
+  mode: Exclude<PromptMode, "start">;
+}
+
 export interface Conversation {
   messages: Message[];
   busy: boolean;
@@ -20,6 +26,8 @@ export interface Conversation {
   questions: Question[];
   /** Set once the harness process has ended. */
   exited: string | null;
+  /** Steers and follow-ups sent during a run that the agent has not read yet. */
+  queued: QueuedPrompt[];
 }
 
 /** Notices kept per conversation; older ones scroll away. */
@@ -32,6 +40,7 @@ export const emptyConversation = (messages: Message[] = []): Conversation => ({
   notices: [],
   questions: [],
   exited: null,
+  queued: [],
 });
 
 function updateMessage(
@@ -89,9 +98,10 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
       );
     case "messageCompleted": {
       const exists = conversation.messages.some((m) => m.id === event.message.id);
-      return exists
+      const next = exists
         ? updateMessage(conversation, event.message.id, () => event.message)
         : { ...conversation, messages: [...conversation.messages, event.message] };
+      return event.message.role === "user" ? delivered(next, event.message) : next;
     }
     case "toolStarted":
     case "toolUpdated":
@@ -114,7 +124,9 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
         },
       };
     case "runSettled":
-      return { ...conversation, busy: false };
+      // Anything still queued was delivered under a different text
+      // (expanded by the harness) or dropped by an abort.
+      return { ...conversation, busy: false, queued: [] };
     case "notice":
       return {
         ...conversation,
@@ -130,6 +142,7 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
         ...conversation,
         busy: false,
         questions: [],
+        queued: [],
         exited:
           event.stderrTail.trim() || `The agent process ended (code ${event.code ?? "none"}).`,
       };
@@ -137,6 +150,21 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
     case "raw":
       return conversation;
   }
+}
+
+/** The agent read a queued prompt: drop the first one with the same text. */
+function delivered(conversation: Conversation, message: Message): Conversation {
+  const text = message.blocks
+    .map((b) => (b.type === "text" ? b.text : ""))
+    .join("")
+    .trim();
+  const index = conversation.queued.findIndex((q) => q.text.trim() === text);
+  if (index < 0) return conversation;
+  return { ...conversation, queued: conversation.queued.filter((_, i) => i !== index) };
+}
+
+export function enqueue(conversation: Conversation, prompt: QueuedPrompt): Conversation {
+  return { ...conversation, queued: [...conversation.queued, prompt] };
 }
 
 export function removeQuestion(conversation: Conversation, questionId: string): Conversation {

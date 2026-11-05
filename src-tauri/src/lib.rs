@@ -1,13 +1,17 @@
 //! Tauri shell: loads the harnesses and exposes [`service::Service`] to the
 //! UI as commands, with session events emitted as `session-event`.
 
+mod files;
 mod index;
 mod service;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use panoptes_harness::{Answer, Harness, Message, PromptMode, PromptOutcome};
+use panoptes_harness::{
+    Answer, Harness, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
+    SessionSettings,
+};
 use panoptes_pi::PiHarness;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -77,9 +81,56 @@ async fn send_prompt(
     state: State<'_, AppState>,
     key: String,
     text: String,
+    images: Vec<ImageAttachment>,
     mode: PromptMode,
 ) -> ServiceResult<PromptOutcome> {
-    state.service.prompt(&key, text, mode).await
+    state.service.prompt(&key, text, images, mode).await
+}
+
+#[tauri::command]
+async fn session_settings(
+    state: State<'_, AppState>,
+    key: String,
+) -> ServiceResult<SessionSettings> {
+    state.service.settings(&key).await
+}
+
+#[tauri::command]
+async fn list_models(state: State<'_, AppState>, key: String) -> ServiceResult<Vec<ModelInfo>> {
+    state.service.models(&key).await
+}
+
+#[tauri::command]
+async fn set_model(
+    state: State<'_, AppState>,
+    key: String,
+    model_id: String,
+) -> ServiceResult<SessionSettings> {
+    state.service.set_model(&key, model_id).await
+}
+
+#[tauri::command]
+async fn set_thinking_level(
+    state: State<'_, AppState>,
+    key: String,
+    level: String,
+) -> ServiceResult<SessionSettings> {
+    state.service.set_thinking_level(&key, level).await
+}
+
+#[tauri::command]
+async fn list_files(cwd: String) -> ServiceResult<Vec<String>> {
+    tokio::task::spawn_blocking(move || files::list(Path::new(&cwd), files::MAX_FILES))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn read_attachment(path: String) -> ServiceResult<files::Attachment> {
+    tokio::task::spawn_blocking(move || files::attachment(Path::new(&path)))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -167,6 +218,12 @@ pub fn run() {
             new_session,
             session_history,
             send_prompt,
+            session_settings,
+            list_models,
+            set_model,
+            set_thinking_level,
+            list_files,
+            read_attachment,
             abort_run,
             answer_question,
             close_session,

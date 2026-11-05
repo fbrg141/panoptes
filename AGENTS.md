@@ -13,7 +13,9 @@ this way.
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
 | `src-tauri/src/service.rs` | Open sessions (one process each), event forwarding, Panoptes' index |
 | `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |
+| `src-tauri/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
 | `src/conversation.ts` | Pure reducer: harness events to conversation state |
+| `src/composer.ts` | Pure composer logic: mention parsing, fuzzy file matching, labels |
 | `src/store.ts` | Zustand store: talks to the backend through `src/api.ts` |
 | `src/components/` | Rendering only |
 | `src/dev/mockBackend.ts` | Fixture backend used when the UI runs in a plain browser |

@@ -233,6 +233,54 @@ pub enum PromptMode {
     FollowUp,
 }
 
+/// An image sent with a prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    pub mime_type: String,
+    /// The image bytes, base64-encoded.
+    pub data: String,
+}
+
+/// A model the harness can run a session on.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    /// Opaque handle passed back to [`AgentSession::set_model`].
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Who serves the model, e.g. `"anthropic"`.
+    pub provider: String,
+    /// Context window in tokens, when known.
+    pub context_window: Option<u64>,
+    /// Accepts images in prompts.
+    pub images: bool,
+}
+
+/// How full the model's context window is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    /// Tokens in the context now; `None` while unknown (just after the
+    /// harness compacted the conversation, say).
+    pub tokens: Option<u64>,
+    pub window: u64,
+}
+
+/// A session's model, reasoning effort and context use.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSettings {
+    pub model: Option<ModelInfo>,
+    /// Current thinking level, one of `thinking_levels`.
+    pub thinking_level: Option<String>,
+    /// Levels the current model supports, lowest first. Empty when the
+    /// harness has no such setting.
+    pub thinking_levels: Vec<String>,
+    pub context: Option<ContextUsage>,
+}
+
 /// What the harness did with a prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -280,12 +328,40 @@ pub trait AgentSession: Send + Sync {
     /// The active conversation, oldest first, with stable message ids.
     async fn history(&self) -> anyhow::Result<Vec<Message>>;
 
-    async fn prompt(&self, text: String, mode: PromptMode) -> anyhow::Result<PromptOutcome>;
+    async fn prompt(
+        &self,
+        text: String,
+        images: Vec<ImageAttachment>,
+        mode: PromptMode,
+    ) -> anyhow::Result<PromptOutcome>;
 
     async fn abort(&self) -> anyhow::Result<()>;
 
     /// Answers a [`HarnessEvent::Question`].
     async fn answer(&self, question_id: String, answer: Answer) -> anyhow::Result<()>;
+
+    /// The session's model, thinking level and context use. A harness
+    /// without these settings reports none.
+    async fn settings(&self) -> anyhow::Result<SessionSettings> {
+        Ok(SessionSettings::default())
+    }
+
+    /// Models the session can switch to.
+    async fn models(&self) -> anyhow::Result<Vec<ModelInfo>> {
+        Ok(Vec::new())
+    }
+
+    /// Switches model from the next message on. `model_id` is a
+    /// [`ModelInfo::id`].
+    async fn set_model(&self, _model_id: String) -> anyhow::Result<()> {
+        anyhow::bail!("This harness cannot switch models")
+    }
+
+    /// Sets the reasoning effort from the next message on. `level` is one of
+    /// [`SessionSettings::thinking_levels`].
+    async fn set_thinking_level(&self, _level: String) -> anyhow::Result<()> {
+        anyhow::bail!("This harness has no thinking levels")
+    }
 
     /// Ends the session's process. The session stays resumable.
     async fn shutdown(&self);
