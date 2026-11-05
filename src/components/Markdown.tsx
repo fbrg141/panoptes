@@ -9,7 +9,7 @@ import remarkGfm from "remark-gfm";
  */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
-    <div className="markdown leading-relaxed">
+    <div className="markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

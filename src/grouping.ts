@@ -13,7 +13,7 @@ const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path
 const byRecent = (a: SidebarSession, b: SidebarSession) => b.updatedAt - a.updatedAt;
 
 /**
- * Sidebar groups: sessions with a live process, then pinned sessions, then
+ * Sidebar groups: open sessions (with a live process), then pinned sessions, then
  * every project (git root, else folder) by most recent activity. A session
  * appears once, in the first group that claims it.
  */
@@ -28,7 +28,7 @@ export function groupSessions(sessions: SidebarSession[], query = ""): SessionGr
     )
     .sort(byRecent);
 
-  const running = visible.filter((s) => s.open);
+  const open = visible.filter((s) => s.open);
   const pinned = visible.filter((s) => !s.open && s.pinned);
   const rest = visible.filter((s) => !s.open && !s.pinned);
 
@@ -40,7 +40,7 @@ export function groupSessions(sessions: SidebarSession[], query = ""): SessionGr
   }
 
   const groups: SessionGroup[] = [];
-  if (running.length) groups.push({ id: "running", label: "Running", sessions: running });
+  if (open.length) groups.push({ id: "open", label: "Open", sessions: open });
   if (pinned.length) groups.push({ id: "pinned", label: "Pinned", sessions: pinned });
   for (const [root, list] of projects) {
     groups.push({ id: `project:${root}`, label: basename(root), cwd: root, sessions: list });
@@ -48,13 +48,14 @@ export function groupSessions(sessions: SidebarSession[], query = ""): SessionGr
   return groups;
 }
 
+/** A past time in the design system's voice: "just now", "12m ago", "3d ago". */
 export function relativeTime(ms: number, now = Date.now()): string {
   const minutes = Math.round((now - ms) / 60_000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
+  if (hours < 24) return `${hours}h ago`;
   const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d`;
+  if (days < 30) return `${days}d ago`;
   return new Date(ms).toLocaleDateString();
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, emptyConversation } from "./conversation";
-import { groupSessions } from "./grouping";
+import { applyEvent, emptyConversation, sessionStatus } from "./conversation";
+import { groupSessions, relativeTime } from "./grouping";
 import type { HarnessEvent, SidebarSession } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
@@ -71,9 +71,35 @@ describe("groupSessions", () => {
       session({ key: "d", projectRoot: "/code/panoptes", updatedAt: 4 }),
     ]);
     expect(groups.map((g) => [g.label, g.sessions.map((s) => s.key)])).toEqual([
-      ["Running", ["a"]],
+      ["Open", ["a"]],
       ["Pinned", ["b"]],
       ["panoptes", ["d", "c"]],
     ]);
+  });
+});
+
+describe("relativeTime", () => {
+  it("speaks in the design system's voice", () => {
+    const now = 10 * 86_400_000;
+    expect(relativeTime(now - 10_000, now)).toBe("just now");
+    expect(relativeTime(now - 12 * 60_000, now)).toBe("12m ago");
+    expect(relativeTime(now - 3 * 86_400_000, now)).toBe("3d ago");
+  });
+});
+
+describe("sessionStatus", () => {
+  it("prefers waiting over running, and reports a dead process as failed", () => {
+    const busy = { ...emptyConversation(), busy: true };
+    expect(sessionStatus(undefined)).toBe("idle");
+    expect(sessionStatus(busy)).toBe("running");
+    expect(
+      sessionStatus({
+        ...busy,
+        questions: [
+          { id: "q", title: "Ok?", message: null, kind: { type: "confirm" }, expiresAt: null },
+        ],
+      }),
+    ).toBe("waiting");
+    expect(sessionStatus({ ...emptyConversation(), exited: "boom" })).toBe("failed");
   });
 });
