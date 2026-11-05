@@ -131,7 +131,7 @@ export function ChatPane() {
           The agent process stopped. Send a message to restart it.
         </div>
       )}
-      <div className="border-t border-line bg-surface p-3">
+      <div className="p-3">
         {conversation?.questions.map((q) => (
           <QuestionCard key={q.id} question={q} />
         ))}
@@ -263,47 +263,67 @@ function summarizeArgs(args: unknown): string {
 function Composer({ busy, sending }: { busy: boolean; sending: boolean }) {
   const send = useStore((s) => s.send);
   const abort = useStore((s) => s.abort);
+  const input = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
+
+  // The box grows with what is typed — wrapped lines included — up to its cap.
+  const resize = (el: HTMLTextAreaElement) => {
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
 
   const submit = () => {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
     setText("");
+    if (input.current) resize(input.current);
     void send(trimmed);
   };
 
   return (
-    <div className="mx-auto flex max-w-3xl items-end gap-2">
-      <textarea
-        aria-label="Message"
-        className="max-h-60 min-h-[var(--control-lg)] flex-1 resize-none rounded-sm border border-line-strong bg-surface-raised px-3 py-[6px] text-ink placeholder:text-ink-faint focus:border-focus focus:outline-2 focus:outline-offset-1 focus:outline-focus"
-        rows={Math.min(8, Math.max(1, text.split("\n").length))}
-        placeholder={busy ? "Steer the agent" : "Message the agent (Shift+Enter for a new line)"}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            submit();
-          }
-          if (e.key === "Escape" && busy) void abort();
-        }}
-      />
-      {busy ? (
-        <Button size="lg" kbd={["Esc"]} onClick={() => void abort()}>
-          Stop
-        </Button>
-      ) : (
-        <Button
-          variant="primary"
-          size="lg"
-          kbd={["↵"]}
-          disabled={!text.trim() || sending}
-          onClick={submit}
-        >
-          Send
-        </Button>
-      )}
+    <div className="mx-auto w-full max-w-3xl">
+      <div className="relative flex items-end">
+        <textarea
+          ref={input}
+          aria-label="Message"
+          className="max-h-60 min-h-[var(--control-lg)] w-full resize-none overflow-y-auto rounded-sm border border-line-strong bg-transparent px-3 py-[6px] pr-10 text-ink placeholder:text-ink-faint focus:border-focus"
+          placeholder={busy ? "Steer the agent" : "Message the agent (Shift+Enter for a new line)"}
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            resize(e.currentTarget);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              submit();
+            }
+            if (e.key === "Escape" && busy) void abort();
+          }}
+        />
+        {busy ? (
+          <Button
+            variant="secondary"
+            icon="square"
+            iconOnly
+            className="absolute bottom-1 right-1"
+            title="Stop (Esc)"
+            aria-label="Stop"
+            onClick={() => void abort()}
+          />
+        ) : (
+          <Button
+            variant="primary"
+            icon="arrow-up"
+            iconOnly
+            className="absolute bottom-1 right-1"
+            disabled={!text.trim() || sending}
+            title="Send (Enter)"
+            aria-label="Send"
+            onClick={submit}
+          />
+        )}
+      </div>
     </div>
   );
 }

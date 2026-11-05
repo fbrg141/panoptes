@@ -49,12 +49,17 @@ body {
 }
 
 ::selection {
-  background: var(--selection);
+  background: color-mix(in srgb, var(--selection) 55%, transparent);
 }
 
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* The composer signals focus through its border tint, not the global ring. */
+textarea:focus-visible {
+  outline: none;
 }
 
 /* Assistant markdown, on the design system's type scale. */
