@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, emptyConversation, sessionStatus } from "./conversation";
+import { applyEvent, emptyConversation, enqueue, sessionStatus } from "./conversation";
 import { groupSessions, relativeTime } from "./grouping";
 import type { HarnessEvent, SidebarSession } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
 
 describe("applyEvent", () => {
+  it("clears queued prompts once the run settles", () => {
+    let c = enqueue(emptyConversation(), { text: "a", mode: "steer" });
+    c = enqueue(c, { text: "b", mode: "followUp" });
+    expect(c.queued).toHaveLength(2);
+    expect(applyEvent(c, { type: "runSettled", aborted: true }).queued).toEqual([]);
+  });
+
   it("streams text and replaces it with the completed message", () => {
     const streamed = fold([
       { type: "runStarted" },

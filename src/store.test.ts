@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { api } from "./api";
 import { createAppStore } from "./store";
-import type { OpenedSession, SessionEvent, SidebarSession } from "./types";
+import type {
+  OpenedSession,
+  PromptOutcome,
+  SessionEvent,
+  SessionSettings,
+  SidebarSession,
+} from "./types";
 
 const session: SidebarSession = {
   key: "pi:s1",
@@ -25,6 +31,13 @@ const opened: OpenedSession = {
   history: [],
 };
 
+const settings: SessionSettings = {
+  model: { id: "p/small", name: "Small", provider: "p", contextWindow: 32_000, images: false },
+  thinkingLevel: "low",
+  thinkingLevels: ["off", "low", "high"],
+  context: { tokens: 1200, window: 32_000 },
+};
+
 function fakeBackend() {
   let emit: (event: SessionEvent) => void = () => {};
   const backend = {
@@ -33,7 +46,16 @@ function fakeBackend() {
     openSession: vi.fn(async () => opened),
     newSession: vi.fn(async () => opened),
     history: vi.fn(async () => []),
-    sendPrompt: vi.fn(async () => "started" as const),
+    sendPrompt: vi.fn(async (): Promise<PromptOutcome> => "started"),
+    settings: vi.fn(async () => settings),
+    listModels: vi.fn(async () => (settings.model ? [settings.model] : [])),
+    setModel: vi.fn(async () => settings),
+    setThinkingLevel: vi.fn(async (_key: string, level: string) => ({
+      ...settings,
+      thinkingLevel: level,
+    })),
+    listFiles: vi.fn(async () => []),
+    readAttachment: vi.fn(),
     abort: vi.fn(async () => {}),
     answer: vi.fn(async () => {}),
     closeSession: vi.fn(async () => {}),
@@ -65,11 +87,54 @@ describe("store", () => {
   it("steers when the agent is already busy", async () => {
     await store.getState().open(session);
     await store.getState().send("first");
-    expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "first", "start");
+    expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "first", [], "start");
     expect(store.getState().conversations["pi:s1"].busy).toBe(true);
 
     await store.getState().send("second");
-    expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "second", "steer");
+    expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "second", [], "steer");
+  });
+
+  it("queues a follow-up and drops it once the agent reads it", async () => {
+    await store.getState().open(session);
+    fake.emit({ key: "pi:s1", event: { type: "runStarted" } });
+    fake.backend.sendPrompt.mockResolvedValueOnce("queued");
+    await store.getState().send("then this", { queue: true });
+    expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "then this", [], "followUp");
+    expect(store.getState().conversations["pi:s1"].queued).toEqual([
+      { text: "then this", mode: "followUp" },
+    ]);
+
+    fake.emit({
+      key: "pi:s1",
+      event: {
+        type: "messageCompleted",
+        message: {
+          id: "u2",
+          role: "user",
+          blocks: [{ type: "text", text: "then this" }],
+          timestamp: null,
+          error: null,
+        },
+      },
+    });
+    expect(store.getState().conversations["pi:s1"].queued).toEqual([]);
+  });
+
+  it("loads settings on open and after each run", async () => {
+    await store.getState().open(session);
+    await vi.waitFor(() => expect(store.getState().settings["pi:s1"]).toEqual(settings));
+    fake.emit({ key: "pi:s1", event: { type: "runSettled", aborted: false } });
+    await vi.waitFor(() => expect(fake.backend.settings).toHaveBeenCalledTimes(2));
+  });
+
+  it("changes the thinking level and keeps the reported settings", async () => {
+    await store.getState().open(session);
+    await store.getState().setThinkingLevel("high");
+    expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("pi:s1", "high");
+    expect(store.getState().settings["pi:s1"].thinkingLevel).toBe("high");
+
+    await store.getState().loadModels();
+    expect(store.getState().models["pi:s1"]).toHaveLength(1);
   });
 
   it("reloads history when a run settles", async () => {
@@ -85,7 +150,7 @@ describe("store", () => {
     fake.emit({ key: "pi:s1", event: { type: "exited", code: 1, stderrTail: "" } });
     await store.getState().send("hello");
     expect(fake.backend.openSession).toHaveBeenCalledTimes(2);
-    expect(fake.backend.sendPrompt).toHaveBeenCalledWith("pi:s1", "hello", "start");
+    expect(fake.backend.sendPrompt).toHaveBeenCalledWith("pi:s1", "hello", [], "start");
   });
 
   it("removes a question once answered", async () => {

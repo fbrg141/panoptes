@@ -4,7 +4,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { HarnessEvent, Message, SidebarSession } from "../types";
+import type { HarnessEvent, Message, ModelInfo, SessionSettings, SidebarSession } from "../types";
 
 const now = Date.now();
 const hour = 3_600_000;
@@ -88,6 +88,60 @@ const history: Message[] = [
   },
 ];
 
+const models: ModelInfo[] = [
+  {
+    id: "anthropic/claude-sonnet-4-5",
+    name: "Claude Sonnet 4.5",
+    provider: "anthropic",
+    contextWindow: 200_000,
+    images: true,
+  },
+  {
+    id: "anthropic/claude-haiku-4-5",
+    name: "Claude Haiku 4.5",
+    provider: "anthropic",
+    contextWindow: 200_000,
+    images: true,
+  },
+  {
+    id: "openai/gpt-5.1-codex",
+    name: "GPT-5.1 Codex",
+    provider: "openai",
+    contextWindow: 400_000,
+    images: true,
+  },
+  {
+    id: "local/qwen3-coder",
+    name: "Qwen3 Coder",
+    provider: "local",
+    contextWindow: 32_000,
+    images: false,
+  },
+];
+
+const settings: SessionSettings = {
+  model: models[0],
+  thinkingLevel: "medium",
+  thinkingLevels: ["off", "minimal", "low", "medium", "high"],
+  context: { tokens: 42_300, window: 200_000 },
+};
+
+const files = [
+  "AGENTS.md",
+  "package.json",
+  "src/App.tsx",
+  "src/api.ts",
+  "src/composer.ts",
+  "src/components/ChatPane.tsx",
+  "src/components/Composer.tsx",
+  "src/components/Sidebar.tsx",
+  "src/conversation.ts",
+  "src/store.ts",
+  "src-tauri/src/service.rs",
+  "crates/panoptes-pi/src/rpc.rs",
+  "docs/decisions.md",
+];
+
 async function stream(key: string, text: string) {
   const send = (event: HarnessEvent) => emit("session-event", { key, event });
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -142,6 +196,7 @@ async function stream(key: string, text: string) {
 
 export function installMockBackend() {
   const open = new Set<string>();
+  let streaming = false;
   mockIPC(
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, string>;
@@ -163,8 +218,32 @@ export function installMockBackend() {
         case "session_history":
           return history;
         case "send_prompt":
-          void stream(a.key, a.text);
+          // While a reply streams, further prompts wait their turn; the
+          // run settling clears them.
+          if (streaming) return "queued";
+          streaming = true;
+          void stream(a.key, a.text).finally(() => {
+            streaming = false;
+          });
           return "started";
+        // Copies, as the real backend sends fresh JSON every time.
+        case "session_settings":
+          return { ...settings };
+        case "list_models":
+          return models;
+        case "set_model": {
+          const model = models.find((m) => m.id === a.modelId) ?? null;
+          settings.model = model;
+          settings.thinkingLevels =
+            model?.provider === "local" ? ["off"] : ["off", "minimal", "low", "medium", "high"];
+          settings.context = { tokens: 42_300, window: model?.contextWindow ?? 0 };
+          return { ...settings };
+        }
+        case "set_thinking_level":
+          settings.thinkingLevel = a.level;
+          return { ...settings };
+        case "list_files":
+          return files;
         default:
           return null;
       }

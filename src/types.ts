@@ -116,3 +116,42 @@ export interface AppInfo {
 export type PromptMode = "start" | "steer" | "followUp";
 
 export type PromptOutcome = "started" | "queued" | "handled";
+
+/** An image sent inline with a prompt. */
+export interface ImageAttachment {
+  mimeType: string;
+  /** The image bytes, base64-encoded. */
+  data: string;
+}
+
+export interface ModelInfo {
+  /** Opaque handle for setModel. */
+  id: string;
+  name: string;
+  provider: string;
+  contextWindow: number | null;
+  /** Accepts images in prompts. */
+  images: boolean;
+}
+
+export interface ContextUsage {
+  /** Null while unknown, just after the harness compacted the context. */
+  tokens: number | null;
+  window: number;
+}
+
+export interface SessionSettings {
+  model: ModelInfo | null;
+  thinkingLevel: string | null;
+  /** Levels the current model supports, lowest first. */
+  thinkingLevels: string[];
+  context: ContextUsage | null;
+}
+
+/** A file dropped onto the composer: images inline, anything else by path. */
+export interface FileAttachment {
+  name: string;
+  path: string;
+  mimeType: string | null;
+  data: string | null;
+}
