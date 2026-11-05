@@ -30,7 +30,9 @@ async fn main() -> anyhow::Result<()> {
     let session = harness.start_session(StartSession::New { cwd }, tx).await?;
     println!("started {:?}", session.session_ref());
 
-    session.prompt(prompt, PromptMode::Start).await?;
+    session
+        .prompt(prompt, Vec::new(), PromptMode::Start)
+        .await?;
     while let Some(event) = rx.recv().await {
         println!("{}", serde_json::to_string(&event)?);
         if matches!(

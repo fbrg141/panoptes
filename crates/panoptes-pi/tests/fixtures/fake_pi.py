@@ -4,7 +4,8 @@ for the adapter's tests. Prompts select behaviour:
 
   "ask"    asks a confirm question and replies with the answer
   "crash"  exits with code 7 straight away
-  other    replies with "echo: <prompt>" plus a U+2028 inside the text
+  other    replies with "echo: <prompt>" plus a U+2028 inside the text,
+           and the MIME types of any images sent with it
 """
 
 import json
@@ -12,6 +13,12 @@ import sys
 
 entries = []
 counter = 0
+models = [
+    {"id": "small", "name": "Small", "provider": "fake", "contextWindow": 32000, "input": ["text"]},
+    {"id": "vendor/large", "name": "Large", "provider": "fake", "contextWindow": 200000, "input": ["text", "image"]},
+]
+model = models[0]
+thinking_level = "medium"
 
 
 def send(record):
@@ -44,13 +51,15 @@ def append(message):
     entries.append(entry)
 
 
-def run(text):
+def run(text, images):
     user = {"role": "user", "content": text, "timestamp": 1}
     send({"type": "agent_start"})
     send({"type": "message_start", "message": user})
     send({"type": "message_end", "message": user})
     append(user)
     reply = f"echo: {text} done"
+    if images:
+        reply += f" [{len(images)} {images[0]['mimeType']}]"
     if text == "ask":
         send({"type": "extension_ui_request", "id": "q1", "method": "confirm", "title": "Proceed?"})
         answer = json.loads(sys.stdin.readline())
@@ -69,13 +78,34 @@ for line in sys.stdin:
     command = json.loads(line)
     kind = command["type"]
     if kind == "get_state":
-        respond(command, {"sessionId": "fake-session", "sessionFile": "/tmp/fake-session.jsonl"})
+        respond(command, {
+            "sessionId": "fake-session",
+            "sessionFile": "/tmp/fake-session.jsonl",
+            "model": model,
+            "thinkingLevel": thinking_level,
+        })
+    elif kind == "get_available_models":
+        respond(command, {"models": models})
+    elif kind == "set_model":
+        found = [m for m in models if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
+        if not found:
+            respond(command, success=False, error="Model not found")
+            continue
+        model = found[0]
+        respond(command, model)
+    elif kind == "get_available_thinking_levels":
+        respond(command, {"levels": ["off", "low", "medium", "high"]})
+    elif kind == "set_thinking_level":
+        thinking_level = command["level"]
+        respond(command)
+    elif kind == "get_session_stats":
+        respond(command, {"contextUsage": {"tokens": 1200, "contextWindow": model["contextWindow"], "percent": 4}})
     elif kind == "prompt":
         if command["message"] == "crash":
             sys.stderr.write("fake pi crashed\n")
             sys.exit(7)
         respond(command, {"disposition": "started"})
-        run(command["message"])
+        run(command["message"], command.get("images", []))
     elif kind == "get_entries":
         since = command.get("since")
         if since is None:

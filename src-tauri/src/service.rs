@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use panoptes_harness::{
-    AgentSession, Answer, Harness, HarnessEvent, Message, PromptMode, PromptOutcome, SessionRef,
-    SessionSummary, StartSession,
+    AgentSession, Answer, Harness, HarnessEvent, ImageAttachment, Message, ModelInfo, PromptMode,
+    PromptOutcome, SessionRef, SessionSettings, SessionSummary, StartSession,
 };
 use serde::Serialize;
 use tokio::sync::{Mutex, oneshot};
@@ -276,13 +276,40 @@ impl Service {
         &self,
         key: &str,
         text: String,
+        images: Vec<ImageAttachment>,
         mode: PromptMode,
     ) -> ServiceResult<PromptOutcome> {
         self.session(key)
             .await?
-            .prompt(text, mode)
+            .prompt(text, images, mode)
             .await
             .map_err(err)
+    }
+
+    pub async fn settings(&self, key: &str) -> ServiceResult<SessionSettings> {
+        self.session(key).await?.settings().await.map_err(err)
+    }
+
+    pub async fn models(&self, key: &str) -> ServiceResult<Vec<ModelInfo>> {
+        self.session(key).await?.models().await.map_err(err)
+    }
+
+    /// Switches the session's model and returns its settings after the
+    /// switch, since the thinking levels on offer depend on the model.
+    pub async fn set_model(&self, key: &str, model_id: String) -> ServiceResult<SessionSettings> {
+        let session = self.session(key).await?;
+        session.set_model(model_id).await.map_err(err)?;
+        session.settings().await.map_err(err)
+    }
+
+    pub async fn set_thinking_level(
+        &self,
+        key: &str,
+        level: String,
+    ) -> ServiceResult<SessionSettings> {
+        let session = self.session(key).await?;
+        session.set_thinking_level(level).await.map_err(err)?;
+        session.settings().await.map_err(err)
     }
 
     pub async fn abort(&self, key: &str) -> ServiceResult<()> {
@@ -414,7 +441,12 @@ mod tests {
         async fn history(&self) -> anyhow::Result<Vec<Message>> {
             Ok(Vec::new())
         }
-        async fn prompt(&self, _: String, _: PromptMode) -> anyhow::Result<PromptOutcome> {
+        async fn prompt(
+            &self,
+            _: String,
+            _: Vec<ImageAttachment>,
+            _: PromptMode,
+        ) -> anyhow::Result<PromptOutcome> {
             Ok(PromptOutcome::Started)
         }
         async fn abort(&self) -> anyhow::Result<()> {
@@ -554,5 +586,24 @@ mod tests {
         let f = fixture(FakeHarness::default());
         assert!(f.service.create("nope", "/tmp".into()).await.is_err());
         assert!(f.service.abort("fake:missing").await.is_err());
+        assert!(f.service.settings("fake:missing").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_harness_without_models_reports_no_settings() {
+        let f = fixture(FakeHarness::default());
+        f.service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap();
+        let settings = f.service.settings("fake:s1").await.unwrap();
+        assert_eq!(settings, SessionSettings::default());
+        assert!(f.service.models("fake:s1").await.unwrap().is_empty());
+        let error = f
+            .service
+            .set_thinking_level("fake:s1", "high".into())
+            .await
+            .unwrap_err();
+        assert_eq!(error, "This harness has no thinking levels");
     }
 }
