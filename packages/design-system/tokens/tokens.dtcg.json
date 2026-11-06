@@ -15,7 +15,7 @@
     },
     "brand-cobalt": {
      "$type": "color",
-     "$value": "#3347BD",
+     "$value": "#1F57B2",
      "$description": "Brand constant. Poster cobalt; app icon grounds, marketing fields. Too dark for text on the dark theme: use focus there."
     },
     "brand-red": {
@@ -80,7 +80,7 @@
     },
     "primary-hover": {
      "$type": "color",
-     "$value": "#3E52C9",
+     "$value": "#235CB8",
      "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.8:1."
     },
     "on-primary": {
@@ -100,7 +100,7 @@
     },
     "focus": {
      "$type": "color",
-     "$value": "#8C9BFF",
+     "$value": "#66A1FF",
      "$description": "Focus ring (2px solid, 2px offset), the active tab marker and the selected app icon. At least 5:1 on every surface."
     },
     "link": {
@@ -115,17 +115,17 @@
     },
     "selection": {
      "$type": "color",
-     "$value": "#1C284F",
+     "$value": "#1C304F",
      "$description": "Selected list row, selected text and the current search hit, behind ink."
     },
     "running": {
      "$type": "color",
-     "$value": "#8C9BFF",
+     "$value": "#66A1FF",
      "$description": "Status: an agent is working. Text, dot and progress on any surface; pair with the word Running."
     },
     "running-soft": {
      "$type": "color",
-     "$value": "#111832",
+     "$value": "#111D31",
      "$description": "Status pill fill behind running text."
     },
     "waiting": {
@@ -197,7 +197,7 @@
     },
     "brand-cobalt": {
      "$type": "color",
-     "$value": "#3347BD",
+     "$value": "#1F57B2",
      "$description": "Brand constant. Poster cobalt; app icon grounds, marketing fields. Too dark for text on the dark theme: use focus there."
     },
     "brand-red": {
@@ -262,7 +262,7 @@
     },
     "primary-hover": {
      "$type": "color",
-     "$value": "#3E52C9",
+     "$value": "#235CB8",
      "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.8:1."
     },
     "on-primary": {
@@ -282,7 +282,7 @@
     },
     "focus": {
      "$type": "color",
-     "$value": "#3347BD",
+     "$value": "#1F57B2",
      "$description": "Focus ring (2px solid, 2px offset), the active tab marker and the selected app icon. At least 5:1 on every surface."
     },
     "link": {
@@ -297,17 +297,17 @@
     },
     "selection": {
      "$type": "color",
-     "$value": "#D9DEF6",
+     "$value": "#DAE5F6",
      "$description": "Selected list row, selected text and the current search hit, behind ink."
     },
     "running": {
      "$type": "color",
-     "$value": "#3347BD",
+     "$value": "#1F57B2",
      "$description": "Status: an agent is working. Text, dot and progress on any surface; pair with the word Running."
     },
     "running-soft": {
      "$type": "color",
-     "$value": "#E2E5F8",
+     "$value": "#E2EBF8",
      "$description": "Status pill fill behind running text."
     },
     "waiting": {

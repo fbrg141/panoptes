@@ -3,7 +3,7 @@
 :root, [data-theme="dark"] {
   --brand-pupil: #070F10;
   --brand-bone: #EBDCC8;
-  --brand-cobalt: #3347BD;
+  --brand-cobalt: #1F57B2;
   --brand-red: #FF2B24;
   --brand-paper: #E6E1DA;
   --bg: #070F10;
@@ -16,16 +16,16 @@
   --ink-muted: #93A7A6;
   --ink-faint: #6F8786;
   --primary: var(--brand-cobalt);
-  --primary-hover: #3E52C9;
+  --primary-hover: #235CB8;
   --on-primary: var(--brand-bone);
   --red: var(--brand-red);
   --on-red: #070F10;
-  --focus: #8C9BFF;
+  --focus: #66A1FF;
   --link: var(--focus);
   --on-focus: var(--bg);
-  --selection: #1C284F;
-  --running: #8C9BFF;
-  --running-soft: #111832;
+  --selection: #1C304F;
+  --running: #66A1FF;
+  --running-soft: #111D31;
   --waiting: #F2B84B;
   --waiting-soft: #281E0B;
   --error: #FF6B5E;
@@ -41,7 +41,7 @@
 [data-theme="light"] {
   --brand-pupil: #070F10;
   --brand-bone: #EBDCC8;
-  --brand-cobalt: #3347BD;
+  --brand-cobalt: #1F57B2;
   --brand-red: #FF2B24;
   --brand-paper: #E6E1DA;
   --bg: #F4EEE4;
@@ -54,16 +54,16 @@
   --ink-muted: #4E5D5E;
   --ink-faint: #6E7A7A;
   --primary: var(--brand-cobalt);
-  --primary-hover: #3E52C9;
+  --primary-hover: #235CB8;
   --on-primary: var(--brand-bone);
   --red: var(--brand-red);
   --on-red: #070F10;
-  --focus: #3347BD;
+  --focus: #1F57B2;
   --link: var(--focus);
   --on-focus: var(--bg);
-  --selection: #D9DEF6;
-  --running: #3347BD;
-  --running-soft: #E2E5F8;
+  --selection: #DAE5F6;
+  --running: #1F57B2;
+  --running-soft: #E2EBF8;
   --waiting: #7F5300;
   --waiting-soft: #F6E7C6;
   --error: #B3261E;
