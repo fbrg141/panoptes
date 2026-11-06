@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use panoptes_harness::{
-    AgentSession, Answer, EventSink, Harness, ImageAttachment, Message, ModelInfo, PromptMode,
-    PromptOutcome, SessionRef, SessionSettings, SessionSummary, StartSession,
+    AgentSession, Answer, EventSink, Harness, HarnessError, ImageAttachment, Message, ModelInfo,
+    PromptMode, PromptOutcome, SessionRef, SessionSettings, SessionSummary, StartSession,
 };
 use serde_json::{Value, json};
 
@@ -229,8 +229,8 @@ impl AgentSession for PiSession {
     }
 
     async fn set_model(&self, model_id: String) -> anyhow::Result<()> {
-        let (provider, model) =
-            map::model_ref(&model_id).with_context(|| format!("Unknown model {model_id}"))?;
+        let (provider, model) = map::model_ref(&model_id)
+            .ok_or_else(|| HarnessError::rejected(format!("Unknown model {model_id}")))?;
         self.process
             .call(json!({"type": "set_model", "provider": provider, "modelId": model}))
             .await

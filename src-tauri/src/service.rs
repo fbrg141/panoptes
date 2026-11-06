@@ -8,19 +8,80 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use panoptes_harness::{
-    AgentSession, Answer, Harness, HarnessEvent, ImageAttachment, Message, ModelInfo, PromptMode,
-    PromptOutcome, SessionRef, SessionSettings, SessionSummary, StartSession,
+    AgentSession, Answer, Harness, HarnessError, HarnessErrorKind, HarnessEvent, ImageAttachment,
+    Message, ModelInfo, PromptMode, PromptOutcome, Role, SessionRef, SessionSettings,
+    SessionStatus, SessionSummary, StartSession,
 };
 use serde::Serialize;
 use tokio::sync::{Mutex, oneshot};
 
 use crate::index::Index;
 
-/// Errors cross into the UI as display strings.
-pub type ServiceResult<T> = Result<T, String>;
+pub type ServiceResult<T> = Result<T, ServiceError>;
 
-fn err(error: impl std::fmt::Display) -> String {
-    format!("{error:#}")
+/// An error as the UI receives it: a kind to choose the recovery from, and a
+/// message to show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ErrorKind {
+    /// The session has no process; open it again.
+    NotOpen,
+    /// The harness it needs is not installed or failed to load.
+    Unavailable,
+    /// The harness refused the command; its message says why.
+    Rejected,
+    /// The harness process ended; reopen the session to restart it.
+    Exited,
+    /// The harness did not answer in time.
+    TimedOut,
+    /// Anything else (I/O, a harness error with no kind).
+    Other,
+}
+
+impl ServiceError {
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn other(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Other, message)
+    }
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<anyhow::Error> for ServiceError {
+    fn from(error: anyhow::Error) -> Self {
+        let kind = match HarnessError::kind_of(&error) {
+            Some(HarnessErrorKind::Rejected) => ErrorKind::Rejected,
+            Some(HarnessErrorKind::Exited) => ErrorKind::Exited,
+            Some(HarnessErrorKind::TimedOut) => ErrorKind::TimedOut,
+            None => ErrorKind::Other,
+        };
+        Self::new(kind, format!("{error:#}"))
+    }
+}
+
+fn err(error: anyhow::Error) -> ServiceError {
+    error.into()
+}
+
+fn not_open() -> ServiceError {
+    ServiceError::new(ErrorKind::NotOpen, "This session is not open")
 }
 
 pub fn session_key(harness: &str, id: &str) -> String {
@@ -31,7 +92,114 @@ pub fn session_key(harness: &str, id: &str) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct SessionEvent {
     pub key: String,
-    pub event: HarnessEvent,
+    pub event: SessionUpdate,
+}
+
+/// What the UI hears about an open session: the harness's own events, plus
+/// the status the service works out from them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum SessionUpdate {
+    Harness(HarnessEvent),
+    Status(StatusChanged),
+}
+
+/// Sent when an open session's status changes, and once when it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename = "statusChanged")]
+pub struct StatusChanged {
+    pub status: SessionStatus,
+}
+
+/// Works out a session's status from its events. Waiting wins over
+/// Running, so a session that needs the user always says so.
+#[derive(Debug)]
+struct StatusTracker {
+    status: SessionStatus,
+    running: bool,
+    /// Open questions, with when the harness stops waiting (Unix ms).
+    questions: HashMap<String, Option<i64>>,
+    /// The latest assistant message in this run reported an error.
+    errored: bool,
+    /// How the last run ended: Idle before any, then Done or Failed.
+    settled: SessionStatus,
+}
+
+impl Default for StatusTracker {
+    fn default() -> Self {
+        Self {
+            status: SessionStatus::Idle,
+            running: false,
+            questions: HashMap::new(),
+            errored: false,
+            settled: SessionStatus::Idle,
+        }
+    }
+}
+
+impl StatusTracker {
+    /// Folds in one event; returns the new status if it changed.
+    fn apply(&mut self, event: &HarnessEvent, now: i64) -> Option<SessionStatus> {
+        match event {
+            HarnessEvent::RunStarted => {
+                self.running = true;
+                self.errored = false;
+            }
+            HarnessEvent::MessageCompleted { message } if message.role == Role::Assistant => {
+                // A retried provider error is cleared by the reply that follows.
+                self.errored = message.error.is_some();
+            }
+            HarnessEvent::Question { question } => {
+                self.questions
+                    .insert(question.id.clone(), question.expires_at);
+            }
+            HarnessEvent::RunSettled { .. } => {
+                self.running = false;
+                self.questions.clear();
+                self.settled = if self.errored {
+                    SessionStatus::Failed
+                } else {
+                    SessionStatus::Done
+                };
+            }
+            HarnessEvent::Exited { .. } => {
+                self.running = false;
+                self.questions.clear();
+                self.settled = SessionStatus::Failed;
+            }
+            _ => {}
+        }
+        self.update(now)
+    }
+
+    fn answered(&mut self, question_id: &str, now: i64) -> Option<SessionStatus> {
+        self.questions.remove(question_id);
+        self.update(now)
+    }
+
+    fn update(&mut self, now: i64) -> Option<SessionStatus> {
+        // The harness picks a default once a question expires.
+        self.questions
+            .retain(|_, expires| expires.is_none_or(|at| at > now));
+        let status = if !self.questions.is_empty() {
+            SessionStatus::Waiting
+        } else if self.running {
+            SessionStatus::Running
+        } else {
+            self.settled
+        };
+        (status != self.status).then(|| {
+            self.status = status;
+            status
+        })
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub type Emit = Arc<dyn Fn(SessionEvent) + Send + Sync>;
@@ -68,6 +236,7 @@ struct OpenSession {
     /// a late exit from a replaced process cannot close its successor.
     generation: u64,
     session: Arc<dyn AgentSession>,
+    status: Arc<std::sync::Mutex<StatusTracker>>,
 }
 
 pub struct Service {
@@ -98,10 +267,12 @@ impl Service {
     }
 
     fn harness(&self, id: &str) -> ServiceResult<Arc<dyn Harness>> {
-        self.harnesses
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("The {id} harness is not available"))
+        self.harnesses.get(id).cloned().ok_or_else(|| {
+            ServiceError::new(
+                ErrorKind::Unavailable,
+                format!("The {id} harness is not available"),
+            )
+        })
     }
 
     async fn session(&self, key: &str) -> ServiceResult<Arc<dyn AgentSession>> {
@@ -110,7 +281,7 @@ impl Service {
             .await
             .get(key)
             .map(|open| open.session.clone())
-            .ok_or_else(|| "This session is not open".to_string())
+            .ok_or_else(not_open)
     }
 
     pub async fn list(&self) -> Listing {
@@ -199,9 +370,11 @@ impl Service {
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HarnessEvent>();
         let (key_tx, mut key_rx) = oneshot::channel::<String>();
+        let status = Arc::new(std::sync::Mutex::new(StatusTracker::default()));
         {
             let emit = self.emit.clone();
             let open = self.open.clone();
+            let status = status.clone();
             tokio::spawn(async move {
                 // The key is known only once the harness reports the session
                 // id; anything said before that is held back until then.
@@ -217,6 +390,12 @@ impl Service {
                         Some(event) = rx.recv() => early.push_back(event),
                     }
                 };
+                emit(SessionEvent {
+                    key: key.clone(),
+                    event: SessionUpdate::Status(StatusChanged {
+                        status: SessionStatus::Idle,
+                    }),
+                });
                 loop {
                     let event = match early.pop_front() {
                         Some(event) => event,
@@ -234,10 +413,20 @@ impl Service {
                         }
                         open.remove(&key);
                     }
+                    // Holding the tracker while emitting keeps statuses in
+                    // order with the ones `answer` sends.
+                    let mut tracker = status.lock().unwrap();
+                    let changed = tracker.apply(&event, now_ms());
                     emit(SessionEvent {
                         key: key.clone(),
-                        event,
+                        event: SessionUpdate::Harness(event),
                     });
+                    if let Some(status) = changed {
+                        emit(SessionEvent {
+                            key: key.clone(),
+                            event: SessionUpdate::Status(StatusChanged { status }),
+                        });
+                    }
                 }
             });
         }
@@ -258,6 +447,7 @@ impl Service {
             OpenSession {
                 generation,
                 session,
+                status,
             },
         );
         let _ = key_tx.send(key.clone());
@@ -322,11 +512,25 @@ impl Service {
         question_id: String,
         answer: Answer,
     ) -> ServiceResult<()> {
-        self.session(key)
-            .await?
-            .answer(question_id, answer)
+        let (session, status) = self
+            .open
+            .lock()
             .await
-            .map_err(err)
+            .get(key)
+            .map(|open| (open.session.clone(), open.status.clone()))
+            .ok_or_else(not_open)?;
+        session
+            .answer(question_id.clone(), answer)
+            .await
+            .map_err(err)?;
+        let mut tracker = status.lock().unwrap();
+        if let Some(status) = tracker.answered(&question_id, now_ms()) {
+            (self.emit)(SessionEvent {
+                key: key.to_string(),
+                event: SessionUpdate::Status(StatusChanged { status }),
+            });
+        }
+        Ok(())
     }
 
     pub async fn close(&self, key: &str) {
@@ -496,8 +700,53 @@ mod tests {
         let events = fixture.events.lock().unwrap();
         events
             .iter()
-            .filter(|e| matches!(e.event, HarnessEvent::Exited { .. }))
+            .filter(|e| matches!(e.event, SessionUpdate::Harness(HarnessEvent::Exited { .. })))
             .count()
+    }
+
+    fn statuses(fixture: &Fixture) -> Vec<SessionStatus> {
+        let events = fixture.events.lock().unwrap();
+        events
+            .iter()
+            .filter_map(|e| match e.event {
+                SessionUpdate::Status(StatusChanged { status }) => Some(status),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn open_s1(fixture: &Fixture) -> EventSink {
+        fixture
+            .service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap();
+        fixture.harness.sinks.lock().unwrap()[0].clone()
+    }
+
+    fn assistant(error: Option<&str>) -> HarnessEvent {
+        HarnessEvent::MessageCompleted {
+            message: Message {
+                id: "m1".into(),
+                role: Role::Assistant,
+                blocks: Vec::new(),
+                timestamp: None,
+                error: error.map(Into::into),
+                stopped: false,
+            },
+        }
+    }
+
+    fn question(id: &str, expires_at: Option<i64>) -> HarnessEvent {
+        HarnessEvent::Question {
+            question: panoptes_harness::Question {
+                id: id.into(),
+                title: "Proceed?".into(),
+                message: None,
+                kind: panoptes_harness::QuestionKind::Confirm,
+                expires_at,
+            },
+        }
     }
 
     #[tokio::test]
@@ -520,8 +769,12 @@ mod tests {
         f.service.create("fake", "/tmp".into()).await.unwrap();
         settle().await;
         let events = f.events.lock().unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].key, "fake:new");
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(events.iter().all(|e| e.key == "fake:new"));
+        assert!(matches!(
+            events[1].event,
+            SessionUpdate::Harness(HarnessEvent::Raw { .. })
+        ));
     }
 
     #[tokio::test]
@@ -554,8 +807,110 @@ mod tests {
         .unwrap();
         settle().await;
         assert_eq!(exits(&f), 1);
+        assert_eq!(statuses(&f).last(), Some(&SessionStatus::Failed));
         assert!(!f.service.list().await.sessions[0].open);
-        assert!(f.service.history("fake:s1").await.is_err());
+        let error = f.service.history("fake:s1").await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotOpen);
+    }
+
+    #[tokio::test]
+    async fn a_run_goes_from_running_through_waiting_to_done() {
+        let f = fixture(FakeHarness::default());
+        let sink = open_s1(&f).await;
+        settle().await;
+        assert_eq!(statuses(&f), [SessionStatus::Idle]);
+
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(question("q1", None)).unwrap();
+        settle().await;
+        f.service
+            .answer("fake:s1", "q1".into(), Answer::Cancelled)
+            .await
+            .unwrap();
+        sink.send(assistant(None)).unwrap();
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        settle().await;
+        assert_eq!(
+            statuses(&f),
+            [
+                SessionStatus::Idle,
+                SessionStatus::Running,
+                SessionStatus::Waiting,
+                SessionStatus::Running,
+                SessionStatus::Done,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_ends_on_an_error_fails() {
+        let f = fixture(FakeHarness::default());
+        let sink = open_s1(&f).await;
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(assistant(Some("overloaded"))).unwrap();
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        settle().await;
+        assert_eq!(statuses(&f).last(), Some(&SessionStatus::Failed));
+
+        // The next run starts clean, and a retried error does not count.
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(assistant(Some("overloaded"))).unwrap();
+        sink.send(assistant(None)).unwrap();
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        settle().await;
+        assert_eq!(
+            statuses(&f)[3..],
+            [SessionStatus::Running, SessionStatus::Done]
+        );
+    }
+
+    #[test]
+    fn an_expired_question_stops_waiting() {
+        let mut tracker = StatusTracker::default();
+        tracker.apply(&HarnessEvent::RunStarted, 0);
+        assert_eq!(
+            tracker.apply(&question("q1", Some(100)), 50),
+            Some(SessionStatus::Waiting)
+        );
+        let notice = HarnessEvent::Notice {
+            level: panoptes_harness::NoticeLevel::Info,
+            text: "still going".into(),
+        };
+        assert_eq!(tracker.apply(&notice, 150), Some(SessionStatus::Running));
+    }
+
+    #[test]
+    fn status_events_serialise_like_harness_events() {
+        let update = SessionUpdate::Status(StatusChanged {
+            status: SessionStatus::Waiting,
+        });
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({"type": "statusChanged", "status": "waiting"})
+        );
+        let update = SessionUpdate::Harness(HarnessEvent::RunStarted);
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({"type": "runStarted"})
+        );
+    }
+
+    #[test]
+    fn harness_errors_keep_their_kind() {
+        let error: ServiceError = anyhow::Error::from(HarnessError::timed_out("slow"))
+            .context("Could not prompt")
+            .into();
+        assert_eq!(error.kind, ErrorKind::TimedOut);
+        assert_eq!(error.message, "Could not prompt: slow");
+        let error: ServiceError = anyhow::anyhow!("disk full").into();
+        assert_eq!(error.kind, ErrorKind::Other);
+        assert_eq!(
+            serde_json::to_value(ServiceError::new(ErrorKind::NotOpen, "x")).unwrap(),
+            serde_json::json!({"kind": "notOpen", "message": "x"})
+        );
     }
 
     #[tokio::test]
@@ -584,9 +939,25 @@ mod tests {
     #[tokio::test]
     async fn unknown_harnesses_and_sessions_are_errors() {
         let f = fixture(FakeHarness::default());
-        assert!(f.service.create("nope", "/tmp".into()).await.is_err());
-        assert!(f.service.abort("fake:missing").await.is_err());
-        assert!(f.service.settings("fake:missing").await.is_err());
+        fn kind<T: std::fmt::Debug>(result: ServiceResult<T>) -> ErrorKind {
+            result.unwrap_err().kind
+        }
+        assert_eq!(
+            kind(f.service.create("nope", "/tmp".into()).await),
+            ErrorKind::Unavailable
+        );
+        assert_eq!(
+            kind(f.service.abort("fake:missing").await),
+            ErrorKind::NotOpen
+        );
+        assert_eq!(
+            kind(
+                f.service
+                    .answer("fake:missing", "q".into(), Answer::Cancelled)
+                    .await
+            ),
+            ErrorKind::NotOpen
+        );
     }
 
     #[tokio::test]
@@ -604,6 +975,9 @@ mod tests {
             .set_thinking_level("fake:s1", "high".into())
             .await
             .unwrap_err();
-        assert_eq!(error, "This harness has no thinking levels");
+        assert_eq!(
+            error,
+            ServiceError::new(ErrorKind::Rejected, "This harness has no thinking levels")
+        );
     }
 }

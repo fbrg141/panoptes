@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyEvent, emptyConversation, enqueue, sessionStatus } from "./conversation";
+import { applyEvent, emptyConversation, enqueue } from "./conversation";
 import { groupSessions, relativeTime } from "./grouping";
 import type { HarnessEvent, SidebarSession } from "./types";
 
@@ -122,22 +122,5 @@ describe("relativeTime", () => {
     expect(relativeTime(now - 10_000, now)).toBe("just now");
     expect(relativeTime(now - 12 * 60_000, now)).toBe("12m ago");
     expect(relativeTime(now - 3 * 86_400_000, now)).toBe("3d ago");
-  });
-});
-
-describe("sessionStatus", () => {
-  it("prefers waiting over running, and reports a dead process as failed", () => {
-    const busy = { ...emptyConversation(), busy: true };
-    expect(sessionStatus(undefined)).toBe("idle");
-    expect(sessionStatus(busy)).toBe("running");
-    expect(
-      sessionStatus({
-        ...busy,
-        questions: [
-          { id: "q", title: "Ok?", message: null, kind: { type: "confirm" }, expiresAt: null },
-        ],
-      }),
-    ).toBe("waiting");
-    expect(sessionStatus({ ...emptyConversation(), exited: "boom" })).toBe("failed");
   });
 });

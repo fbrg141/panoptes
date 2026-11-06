@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, anyhow, bail};
-use panoptes_harness::{EventSink, HarnessEvent};
+use anyhow::Context;
+use panoptes_harness::{EventSink, HarnessError, HarnessEvent};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -179,31 +179,35 @@ impl RpcProcess {
         let (tx, rx) = oneshot::channel();
         match self.pending.lock().await.as_mut() {
             Some(pending) => pending.insert(id.clone(), tx),
-            None => bail!("Pi is not running"),
+            None => return Err(not_running()),
         };
 
         if !self.write(&command) {
             self.forget(&id).await;
-            bail!("Pi is not running");
+            return Err(not_running());
         }
 
         let response = match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
             Ok(Ok(response)) => response,
-            Ok(Err(_)) => bail!("Pi exited before answering `{kind}`"),
+            Ok(Err(_)) => {
+                return Err(
+                    HarnessError::exited(format!("Pi exited before answering `{kind}`")).into(),
+                );
+            }
             Err(_) => {
                 self.forget(&id).await;
-                bail!("Pi did not answer `{kind}` in time");
+                return Err(
+                    HarnessError::timed_out(format!("Pi did not answer `{kind}` in time")).into(),
+                );
             }
         };
         if response["success"] == true {
             Ok(response["data"].clone())
         } else {
-            Err(anyhow!(
-                "{}",
-                response["error"]
-                    .as_str()
-                    .unwrap_or("Pi rejected the command")
-            ))
+            let message = response["error"]
+                .as_str()
+                .unwrap_or("Pi rejected the command");
+            Err(HarnessError::rejected(message).into())
         }
     }
 
@@ -213,7 +217,7 @@ impl RpcProcess {
         if self.write(&record) {
             Ok(())
         } else {
-            bail!("Pi is not running")
+            Err(not_running())
         }
     }
 
@@ -228,6 +232,10 @@ impl RpcProcess {
             wait_for_exit(&mut exit, SHUTDOWN_GRACE).await;
         }
     }
+}
+
+fn not_running() -> anyhow::Error {
+    HarnessError::exited("Pi is not running").into()
 }
 
 async fn read_stdout(stdout: tokio::process::ChildStdout, pending: &Pending, events: &EventSink) {

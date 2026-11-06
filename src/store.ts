@@ -10,11 +10,14 @@ import {
 import type {
   Answer,
   AppInfo,
+  ErrorKind,
   ImageAttachment,
   ModelInfo,
   OpenedSession,
+  PromptMode,
   SessionEvent,
   SessionSettings,
+  SessionStatus,
   SidebarSession,
 } from "./types";
 
@@ -30,6 +33,8 @@ export interface State {
   /** Sessions started here that the harness has not written to disk yet. */
   drafts: SidebarSession[];
   conversations: Record<string, Conversation>;
+  /** Each open session's status, as the backend reports it. */
+  statuses: Record<string, SessionStatus>;
   /** Keys with a prompt on its way to the harness. */
   sending: Record<string, boolean>;
   /** Model, thinking level and context use, per open session. */
@@ -56,7 +61,21 @@ export interface State {
   dismissError: () => void;
 }
 
-const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** Commands reject with a `ServiceError`; anything else is shown as it is. */
+function describe(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error && "message" in error) return String(error.message);
+  return String(error);
+}
+
+export function errorKind(error: unknown): ErrorKind {
+  return typeof error === "object" && error && "kind" in error
+    ? (error.kind as ErrorKind)
+    : "other";
+}
+
+/** The session's process is gone; opening it again starts a new one. */
+const needsReopen = (error: unknown) => ["notOpen", "exited"].includes(errorKind(error));
 
 function draftFrom(opened: OpenedSession): SidebarSession {
   const now = Date.now();
@@ -119,6 +138,10 @@ export function createAppStore(backend: typeof api) {
     };
 
     const onEvent = ({ key, event }: SessionEvent) => {
+      if (event.type === "statusChanged") {
+        set((s) => ({ statuses: { ...s.statuses, [key]: event.status } }));
+        return;
+      }
       patch(key, (c) => applyEvent(c, event));
       if (event.type === "runSettled") {
         // Swap live message ids for the stable ones in the session history.
@@ -135,6 +158,7 @@ export function createAppStore(backend: typeof api) {
       sessions: [],
       drafts: [],
       conversations: {},
+      statuses: {},
       sending: {},
       settings: {},
       models: {},
@@ -195,16 +219,23 @@ export function createAppStore(backend: typeof api) {
         const key = get().activeKey;
         if (!key || get().sending[key]) return;
         set((s) => ({ sending: { ...s.sending, [key]: true } }));
-        try {
-          if (get().conversations[key]?.exited) {
-            // The process is gone; resume the session before prompting.
-            const session = [...get().sessions, ...get().drafts].find((s) => s.key === key);
-            if (!session) throw new Error("This session is no longer listed.");
-            adopt(await backend.openSession(session));
-          }
+        const reopen = async () => {
+          const session = [...get().sessions, ...get().drafts].find((s) => s.key === key);
+          if (!session) throw new Error("This session is no longer listed.");
+          adopt(await backend.openSession(session));
+        };
+        const prompt = () => {
           const busy = get().conversations[key]?.busy ?? false;
-          const mode = !busy ? "start" : queue ? "followUp" : "steer";
-          const outcome = await backend.sendPrompt(key, text, images, mode);
+          const mode: PromptMode = !busy ? "start" : queue ? "followUp" : "steer";
+          return backend.sendPrompt(key, text, images, mode).then((outcome) => ({ outcome, mode }));
+        };
+        try {
+          // A session whose process has gone is resumed and prompted again, once.
+          const { outcome, mode } = await prompt().catch(async (e) => {
+            if (!needsReopen(e)) throw e;
+            await reopen();
+            return prompt();
+          });
           if (outcome === "started") patch(key, (c) => ({ ...c, busy: true }));
           if (outcome === "queued" && mode !== "start")
             patch(key, (c) => enqueue(c, { text, mode }));
@@ -265,10 +296,12 @@ export function createAppStore(backend: typeof api) {
         await backend.closeSession(key).catch(fail);
         set((s) => {
           const { [key]: _closed, ...conversations } = s.conversations;
+          const { [key]: _status, ...statuses } = s.statuses;
           const { [key]: _settings, ...settings } = s.settings;
           const { [key]: _models, ...models } = s.models;
           return {
             conversations,
+            statuses,
             settings,
             models,
             activeKey: s.activeKey === key ? null : s.activeKey,

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use panoptes_harness::{
-    AgentSession, Answer, Block, ContextUsage, Harness, HarnessEvent, ImageAttachment, PromptMode,
-    PromptOutcome, QuestionKind, Role, StartSession,
+    AgentSession, Answer, Block, ContextUsage, Harness, HarnessError, HarnessErrorKind,
+    HarnessEvent, ImageAttachment, PromptMode, PromptOutcome, QuestionKind, Role, StartSession,
 };
 use panoptes_pi::{PiHarness, PiInstall};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -155,6 +155,10 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("exited"), "{error}");
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Exited)
+    );
 
     let events = until(&mut rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;
     let Some(HarnessEvent::Exited { code, stderr_tail }) = events.last() else {
@@ -162,11 +166,13 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
     };
     assert_eq!(*code, Some(7));
     assert!(stderr_tail.contains("fake pi crashed"));
-    assert!(
-        session
-            .prompt("again".into(), Vec::new(), PromptMode::Start)
-            .await
-            .is_err()
+    let error = session
+        .prompt("again".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Exited)
     );
 }
 
@@ -187,7 +193,11 @@ async fn commands_after_shutdown_fail_fast() {
     session.abort().await.unwrap();
     session.shutdown().await;
     let started = std::time::Instant::now();
-    assert!(session.abort().await.is_err());
+    let error = session.abort().await.unwrap_err();
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Exited)
+    );
     assert!(started.elapsed() < Duration::from_secs(1));
 }
 
@@ -235,7 +245,14 @@ async fn model_and_thinking_level_can_be_changed() {
     assert_eq!(settings.thinking_level.as_deref(), Some("high"));
     assert_eq!(settings.context.unwrap().window, 200_000);
 
-    assert!(session.set_model("fake/missing".into()).await.is_err());
-    assert!(session.set_model("no-provider".into()).await.is_err());
+    // Pi refuses the first; the adapter refuses the second before asking.
+    for model in ["fake/missing", "no-provider"] {
+        let error = session.set_model(model.into()).await.unwrap_err();
+        assert_eq!(
+            HarnessError::kind_of(&error),
+            Some(HarnessErrorKind::Rejected),
+            "{error}"
+        );
+    }
     session.shutdown().await;
 }

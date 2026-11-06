@@ -82,9 +82,24 @@ export type HarnessEvent =
   | { type: "exited"; code: number | null; stderrTail: string }
   | { type: "raw"; payload: unknown };
 
+/** Where an open session stands; worked out by the backend. */
+export type SessionStatus = "idle" | "running" | "waiting" | "failed" | "done";
+
+/** A harness event, or a status change the service adds. */
+export type SessionUpdate = HarnessEvent | { type: "statusChanged"; status: SessionStatus };
+
 export interface SessionEvent {
   key: string;
-  event: HarnessEvent;
+  event: SessionUpdate;
+}
+
+/** What went wrong, so the UI can pick a recovery without reading the text. */
+export type ErrorKind = "notOpen" | "unavailable" | "rejected" | "exited" | "timedOut" | "other";
+
+/** How every failed command rejects (`ServiceError` in src-tauri/src/service.rs). */
+export interface ServiceError {
+  kind: ErrorKind;
+  message: string;
 }
 
 export interface SidebarSession {
