@@ -74,9 +74,20 @@ export interface Question {
   expiresAt: number | null;
 }
 
+/** A request to let one tool call go ahead; answered with a decision. */
+export interface Approval {
+  id: string;
+  toolCallId: string;
+  title: string;
+  message: string | null;
+  /** Unix ms after which the harness stops waiting and picks a default. */
+  expiresAt: number | null;
+}
+
 export type Answer =
   | { type: "value"; value: string }
   | { type: "confirmed"; confirmed: boolean }
+  | { type: "decision"; allow: boolean }
   | { type: "cancelled" };
 
 export type HarnessEvent =
@@ -97,6 +108,7 @@ export type HarnessEvent =
   | { type: "titleChanged"; title: string | null }
   | { type: "notice"; level: NoticeLevel; text: string }
   | { type: "question"; question: Question }
+  | { type: "approval"; approval: Approval }
   | { type: "exited"; code: number | null; stderrTail: string }
   | { type: "raw"; payload: unknown };
 

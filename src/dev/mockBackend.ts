@@ -5,6 +5,7 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
+  Answer,
   Message,
   ModelInfo,
   SessionSettings,
@@ -283,6 +284,9 @@ const files = [
   "docs/decisions.md",
 ];
 
+/** Resolves the approval the mock is waiting on, if any. */
+let decide: ((allow: boolean) => void) | null = null;
+
 async function stream(key: string, text: string) {
   // The real service reports status beside the harness's events.
   const send = (event: SessionUpdate) => emit("session-event", { key, event });
@@ -345,6 +349,37 @@ async function stream(key: string, text: string) {
   await send({ type: "messageCompleted", message: { ...work, id: "work", timestamp: Date.now() } });
   const running: ToolCall = { ...pending, status: "running", startedAt: Date.now() };
   await send({ type: "toolCallUpdated", call: running });
+  if (text === "approve") {
+    const decision = new Promise<boolean>((resolve) => {
+      decide = resolve;
+    });
+    await send({
+      type: "approval",
+      approval: {
+        id: `a${Date.now()}`,
+        toolCallId: pending.id,
+        title: "Run pnpm test?",
+        message: "The permission extension asks before running commands.",
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+    await send({ type: "statusChanged", status: "waiting" });
+    const allowed = await decision;
+    await send({ type: "statusChanged", status: "running" });
+    if (!allowed) {
+      const blocked: ToolCall = {
+        ...running,
+        status: "failed",
+        output: shell("Blocked by user", null),
+        endedAt: Date.now(),
+      };
+      await send({ type: "toolCallUpdated", call: blocked });
+      history.push(user, { ...work, blocks: [work.blocks[0], { type: "toolCall", ...blocked }] });
+      await send({ type: "runSettled", aborted: false });
+      await send({ type: "statusChanged", status: "done" });
+      return;
+    }
+  }
   let output = " RUN  v3.2.4";
   for (const line of [
     " ✓ src/composer.test.ts (18 tests) 41ms",
@@ -370,7 +405,7 @@ async function stream(key: string, text: string) {
     block: { type: "text", text: "" },
   });
   const reply =
-    "This is a **mocked** reply, streamed word by word. Send `ask` to see a question, or `slow` for a long-running tool.";
+    "This is a **mocked** reply, streamed word by word. Send `ask` to see a question, `approve` for a tool call that needs approval, or `slow` for a long-running tool.";
   for (const word of reply.split(" ")) {
     await wait(80);
     await send({
@@ -450,6 +485,14 @@ export function installMockBackend() {
           return { ...settings };
         case "list_files":
           return files;
+        case "answer_question": {
+          const answer = (args as { answer: Answer }).answer;
+          if (answer.type === "decision" || answer.type === "cancelled") {
+            decide?.(answer.type === "decision" && answer.allow);
+            decide = null;
+          }
+          return null;
+        }
         default:
           return null;
       }
