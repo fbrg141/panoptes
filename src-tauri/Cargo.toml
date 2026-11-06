@@ -31,6 +31,7 @@ panoptes-harness.workspace = true
 panoptes-pi.workspace = true
 ignore = "0.4"
 base64 = "0.23"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]
 async-trait.workspace = true

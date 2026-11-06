@@ -1,9 +1,9 @@
 //! The app's session registry: which harnesses are loaded, which sessions
-//! are open, and Panoptes' own index. Independent of Tauri so it can be
+//! are open, and Panoptes' own store. Independent of Tauri so it can be
 //! tested with a fake harness; `lib.rs` exposes it as commands.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,7 +14,7 @@ use panoptes_harness::{
 use serde::Serialize;
 use tokio::sync::{Mutex, oneshot};
 
-use crate::index::Index;
+use crate::store::Store;
 
 /// Errors cross into the UI as display strings.
 pub type ServiceResult<T> = Result<T, String>;
@@ -78,12 +78,14 @@ pub struct Service {
     /// session file.
     opening: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     generations: AtomicU64,
-    index: std::sync::Mutex<Index>,
+    store: std::sync::Mutex<Store>,
+    /// Working directory to project root, so each is looked up once.
+    project_roots: std::sync::Mutex<HashMap<String, String>>,
     emit: Emit,
 }
 
 impl Service {
-    pub fn new(harnesses: Vec<Arc<dyn Harness>>, index: Index, emit: Emit) -> Self {
+    pub fn new(harnesses: Vec<Arc<dyn Harness>>, store: Store, emit: Emit) -> Self {
         Self {
             harnesses: harnesses
                 .into_iter()
@@ -92,7 +94,8 @@ impl Service {
             open: Arc::default(),
             opening: Mutex::default(),
             generations: AtomicU64::new(1),
-            index: std::sync::Mutex::new(index),
+            store: std::sync::Mutex::new(store),
+            project_roots: std::sync::Mutex::default(),
             emit,
         }
     }
@@ -126,15 +129,22 @@ impl Service {
                 )),
             }
         }
+        let pinned = self.store.lock().unwrap().pinned().unwrap_or_else(|error| {
+            errors.push(format!("Could not read pins: {}", err(error)));
+            Default::default()
+        });
         let open = self.open.lock().await;
-        let mut index = self.index.lock().unwrap();
+        let mut project_roots = self.project_roots.lock().unwrap();
         let sessions = summaries
             .into_iter()
             .map(|summary| {
                 let key = session_key(&summary.harness, &summary.id);
                 SidebarSession {
-                    project_root: index.project_root(&summary.cwd),
-                    pinned: index.file.pinned.contains(&key),
+                    project_root: project_roots
+                        .entry(summary.cwd.clone())
+                        .or_insert_with(|| project_root(&summary.cwd))
+                        .clone(),
+                    pinned: pinned.contains(&key),
                     open: open.contains_key(&key),
                     key,
                     summary,
@@ -353,14 +363,19 @@ impl Service {
     }
 
     pub fn set_pinned(&self, key: String, pinned: bool) -> ServiceResult<()> {
-        let mut index = self.index.lock().unwrap();
-        if pinned {
-            index.file.pinned.insert(key);
-        } else {
-            index.file.pinned.remove(&key);
-        }
-        index.save().map_err(err)
+        let store = self.store.lock().unwrap();
+        store.set_pinned(&key, pinned).map_err(err)
     }
+}
+
+/// The project a working directory belongs to: the enclosing git repository
+/// (or worktree) root, else the directory itself.
+fn project_root(cwd: &str) -> String {
+    Path::new(cwd)
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.to_string())
 }
 
 #[cfg(test)]
@@ -477,7 +492,7 @@ mod tests {
         let sink = events.clone();
         let service = Service::new(
             vec![harness.clone()],
-            Index::load(dir.path().join("index.json")),
+            Store::open(dir.path()).unwrap(),
             Arc::new(move |event| sink.lock().unwrap().push(event)),
         );
         Fixture {
@@ -573,12 +588,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pins_are_saved_to_the_index() {
+    async fn pins_are_saved_to_the_store() {
         let f = fixture(FakeHarness::default());
         f.service.set_pinned("fake:s1".into(), true).unwrap();
         assert!(f.service.list().await.sessions[0].pinned);
-        let saved = std::fs::read_to_string(f._dir.path().join("index.json")).unwrap();
+        let saved = Store::open(f._dir.path()).unwrap().pinned().unwrap();
         assert!(saved.contains("fake:s1"));
+
+        f.service.set_pinned("fake:s1".into(), false).unwrap();
+        assert!(!f.service.list().await.sessions[0].pinned);
     }
 
     #[tokio::test]

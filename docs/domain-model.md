@@ -152,8 +152,9 @@ A flat label on sessions, for organising work inside a project ("auth",
 The Panoptes store replaces `index.json`. It now holds real data: projects,
 groups, workspaces, sessions and tags, with several many-to-many links. It
 needs a schema version, migrations, and must never silently drop data the way
-a corrupt `index.json` is read as empty today. **Recommendation: SQLite** in
-the app data folder. Today's pins migrate into it once.
+a corrupt `index.json` was read as empty. It is SQLite in the app data folder,
+built in #18 (see [decisions.md](decisions.md)); today's pins migrate into it
+once.
 
 ## Changes to the harness contract
 
