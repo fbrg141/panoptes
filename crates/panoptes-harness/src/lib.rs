@@ -61,6 +61,13 @@ pub enum Block {
         call_id: String,
         name: String,
         args: Value,
+        /// What the call does, for choosing how to show it.
+        kind: ToolKind,
+        /// The argument that says what the call acts on: a path, a command
+        /// or a search pattern.
+        subject: Option<String>,
+        /// File changes the call makes, for showing as diffs.
+        edits: Vec<FileEdit>,
     },
     #[serde(rename_all = "camelCase")]
     ToolResult {
@@ -75,6 +82,28 @@ pub enum Block {
     },
 }
 
+/// What a tool call does, so the UI can show it without knowing a harness's
+/// tool names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolKind {
+    Read,
+    Edit,
+    Search,
+    Execute,
+    Other,
+}
+
+/// One change a tool call makes to a file. `old_text` is `None` when the
+/// call writes the whole file.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEdit {
+    pub path: String,
+    pub old_text: Option<String>,
+    pub new_text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -85,8 +114,10 @@ pub struct Message {
     pub blocks: Vec<Block>,
     /// Unix milliseconds.
     pub timestamp: Option<i64>,
-    /// Set when the harness reports the message failed (provider error, abort).
+    /// Set when the harness reports the message failed (a provider error).
     pub error: Option<String>,
+    /// The user stopped the agent while this message was being written.
+    pub stopped: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

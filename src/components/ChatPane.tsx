@@ -1,16 +1,16 @@
 import { Button, Icon, LoopMark, StatusPill } from "@panoptes/design-system";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { sessionStatus, type ToolRun } from "../conversation";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { sessionStatus } from "../conversation";
 import { useStore } from "../store";
-import type { Block, Message } from "../types";
+import { buildTurns } from "../turns";
 import { Composer } from "./Composer";
-import { Markdown } from "./Markdown";
 import { QuestionCard } from "./QuestionCard";
+import { TurnView } from "./Turn";
 
-/** Messages rendered at first; earlier ones load on request. */
-const PAGE = 150;
-
-type ToolResult = Extract<Block, { type: "toolResult" }>;
+/** Turns rendered at first; earlier ones load on request. */
+const PAGE = 50;
+/** Within this many px of the end, the transcript counts as at the bottom. */
+const PINNED = 24;
 
 export function ChatPane() {
   const activeKey = useStore((s) => s.activeKey);
@@ -18,41 +18,66 @@ export function ChatPane() {
   const sending = useStore((s) => (s.activeKey ? (s.sending[s.activeKey] ?? false) : false));
   const session = useStore((s) => [...s.drafts, ...s.sessions].find((x) => x.key === s.activeKey));
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  // Follow new output while the user is at the bottom; stop once they scroll up.
+  const pinned = useRef(true);
+  // Distance from the end to restore after earlier turns are prepended.
+  const anchor = useRef<number | null>(null);
+  const [behind, setBehind] = useState(false);
   const [shown, setShown] = useState(PAGE);
-  const messages = conversation?.messages;
   const status = sessionStatus(conversation);
 
-  // Tool results render inside the call that produced them, not on their own.
-  const { visible, results } = useMemo(() => {
-    const results: Record<string, ToolResult> = {};
-    const visible: Message[] = [];
-    for (const message of messages ?? []) {
-      for (const block of message.blocks) {
-        if (block?.type === "toolResult") results[block.callId] = block;
-      }
-      if (message.role !== "tool") visible.push(message);
-    }
-    return { visible, results };
-  }, [messages]);
+  const turns = useMemo(() => (conversation ? buildTurns(conversation) : []), [conversation]);
 
-  // A different session starts from its latest page, scrolled to the end.
+  const toBottom = useCallback(() => {
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    pinned.current = true;
+    setBehind(false);
+  }, []);
+
+  // A different session starts from its latest page, at the end.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs per session
-  useEffect(() => {
+  useLayoutEffect(() => {
     setShown(PAGE);
-    requestAnimationFrame(() => {
-      const el = scroller.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    });
+    toBottom();
   }, [activeKey]);
 
-  // Follow new output, unless the user has scrolled up to read.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs per update
+  // Keep the end in view as content grows (streaming text, a row opening),
+  // and keep the reading position when earlier turns are prepended.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the transcript mounts once a session is active
   useEffect(() => {
     const el = scroller.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages]);
+    if (!el || !content.current) return;
+    const observer = new ResizeObserver(() => {
+      if (anchor.current !== null) {
+        el.scrollTop = el.scrollHeight - anchor.current;
+        anchor.current = null;
+      } else if (pinned.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    observer.observe(content.current);
+    return () => observer.disconnect();
+  }, [activeKey]);
+
+  // New output while scrolled up shows the jump button.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs per update
+  useEffect(() => {
+    if (!pinned.current) setBehind(true);
+  }, [conversation?.messages]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const editing = e.target instanceof HTMLElement && e.target.closest("input, textarea");
+      if (e.metaKey && e.key === "ArrowDown" && !editing) {
+        e.preventDefault();
+        toBottom();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toBottom]);
 
   if (!activeKey) {
     return (
@@ -64,7 +89,7 @@ export function ChatPane() {
     );
   }
 
-  const hidden = Math.max(0, visible.length - shown);
+  const hidden = Math.max(0, turns.length - shown);
 
   return (
     <main className="flex min-w-0 flex-1 flex-col">
@@ -78,33 +103,55 @@ export function ChatPane() {
         </span>
         {status !== "idle" && <StatusPill status={status} />}
       </header>
-      <div ref={scroller} className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="mx-auto flex max-w-3xl flex-col gap-4">
-          {!conversation && (
-            <div className="flex items-center gap-3 text-ink-muted">
-              <LoopMark size={20} state="loading" tone="current" />
-              Starting the agent…
-            </div>
-          )}
-          {hidden > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="self-center"
-              onClick={() => setShown((n) => n + PAGE)}
-            >
-              Show {Math.min(PAGE, hidden)} earlier messages ({hidden} hidden)
-            </Button>
-          )}
-          {visible.slice(hidden).map((m) => (
-            <MessageView
-              key={m.id}
-              message={m}
-              tools={conversation?.tools ?? {}}
-              results={results}
-            />
-          ))}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scroller}
+          className="flex-1 overflow-y-auto px-4 py-6"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < PINNED;
+            if (pinned.current) setBehind(false);
+          }}
+        >
+          <div ref={content} className="mx-auto flex max-w-3xl flex-col gap-6">
+            {!conversation && (
+              <div className="flex items-center gap-3 text-ink-muted">
+                <LoopMark size={20} state="loading" tone="current" />
+                Starting the agent…
+              </div>
+            )}
+            {hidden > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="self-center"
+                onClick={() => {
+                  const el = scroller.current;
+                  if (el) anchor.current = el.scrollHeight - el.scrollTop;
+                  setShown((n) => n + PAGE);
+                }}
+              >
+                Show {Math.min(PAGE, hidden)} earlier turns ({hidden} hidden)
+              </Button>
+            )}
+            {turns.slice(hidden).map((turn) => (
+              <TurnView key={turn.key} turn={turn} />
+            ))}
+          </div>
         </div>
+        {behind && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+            <Button
+              size="sm"
+              icon="chevron-down"
+              kbd={["⌘", "↓"]}
+              className="pointer-events-auto bg-surface-raised shadow-[var(--shadow-pop)]"
+              onClick={toBottom}
+            >
+              Jump to latest
+            </Button>
+          </div>
+        )}
       </div>
       {conversation?.notices.map((notice, i) => (
         <div
@@ -140,123 +187,4 @@ export function ChatPane() {
       </div>
     </main>
   );
-}
-
-function MessageView({
-  message,
-  tools,
-  results,
-}: {
-  message: Message;
-  tools: Record<string, ToolRun>;
-  results: Record<string, ToolResult>;
-}) {
-  if (message.role === "user") {
-    return (
-      <div className="max-w-[85%] self-end whitespace-pre-wrap rounded-md border border-line bg-surface-raised px-3 py-2">
-        {message.blocks
-          .map((b) => (b?.type === "text" ? b.text : b?.type === "image" ? "[image]" : ""))
-          .join("\n")}
-      </div>
-    );
-  }
-  if (message.role === "other") {
-    return (
-      <div className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-ink-muted">
-        {message.blocks.map((b) => (b?.type === "text" ? b.text : "")).join("\n")}
-      </div>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-2">
-      {message.blocks.map((block, i) => {
-        if (!block) return null;
-        // Blocks are positional (a message's content index), so the index
-        // is their identity.
-        switch (block.type) {
-          case "text":
-            // biome-ignore lint/suspicious/noArrayIndexKey: see above
-            return <Markdown key={i} text={block.text} />;
-          case "thinking":
-            return block.text ? (
-              // biome-ignore lint/suspicious/noArrayIndexKey: see above
-              <details key={i} className="text-ink-muted">
-                <summary className="text-label cursor-default">Thinking</summary>
-                <div className="whitespace-pre-wrap pt-1">{block.text}</div>
-              </details>
-            ) : null;
-          case "toolCall":
-            return (
-              <ToolCallView
-                // biome-ignore lint/suspicious/noArrayIndexKey: see above
-                key={i}
-                block={block}
-                run={tools[block.callId]}
-                result={results[block.callId]}
-              />
-            );
-          default:
-            return null;
-        }
-      })}
-      {message.error && (
-        <div className="flex items-center gap-2 text-error">
-          <Icon name="circle-alert" size={14} />
-          {message.error}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ToolCallView({
-  block,
-  run,
-  result,
-}: {
-  block: Extract<Block, { type: "toolCall" }>;
-  run?: ToolRun;
-  result?: ToolResult;
-}) {
-  const args = block.args ? JSON.stringify(block.args, null, 2) : (block.argsText ?? "");
-  const output = result?.output ?? run?.output ?? "";
-  const status = result ? (result.isError ? "error" : "done") : (run?.status ?? "pending");
-  return (
-    <details className="overflow-hidden rounded-md border border-line bg-surface-sunken">
-      <summary className="flex h-[var(--control)] cursor-default items-center gap-2 px-2">
-        <ToolStatus status={status} />
-        <span className="text-code-strong">{block.name}</span>
-        <span className="text-code-sm truncate text-ink-muted">{summarizeArgs(block.args)}</span>
-      </summary>
-      <pre className="text-code overflow-x-auto border-t border-line p-3">{args}</pre>
-      {output && (
-        <pre className="text-code max-h-80 overflow-auto border-t border-line p-3">{output}</pre>
-      )}
-    </details>
-  );
-}
-
-function ToolStatus({ status }: { status: "running" | "pending" | "done" | "error" }) {
-  switch (status) {
-    case "done":
-      return <Icon name="check" size={14} className="text-done" title="Done" />;
-    case "error":
-      return <Icon name="circle-alert" size={14} className="text-error" title="Failed" />;
-    default:
-      return (
-        <Icon
-          name="loader-circle"
-          size={14}
-          className="animate-spin text-running"
-          title="Running"
-        />
-      );
-  }
-}
-
-/** The first string argument, as a one-line hint of what a tool call does. */
-function summarizeArgs(args: unknown): string {
-  if (!args || typeof args !== "object") return "";
-  const first = Object.values(args).find((v): v is string => typeof v === "string");
-  return first ? first.split("\n")[0].slice(0, 120) : "";
 }

@@ -1,8 +1,8 @@
 //! Translating Pi's messages and RPC events into the neutral harness types.
 
 use panoptes_harness::{
-    Block, ContextUsage, DeltaKind, HarnessEvent, Message, ModelInfo, NoticeLevel, Question,
-    QuestionKind, Role,
+    Block, ContextUsage, DeltaKind, FileEdit, HarnessEvent, Message, ModelInfo, NoticeLevel,
+    Question, QuestionKind, Role, ToolKind,
 };
 use serde_json::Value;
 
@@ -68,11 +68,11 @@ fn content_blocks(content: &Value) -> Vec<Block> {
             "thinking" => Some(Block::Thinking {
                 text: block["thinking"].as_str().unwrap_or_default().to_string(),
             }),
-            "toolCall" => Some(Block::ToolCall {
-                call_id: block["id"].as_str()?.to_string(),
-                name: block["name"].as_str()?.to_string(),
-                args: block["arguments"].clone(),
-            }),
+            "toolCall" => Some(tool_call(
+                block["id"].as_str()?,
+                block["name"].as_str()?,
+                block["arguments"].clone(),
+            )),
             "image" => Some(Block::Image {
                 mime_type: block["mimeType"].as_str().unwrap_or_default().to_string(),
             }),
@@ -81,10 +81,80 @@ fn content_blocks(content: &Value) -> Vec<Block> {
         .collect()
 }
 
+/// A tool call with what Pi's built-in tools do spelled out neutrally.
+/// Extension tools are `Other`, with their first string argument as the
+/// subject.
+fn tool_call(id: &str, name: &str, args: Value) -> Block {
+    let arg = |key: &str| args[key].as_str().map(str::to_string);
+    let (kind, subject, edits) = match name {
+        "read" | "ls" => (ToolKind::Read, arg("path"), Vec::new()),
+        "grep" | "find" => (ToolKind::Search, arg("pattern"), Vec::new()),
+        "bash" => (ToolKind::Execute, arg("command"), Vec::new()),
+        "edit" => (ToolKind::Edit, arg("path"), edit_changes(&args)),
+        "write" => {
+            let edits = match (arg("path"), arg("content")) {
+                (Some(path), Some(new_text)) => vec![FileEdit {
+                    path,
+                    old_text: None,
+                    new_text,
+                }],
+                _ => Vec::new(),
+            };
+            (ToolKind::Edit, arg("path"), edits)
+        }
+        _ => {
+            let first = args
+                .as_object()
+                .and_then(|o| o.values().find_map(Value::as_str))
+                .map(str::to_string);
+            (ToolKind::Other, first, Vec::new())
+        }
+    };
+    Block::ToolCall {
+        call_id: id.to_string(),
+        name: name.to_string(),
+        args,
+        kind,
+        subject: subject.map(|s| s.lines().next().unwrap_or_default().to_string()),
+        edits,
+    }
+}
+
+/// The replacements of an `edit` call. Pi takes an `edits` array, but models
+/// also send it as a JSON string, as a single object, or as the older
+/// top-level `oldText`/`newText` pair.
+fn edit_changes(args: &Value) -> Vec<FileEdit> {
+    let Some(path) = args["path"].as_str() else {
+        return Vec::new();
+    };
+    let edits = match &args["edits"] {
+        Value::String(text) => serde_json::from_str(text).unwrap_or(Value::Null),
+        other => other.clone(),
+    };
+    let mut list = match edits {
+        Value::Array(list) => list,
+        Value::Object(_) => vec![edits],
+        _ => Vec::new(),
+    };
+    if args["oldText"].is_string() {
+        list.push(args.clone());
+    }
+    list.iter()
+        .filter_map(|edit| {
+            Some(FileEdit {
+                path: path.to_string(),
+                old_text: Some(edit["oldText"].as_str()?.to_string()),
+                new_text: edit["newText"].as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Converts one Pi `AgentMessage`. System messages (prompt and tool
 /// loadout) are not part of the visible conversation and return `None`.
 pub fn message(value: &Value, id: String) -> Option<Message> {
     let timestamp = value["timestamp"].as_i64();
+    let stopped = value["stopReason"].as_str() == Some("aborted");
     let (role, blocks, error) = match value["role"].as_str()? {
         "system" => return None,
         "user" => (Role::User, content_blocks(&value["content"]), None),
@@ -96,7 +166,6 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
                         .unwrap_or("The model request failed")
                         .to_string(),
                 ),
-                Some("aborted") => Some("Stopped".to_string()),
                 _ => None,
             };
             (Role::Assistant, content_blocks(&value["content"]), error)
@@ -137,6 +206,7 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
         blocks,
         timestamp,
         error,
+        stopped,
     })
 }
 
@@ -262,11 +332,11 @@ impl EventMapper {
             "thinking_start" => vec![started(Block::Thinking {
                 text: String::new(),
             })],
-            "toolcall_start" => vec![started(Block::ToolCall {
-                call_id: update["id"].as_str().unwrap_or_default().to_string(),
-                name: update["toolName"].as_str().unwrap_or_default().to_string(),
-                args: Value::Null,
-            })],
+            "toolcall_start" => vec![started(tool_call(
+                update["id"].as_str().unwrap_or_default(),
+                update["toolName"].as_str().unwrap_or_default(),
+                Value::Null,
+            ))],
             "text_delta" => vec![delta(DeltaKind::Text)],
             "thinking_delta" => vec![delta(DeltaKind::Thinking)],
             "toolcall_delta" => vec![delta(DeltaKind::ToolArgs)],
@@ -362,6 +432,7 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>) -> Vec<Message> {
                     }],
                     timestamp: None,
                     error: None,
+                    stopped: false,
                 }),
                 _ => None,
             }
@@ -435,6 +506,81 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert_eq!(ids, ["a", "b"]);
+    }
+
+    #[test]
+    fn built_in_tools_get_a_neutral_kind_and_subject() {
+        let block = |name: &str, args: Value| match tool_call("t", name, args) {
+            Block::ToolCall {
+                kind,
+                subject,
+                edits,
+                ..
+            } => (kind, subject, edits),
+            _ => unreachable!(),
+        };
+        let (kind, subject, _) = block("bash", json!({"command": "pnpm test\necho done"}));
+        assert_eq!(
+            (kind, subject.as_deref()),
+            (ToolKind::Execute, Some("pnpm test"))
+        );
+        let (kind, subject, _) = block("grep", json!({"path": "src", "pattern": "TODO"}));
+        assert_eq!((kind, subject.as_deref()), (ToolKind::Search, Some("TODO")));
+        let (kind, subject, _) = block("read", json!({"path": "a.ts"}));
+        assert_eq!((kind, subject.as_deref()), (ToolKind::Read, Some("a.ts")));
+        let (kind, subject, _) = block("my_ext", json!({"limit": 3, "url": "https://x"}));
+        assert_eq!(
+            (kind, subject.as_deref()),
+            (ToolKind::Other, Some("https://x"))
+        );
+        let (kind, subject, _) = block("bash", Value::Null);
+        assert_eq!((kind, subject), (ToolKind::Execute, None));
+    }
+
+    #[test]
+    fn edits_and_writes_carry_their_file_changes() {
+        let edits = |args: Value| match tool_call("t", "edit", args) {
+            Block::ToolCall { edits, .. } => edits,
+            _ => unreachable!(),
+        };
+        let change = |old: &str, new: &str| FileEdit {
+            path: "a.ts".into(),
+            old_text: Some(old.into()),
+            new_text: new.into(),
+        };
+        assert_eq!(
+            edits(
+                json!({"path": "a.ts", "edits": [{"oldText": "a", "newText": "b"}, {"oldText": "c", "newText": "d"}]})
+            ),
+            vec![change("a", "b"), change("c", "d")]
+        );
+        assert_eq!(
+            edits(json!({"path": "a.ts", "edits": "[{\"oldText\":\"a\",\"newText\":\"b\"}]"})),
+            vec![change("a", "b")]
+        );
+        assert_eq!(
+            edits(json!({"path": "a.ts", "edits": {"oldText": "a", "newText": "b"}})),
+            vec![change("a", "b")]
+        );
+        assert_eq!(
+            edits(json!({"path": "a.ts", "oldText": "a", "newText": "b"})),
+            vec![change("a", "b")]
+        );
+        let write = tool_call("t", "write", json!({"path": "n.ts", "content": "x"}));
+        assert!(
+            matches!(write, Block::ToolCall { kind: ToolKind::Edit, edits, .. }
+            if edits == vec![FileEdit { path: "n.ts".into(), old_text: None, new_text: "x".into() }])
+        );
+    }
+
+    #[test]
+    fn aborted_messages_are_stopped_not_failed() {
+        let stopped = message(
+            &json!({"role":"assistant","content":[],"stopReason":"aborted"}),
+            "m".into(),
+        )
+        .unwrap();
+        assert!(stopped.stopped && stopped.error.is_none());
     }
 
     #[test]

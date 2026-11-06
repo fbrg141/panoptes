@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyEvent, emptyConversation, enqueue, sessionStatus } from "./conversation";
 import { groupSessions, relativeTime } from "./grouping";
 import type { HarnessEvent, SidebarSession } from "./types";
@@ -33,6 +33,7 @@ describe("applyEvent", () => {
           blocks: [{ type: "text", text: "Hello!" }],
           timestamp: 1,
           error: null,
+          stopped: false,
         },
       },
       { type: "runSettled", aborted: false },
@@ -43,12 +44,42 @@ describe("applyEvent", () => {
     expect(settled.busy).toBe(false);
   });
 
-  it("tracks tool runs by call id", () => {
-    const c = fold([
-      { type: "toolStarted", callId: "c1", name: "bash", args: { command: "ls" } },
-      { type: "toolFinished", callId: "c1", output: "a\nb", isError: false },
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("tracks tool runs by call id, with how long they took", () => {
+    vi.useFakeTimers({ now: 1000 });
+    let c = fold([{ type: "toolStarted", callId: "c1", name: "bash", args: { command: "ls" } }]);
+    vi.setSystemTime(1500);
+    c = applyEvent(c, { type: "toolUpdated", callId: "c1", output: "a" });
+    vi.setSystemTime(4000);
+    c = applyEvent(c, { type: "toolFinished", callId: "c1", output: "a\nb", isError: false });
+    expect(c.tools.c1).toEqual({ status: "done", output: "a\nb", startedAt: 1000, endedAt: 4000 });
+  });
+
+  it("times a thinking block until the next block starts", () => {
+    vi.useFakeTimers({ now: 0 });
+    let c = fold([
+      { type: "messageStarted", messageId: "live-1", role: "assistant" },
+      {
+        type: "blockStarted",
+        messageId: "live-1",
+        index: 0,
+        block: { type: "thinking", text: "" },
+      },
+      { type: "blockDelta", messageId: "live-1", index: 0, kind: "thinking", delta: "Hmm." },
     ]);
-    expect(c.tools.c1).toEqual({ status: "done", output: "a\nb" });
+    expect(c.thinking).toEqual({ messageId: "live-1", index: 0, at: 0 });
+    vi.setSystemTime(8000);
+    c = applyEvent(c, {
+      type: "blockStarted",
+      messageId: "live-1",
+      index: 1,
+      block: { type: "text", text: "" },
+    });
+    expect(c.thinking).toBeNull();
+    expect(c.thoughtFor).toEqual({ "Hmm.": 8000 });
   });
 });
 

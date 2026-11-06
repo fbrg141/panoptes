@@ -5,9 +5,28 @@ export type Role = "user" | "assistant" | "tool" | "other";
 export type Block =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
-  | { type: "toolCall"; callId: string; name: string; args: unknown; argsText?: string }
+  | {
+      type: "toolCall";
+      callId: string;
+      name: string;
+      args: unknown;
+      argsText?: string;
+      kind: ToolKind;
+      subject: string | null;
+      edits: FileEdit[];
+    }
   | { type: "toolResult"; callId: string; name: string; output: string; isError: boolean }
   | { type: "image"; mimeType: string };
+
+/** What a tool call does, so it can be shown without knowing tool names. */
+export type ToolKind = "read" | "edit" | "search" | "execute" | "other";
+
+/** One change a tool call makes; `oldText` is null when it writes the whole file. */
+export interface FileEdit {
+  path: string;
+  oldText: string | null;
+  newText: string;
+}
 
 export interface Message {
   id: string;
@@ -15,6 +34,8 @@ export interface Message {
   blocks: Block[];
   timestamp: number | null;
   error: string | null;
+  /** The user stopped the agent while this message was being written. */
+  stopped: boolean;
 }
 
 export type NoticeLevel = "info" | "warning" | "error";
