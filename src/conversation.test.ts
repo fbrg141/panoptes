@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyEvent, emptyConversation, enqueue } from "./conversation";
+import { applyEvent, emptyConversation, enqueue, removeQuestion } from "./conversation";
 import { groupSessions, relativeTime } from "./grouping";
-import type { HarnessEvent, SidebarSession, ToolCall } from "./types";
+import type { Approval, HarnessEvent, SidebarSession, ToolCall } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
 
@@ -46,6 +46,20 @@ describe("applyEvent", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("holds approvals until they are decided or the process ends", () => {
+    const approval: Approval = {
+      id: "a1",
+      toolCallId: "c1",
+      title: "Allow?",
+      message: null,
+      expiresAt: null,
+    };
+    const c = fold([{ type: "approval", approval }]);
+    expect(c.approvals).toEqual([approval]);
+    expect(removeQuestion(c, "a1").approvals).toEqual([]);
+    expect(applyEvent(c, { type: "exited", code: 1, stderrTail: "" }).approvals).toEqual([]);
   });
 
   it("updates a tool call in place, keeping its streamed arguments", () => {

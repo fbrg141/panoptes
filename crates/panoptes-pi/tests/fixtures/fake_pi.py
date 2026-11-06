@@ -5,6 +5,8 @@ for the adapter's tests. Prompts select behaviour:
   "ask"    asks a confirm question and replies with the answer
   "crash"  exits with code 7 straight away
   "tool"   runs a `bash` call that fails with exit code 3, then replies
+  "gate"   starts a `bash` call, asks Yes/No before running it (as a
+           permission extension would) and replies with the answer
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -84,6 +86,12 @@ def run(text, images):
     if text == "tool":
         tool_run()
         reply = "ran it"
+    if text == "gate":
+        send({"type": "tool_execution_start", "toolCallId": "call-g", "toolName": "bash", "args": {"command": "rm -rf build"}})
+        send({"type": "extension_ui_request", "id": "g1", "method": "select",
+              "title": "Dangerous command:\n\n  rm -rf build\n\nAllow?", "options": ["Yes", "No"]})
+        answer = json.loads(sys.stdin.readline())
+        reply = f"gate={answer.get('value')}"
     if text == "ask":
         send({"type": "extension_ui_request", "id": "q1", "method": "confirm", "title": "Proceed?"})
         answer = json.loads(sys.stdin.readline())

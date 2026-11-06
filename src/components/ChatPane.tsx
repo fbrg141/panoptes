@@ -1,7 +1,8 @@
 import { Button, Icon, LoopMark, StatusPill } from "@panoptes/design-system";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
-import { buildTurns } from "../turns";
+import { buildTurns, looseApprovals } from "../turns";
+import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
 import { QuestionCard } from "./QuestionCard";
 import { TurnView } from "./Turn";
@@ -182,6 +183,12 @@ export function ChatPane() {
         {conversation?.questions.map((q) => (
           <QuestionCard key={q.id} question={q} />
         ))}
+        {conversation &&
+          looseApprovals(conversation).map((a) => (
+            <div key={a.id} className="mx-auto mb-3 w-full max-w-3xl">
+              <ApprovalCard approval={a} />
+            </div>
+          ))}
         <Composer busy={conversation?.busy ?? false} sending={sending} />
       </div>
     </main>

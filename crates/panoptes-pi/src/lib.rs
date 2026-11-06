@@ -68,7 +68,9 @@ impl Harness for PiHarness {
         // the root, so its history stays readable.
         let cwd = if cwd.is_dir() { cwd } else { Path::new("/") };
         let tool_times = map::ToolTimes::default();
-        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, events, tool_times.clone())?;
+        let approvals = map::ApprovalReplies::default();
+        let mapper = map::EventMapper::new(tool_times.clone(), approvals.clone());
+        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, events, mapper)?;
 
         let state = match process.call(json!({"type": "get_state"})).await {
             Ok(state) => state,
@@ -94,6 +96,7 @@ impl Harness for PiHarness {
             session_ref,
             entries: tokio::sync::Mutex::default(),
             tool_times,
+            approvals,
         }))
     }
 }
@@ -116,6 +119,7 @@ struct PiSession {
     session_ref: SessionRef,
     entries: tokio::sync::Mutex<EntryCache>,
     tool_times: map::ToolTimes,
+    approvals: map::ApprovalReplies,
 }
 
 #[async_trait]
@@ -189,10 +193,16 @@ impl AgentSession for PiSession {
     }
 
     async fn answer(&self, question_id: String, answer: Answer) -> anyhow::Result<()> {
+        // An approval is a confirm or a select underneath; answer in kind.
+        let approval = self.approvals.lock().unwrap().remove(&question_id);
         let mut response = json!({"type": "extension_ui_response", "id": question_id});
         match answer {
             Answer::Value { value } => response["value"] = json!(value),
             Answer::Confirmed { confirmed } => response["confirmed"] = json!(confirmed),
+            Answer::Decision { allow } => match approval.flatten() {
+                Some((yes, no)) => response["value"] = json!(if allow { yes } else { no }),
+                None => response["confirmed"] = json!(allow),
+            },
             Answer::Cancelled => response["cancelled"] = json!(true),
         }
         self.process.notify(response)

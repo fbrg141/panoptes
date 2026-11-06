@@ -174,6 +174,28 @@ async fn a_tool_call_is_one_value_live_and_in_history() {
 }
 
 #[tokio::test]
+async fn approvals_are_tied_to_their_call_and_answered_in_kind() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("gate".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::Approval { .. })).await;
+    let Some(HarnessEvent::Approval { approval }) = events.last() else {
+        unreachable!()
+    };
+    assert_eq!(approval.tool_call_id, "call-g");
+    session
+        .answer(approval.id.clone(), Answer::Decision { allow: false })
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    // The select is answered with its own reject option.
+    assert_eq!(text_of(&events), "gate=No");
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn questions_are_answered_through_the_session() {
     let (session, mut rx) = start().await;
     session

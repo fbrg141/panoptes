@@ -171,10 +171,13 @@ Smaller fixes from the backend review, needed by the model above:
    subject, input, status and output (text, file edits, or shell output with
    an exit code). The adapter folds results into their calls, live and in
    history, and `ToolCallUpdated` replaces the call in place.
-4. **Approvals as their own type.** An approval is tied to a tool call and
-   offers allow or reject. Pi has no permission system of its own; its
-   extensions ask through confirm dialogs, so the Pi adapter maps those it can
-   recognise and leaves the rest as questions.
+4. **Approvals as their own type.** Done in #25: an `Approval` names its tool
+   call and is answered with allow or reject, and puts the session in
+   Waiting. Pi has no permission system of its own; its extensions ask
+   through dialogs from their `tool_call` hook, which runs after Pi reports
+   the call started and before it runs. The Pi adapter treats a confirm, or a
+   select between one allow and one reject option, that arrives in that gap
+   as the call's approval, and leaves every other dialog a question.
 5. **Stable message ids and images.** Streamed messages use temporary ids that
    are swapped after the run, and queued prompts are matched to messages by
    their text. Image blocks keep only their type, so history can't show them.

@@ -200,11 +200,34 @@ pub enum QuestionKind {
     Editor { prefill: Option<String> },
 }
 
+/// A request to let one tool call go ahead, answered with
+/// [`Answer::Decision`] (or [`Answer::Cancelled`], which rejects it).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Approval {
+    pub id: String,
+    /// The [`ToolCall::id`] the decision is about.
+    pub tool_call_id: String,
+    pub title: String,
+    pub message: Option<String>,
+    /// When the harness gives up waiting and picks a default, Unix
+    /// milliseconds.
+    pub expires_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Answer {
-    Value { value: String },
-    Confirmed { confirmed: bool },
+    Value {
+        value: String,
+    },
+    Confirmed {
+        confirmed: bool,
+    },
+    /// Allow or reject an [`Approval`].
+    Decision {
+        allow: bool,
+    },
     Cancelled,
 }
 
@@ -258,6 +281,11 @@ pub enum HarnessEvent {
     Question {
         question: Question,
     },
+    /// A tool call needs the user's go-ahead. Answer with
+    /// [`AgentSession::answer`].
+    Approval {
+        approval: Approval,
+    },
     /// The harness process ended. The session can be reopened.
     #[serde(rename_all = "camelCase")]
     Exited {
@@ -281,7 +309,7 @@ pub enum SessionStatus {
     Idle,
     /// The agent is working.
     Running,
-    /// The agent needs an answer from the user.
+    /// The agent needs an answer or an approval from the user.
     Waiting,
     /// The last run errored, or the harness process ended unexpectedly.
     Failed,
@@ -466,7 +494,7 @@ pub trait AgentSession: Send + Sync {
 
     async fn abort(&self) -> anyhow::Result<()>;
 
-    /// Answers a [`HarnessEvent::Question`].
+    /// Answers a [`HarnessEvent::Question`] or [`HarnessEvent::Approval`].
     async fn answer(&self, question_id: String, answer: Answer) -> anyhow::Result<()>;
 
     /// The session's model, thinking level and context use. A harness

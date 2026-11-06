@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use panoptes_harness::{
-    Block, ContextUsage, DeltaKind, FileEdit, HarnessEvent, Message, ModelInfo, NoticeLevel,
-    Question, QuestionKind, Role, ToolCall, ToolKind, ToolOutput, ToolStatus,
+    Approval, Block, ContextUsage, DeltaKind, FileEdit, HarnessEvent, Message, ModelInfo,
+    NoticeLevel, Question, QuestionKind, Role, ToolCall, ToolKind, ToolOutput, ToolStatus,
 };
 use serde_json::Value;
 
@@ -13,6 +13,17 @@ use serde_json::Value;
 /// history has no such times, so history reloads borrow them from here and
 /// give the same values the live events did.
 pub type ToolTimes = Arc<Mutex<HashMap<String, (i64, Option<i64>)>>>;
+
+/// How to answer each open approval: `None` for a confirm dialog, or the
+/// select options that mean allow and reject.
+pub type ApprovalReplies = Arc<Mutex<HashMap<String, Option<(String, String)>>>>;
+
+/// Select options read as "allow" and "reject" when a dialog offers exactly
+/// one of each, compared without case.
+const ALLOW: &[&str] = &[
+    "yes", "allow", "approve", "ok", "run", "proceed", "continue",
+];
+const REJECT: &[&str] = &["no", "block", "deny", "reject", "cancel", "skip", "abort"];
 
 /// Tool output beyond this many bytes is cut for display.
 const MAX_OUTPUT: usize = 64 * 1024;
@@ -275,14 +286,52 @@ pub struct EventMapper {
     current: Option<String>,
     calls: HashMap<String, ToolCall>,
     times: ToolTimes,
+    approvals: ApprovalReplies,
+    /// The call Pi has started but not yet run: extension `tool_call`
+    /// hooks, which is where permission dialogs come from, run in between.
+    preparing: Option<String>,
 }
 
 impl EventMapper {
-    pub fn new(times: ToolTimes) -> Self {
+    pub fn new(times: ToolTimes, approvals: ApprovalReplies) -> Self {
         Self {
             times,
+            approvals,
             ..Self::default()
         }
+    }
+
+    /// Translates an `extension_ui_request` (see [`extension_ui`]). A
+    /// confirm, or a select between one allow and one reject option, that
+    /// arrives while a tool call is being prepared is that call's approval.
+    pub fn ui_request(&mut self, request: &Value, now: i64) -> Vec<HarnessEvent> {
+        let mut events = extension_ui(request, now);
+        let Some(tool_call_id) = self.preparing.clone() else {
+            return events;
+        };
+        if let [HarnessEvent::Question { question }] = events.as_slice() {
+            let reply = match &question.kind {
+                QuestionKind::Confirm => Some(None),
+                QuestionKind::Select { options } => allow_reject(options).map(Some),
+                _ => None,
+            };
+            if let Some(reply) = reply {
+                self.approvals
+                    .lock()
+                    .unwrap()
+                    .insert(question.id.clone(), reply);
+                events = vec![HarnessEvent::Approval {
+                    approval: Approval {
+                        id: question.id.clone(),
+                        tool_call_id,
+                        title: question.title.clone(),
+                        message: question.message.clone(),
+                        expires_at: question.expires_at,
+                    },
+                }];
+            }
+        }
+        events
     }
 
     /// `now` is the time the event arrived, Unix milliseconds.
@@ -386,6 +435,7 @@ impl EventMapper {
             )
         });
         call.started_at.get_or_insert(now);
+        self.preparing = (kind == "tool_execution_start").then(|| call.id.clone());
         match kind {
             "tool_execution_start" => call.status = ToolStatus::Running,
             "tool_execution_update" => set_output(&mut call, &event["partialResult"], None),
@@ -444,6 +494,17 @@ impl EventMapper {
             // replaces the whole message right after, so they are skipped.
             _ => Vec::new(),
         }
+    }
+}
+
+/// The allow and reject options of a select, if it offers exactly one of
+/// each.
+fn allow_reject(options: &[String]) -> Option<(String, String)> {
+    let is = |list: &[&str], option: &String| list.contains(&option.trim().to_lowercase().as_str());
+    match options {
+        [a, b] if is(ALLOW, a) && is(REJECT, b) => Some((a.clone(), b.clone())),
+        [a, b] if is(REJECT, a) && is(ALLOW, b) => Some((b.clone(), a.clone())),
+        _ => None,
     }
 }
 
@@ -815,7 +876,7 @@ mod tests {
     #[test]
     fn history_gives_the_same_call_as_the_live_events() {
         let times = ToolTimes::default();
-        let mut mapper = EventMapper::new(times.clone());
+        let mut mapper = EventMapper::new(times.clone(), ApprovalReplies::default());
         let events = live_call(&mut mapper);
         let Some(HarnessEvent::ToolCallUpdated { call: live }) = events
             .iter()
@@ -893,6 +954,73 @@ mod tests {
                 options: vec!["Allow".into(), "Block".into()]
             }
         );
+    }
+
+    /// A mapper with call `c1` started and its approvals map.
+    fn preparing() -> (EventMapper, ApprovalReplies) {
+        let approvals = ApprovalReplies::default();
+        let mut mapper = EventMapper::new(ToolTimes::default(), approvals.clone());
+        mapper.map(
+            json!({"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"rm -rf x"}}),
+            0,
+        );
+        (mapper, approvals)
+    }
+
+    #[test]
+    fn permission_dialogs_while_a_call_prepares_are_approvals() {
+        let (mut mapper, approvals) = preparing();
+        let events = mapper.ui_request(
+            &json!({"id":"q1","method":"select","title":"Dangerous command:\n\n  rm -rf x\n\nAllow?","options":["No","Yes"],"timeout":1000}),
+            5,
+        );
+        let [HarnessEvent::Approval { approval }] = events.as_slice() else {
+            panic!("expected an approval, got {events:?}");
+        };
+        assert_eq!(
+            (
+                approval.id.as_str(),
+                approval.tool_call_id.as_str(),
+                approval.expires_at
+            ),
+            ("q1", "c1", Some(1_005))
+        );
+        assert_eq!(
+            approvals.lock().unwrap()["q1"],
+            Some(("Yes".to_string(), "No".to_string()))
+        );
+
+        let events = mapper.ui_request(&json!({"id":"q2","method":"confirm","title":"Run it?"}), 0);
+        assert!(
+            matches!(&events[..], [HarnessEvent::Approval { approval }] if approval.id == "q2")
+        );
+        assert_eq!(approvals.lock().unwrap()["q2"], None);
+    }
+
+    #[test]
+    fn other_dialogs_stay_questions() {
+        let (mut mapper, _) = preparing();
+        // Not an allow/reject choice.
+        let events = mapper.ui_request(
+            &json!({"id":"q1","method":"select","title":"Pick","options":["Fast","Slow"]}),
+            0,
+        );
+        assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
+        let events = mapper.ui_request(&json!({"id":"q2","method":"input","title":"Name?"}), 0);
+        assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
+
+        // Once the call produces output it is running, not being prepared.
+        mapper.map(
+            json!({"type":"tool_execution_update","toolCallId":"c1","partialResult":{"content":[]}}),
+            1,
+        );
+        let events = mapper.ui_request(&json!({"id":"q3","method":"confirm","title":"Sure?"}), 0);
+        assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
+
+        // No call at all.
+        let events = EventMapper::default()
+            .ui_request(&json!({"id":"q4","method":"confirm","title":"Sure?"}), 0);
+        assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
     }
 
     #[test]

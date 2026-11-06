@@ -13,6 +13,7 @@ import {
   type Turn,
 } from "../turns";
 import type { Message, ToolKind } from "../types";
+import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 
 /** Lines of output shown before "Show all". */
@@ -161,7 +162,7 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
   const running = status === "running" || (live && status === "pending");
   const diffs = editsOf(call).map(editDiff);
   const stat = diffs.length > 0 ? diffStat(diffs) : null;
-  return (
+  const row = (
     <Disclosure
       icon={TOOL_ICON[call.kind]}
       title={call.name}
@@ -179,7 +180,9 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
             </span>
           )}
           {step.durationMs !== null && <Time>{formatDuration(step.durationMs)}</Time>}
-          {running ? (
+          {step.approval ? (
+            <StatusPill status="waiting" />
+          ) : running ? (
             <Status status="running" />
           ) : (
             status === "failed" && <Status status="failed" />
@@ -191,6 +194,15 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
         <ToolBody step={step} running={running} diffs={diffs} />
       </div>
     </Disclosure>
+  );
+  if (!step.approval) return row;
+  return (
+    <div className="flex flex-col gap-1">
+      {row}
+      <div className="pl-6">
+        <ApprovalCard approval={step.approval} pill={false} />
+      </div>
+    </div>
   );
 }
 

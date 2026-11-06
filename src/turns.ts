@@ -1,5 +1,5 @@
 import type { Conversation } from "./conversation";
-import type { Block, FileEdit, Message, ToolKind } from "./types";
+import type { Approval, Block, FileEdit, Message, ToolKind } from "./types";
 
 export type ToolCallBlock = Extract<Block, { type: "toolCall" }>;
 
@@ -8,6 +8,8 @@ export interface ToolStep {
   key: string;
   call: ToolCallBlock;
   durationMs: number | null;
+  /** Set while the call waits for the user to allow or reject it. */
+  approval: Approval | null;
 }
 
 /** Consecutive read and search calls, shown as one row. */
@@ -42,13 +44,14 @@ export interface Turn {
   endedAt: number | null;
 }
 
-type Source = Pick<Conversation, "messages" | "thoughtFor" | "thinking" | "busy">;
+type Source = Pick<Conversation, "messages" | "thoughtFor" | "thinking" | "busy"> &
+  Partial<Pick<Conversation, "approvals">>;
 
 const QUIET: ToolKind[] = ["read", "search"];
 
 /** Groups a conversation's messages into turns. */
 export function buildTurns(conversation: Source): Turn[] {
-  const { messages, thoughtFor, thinking, busy } = conversation;
+  const { messages, thoughtFor, thinking, busy, approvals = [] } = conversation;
 
   const turns: Turn[] = [];
   let current: { prompt: Message | null; messages: Message[] } | null = null;
@@ -90,6 +93,7 @@ export function buildTurns(conversation: Source): Turn[] {
                 block.startedAt !== null && block.endedAt !== null
                   ? block.endedAt - block.startedAt
                   : null,
+              approval: approvals.find((a) => a.toolCallId === block.id) ?? null,
             });
             break;
           case "image":
@@ -148,7 +152,12 @@ function groupQuiet(steps: Step[]): Step[] {
     run = [];
   };
   for (const step of steps) {
-    if (step.type === "tool" && QUIET.includes(step.call.kind) && step.call.status !== "failed") {
+    if (
+      step.type === "tool" &&
+      QUIET.includes(step.call.kind) &&
+      step.call.status !== "failed" &&
+      !step.approval
+    ) {
       run.push(step);
     } else {
       flush();
@@ -168,6 +177,16 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 /** The tool calls among a turn's steps, groups opened up. */
 export function toolSteps(steps: Step[]): ToolStep[] {
   return steps.flatMap((s) => (s.type === "tool" ? [s] : s.type === "group" ? s.steps : []));
+}
+
+/** Approvals whose tool call no message holds, to show on their own. */
+export function looseApprovals(conversation: Source): Approval[] {
+  const ids = new Set(
+    conversation.messages.flatMap((m) =>
+      m.blocks.flatMap((b) => (b?.type === "toolCall" ? [b.id] : [])),
+    ),
+  );
+  return (conversation.approvals ?? []).filter((a) => !ids.has(a.toolCallId));
 }
 
 /** The text a tool call produced, whatever its kind. */
