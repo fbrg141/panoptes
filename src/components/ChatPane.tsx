@@ -1,6 +1,5 @@
 import { Button, Icon, LoopMark, StatusPill } from "@panoptes/design-system";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { sessionStatus } from "../conversation";
 import { useStore } from "../store";
 import { buildTurns } from "../turns";
 import { Composer } from "./Composer";
@@ -15,6 +14,7 @@ const PINNED = 24;
 export function ChatPane() {
   const activeKey = useStore((s) => s.activeKey);
   const conversation = useStore((s) => (s.activeKey ? s.conversations[s.activeKey] : undefined));
+  const status = useStore((s) => (s.activeKey ? s.statuses[s.activeKey] : undefined)) ?? "idle";
   const sending = useStore((s) => (s.activeKey ? (s.sending[s.activeKey] ?? false) : false));
   const session = useStore((s) => [...s.drafts, ...s.sessions].find((x) => x.key === s.activeKey));
   const scroller = useRef<HTMLDivElement>(null);
@@ -25,7 +25,6 @@ export function ChatPane() {
   const anchor = useRef<number | null>(null);
   const [behind, setBehind] = useState(false);
   const [shown, setShown] = useState(PAGE);
-  const status = sessionStatus(conversation);
 
   const turns = useMemo(() => (conversation ? buildTurns(conversation) : []), [conversation]);
 

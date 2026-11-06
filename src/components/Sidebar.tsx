@@ -1,7 +1,6 @@
 import { AgentRow, Button, Input, LoopMark } from "@panoptes/design-system";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
-import { sessionStatus } from "../conversation";
 import { groupSessions, relativeTime, type SessionGroup } from "../grouping";
 import { useStore } from "../store";
 import type { SidebarSession } from "../types";
@@ -119,7 +118,7 @@ function Group({ group, onNew }: { group: SessionGroup; onNew?: () => void }) {
 
 function SessionItem({ session }: { session: SidebarSession }) {
   const active = useStore((s) => s.activeKey === session.key);
-  const status = useStore((s) => sessionStatus(s.conversations[session.key]));
+  const status = useStore((s) => s.statuses[session.key] ?? "idle");
   const open = useStore((s) => s.open);
   const close = useStore((s) => s.close);
   const togglePin = useStore((s) => s.togglePin);

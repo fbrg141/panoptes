@@ -4,7 +4,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { HarnessEvent, Message, ModelInfo, SessionSettings, SidebarSession } from "../types";
+import type { Message, ModelInfo, SessionSettings, SessionUpdate, SidebarSession } from "../types";
 
 const now = Date.now();
 const hour = 3_600_000;
@@ -256,9 +256,11 @@ const files = [
 ];
 
 async function stream(key: string, text: string) {
-  const send = (event: HarnessEvent) => emit("session-event", { key, event });
+  // The real service reports status beside the harness's events.
+  const send = (event: SessionUpdate) => emit("session-event", { key, event });
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   await send({ type: "runStarted" });
+  await send({ type: "statusChanged", status: "running" });
   const user: Message = {
     id: `u${Date.now()}`,
     role: "user",
@@ -342,6 +344,7 @@ async function stream(key: string, text: string) {
     msg(`r${Date.now()}`, "assistant", [{ type: "text", text: reply }], 0),
   );
   await send({ type: "runSettled", aborted: false });
+  await send({ type: "statusChanged", status: "done" });
 }
 
 export function installMockBackend() {
@@ -359,6 +362,12 @@ export function installMockBackend() {
         case "list_sessions":
           return { sessions: sessions.map((s) => ({ ...s, open: open.has(s.key) })), errors: [] };
         case "open_session":
+          if (!open.has(a.key)) {
+            void emit("session-event", {
+              key: a.key,
+              event: { type: "statusChanged", status: "idle" },
+            });
+          }
           open.add(a.key);
           return {
             key: a.key,

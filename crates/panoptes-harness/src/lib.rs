@@ -247,6 +247,79 @@ pub enum HarnessEvent {
 
 pub type EventSink = UnboundedSender<HarnessEvent>;
 
+/// Where an open session stands, in the words the UI shows. Worked out by
+/// the app from [`HarnessEvent`]s, so every harness gets the same rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionStatus {
+    /// Open, and nothing has happened since.
+    Idle,
+    /// The agent is working.
+    Running,
+    /// The agent needs an answer from the user.
+    Waiting,
+    /// The last run errored, or the harness process ended unexpectedly.
+    Failed,
+    /// The last run finished.
+    Done,
+}
+
+/// Why a harness could not do what it was asked. Adapters return these
+/// (wrapped in `anyhow::Error`) so the app can tell the cases apart without
+/// reading error text. An error without one has no kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessError {
+    pub kind: HarnessErrorKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HarnessErrorKind {
+    /// The harness answered and refused the command.
+    Rejected,
+    /// The harness process is gone, so nothing can answer.
+    Exited,
+    /// The harness did not answer in time.
+    TimedOut,
+}
+
+impl HarnessError {
+    pub fn new(kind: HarnessErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn rejected(message: impl Into<String>) -> Self {
+        Self::new(HarnessErrorKind::Rejected, message)
+    }
+
+    pub fn exited(message: impl Into<String>) -> Self {
+        Self::new(HarnessErrorKind::Exited, message)
+    }
+
+    pub fn timed_out(message: impl Into<String>) -> Self {
+        Self::new(HarnessErrorKind::TimedOut, message)
+    }
+
+    /// The kind of the first [`HarnessError`] in `error`'s chain, if any.
+    pub fn kind_of(error: &anyhow::Error) -> Option<HarnessErrorKind> {
+        error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<HarnessError>())
+            .map(|error| error.kind)
+    }
+}
+
+impl std::fmt::Display for HarnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HarnessError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartSession {
     New { cwd: PathBuf },
@@ -385,13 +458,13 @@ pub trait AgentSession: Send + Sync {
     /// Switches model from the next message on. `model_id` is a
     /// [`ModelInfo::id`].
     async fn set_model(&self, _model_id: String) -> anyhow::Result<()> {
-        anyhow::bail!("This harness cannot switch models")
+        Err(HarnessError::rejected("This harness cannot switch models").into())
     }
 
     /// Sets the reasoning effort from the next message on. `level` is one of
     /// [`SessionSettings::thinking_levels`].
     async fn set_thinking_level(&self, _level: String) -> anyhow::Result<()> {
-        anyhow::bail!("This harness has no thinking levels")
+        Err(HarnessError::rejected("This harness has no thinking levels").into())
     }
 
     /// Ends the session's process. The session stays resumable.

@@ -34,8 +34,11 @@ this way.
 - **The event model is the contract.** The UI rebuilds streaming state from
   `HarnessEvent`s. `MessageCompleted` replaces whatever was streamed under
   the same id, `RunSettled` means the run is finished, and the history is then
-  reloaded to swap live ids for stable ones. Keep `src/types.ts` in step with
-  the Rust types.
+  reloaded to swap live ids for stable ones. A session's status (Running,
+  Waiting, Failed, Done) is worked out once, in the service, and sent as
+  `statusChanged`; the UI never derives it. Errors reach the UI as
+  `{ kind, message }`, and adapters mark theirs with `HarnessError` so the
+  kind survives. Keep `src/types.ts` in step with the Rust types.
 - **Sessions belong to the harness.** Pi keeps its sessions in its own files
   (`~/.pi/agent/sessions` by default), shared with the CLI. Panoptes never
   copies or rewrites them. What Panoptes adds (pins for now) lives in its own

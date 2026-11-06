@@ -124,15 +124,15 @@ async fn set_thinking_level(
 async fn list_files(cwd: String) -> ServiceResult<Vec<String>> {
     tokio::task::spawn_blocking(move || files::list(Path::new(&cwd), files::MAX_FILES))
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| service::ServiceError::other(error.to_string()))
 }
 
 #[tauri::command]
 async fn read_attachment(path: String) -> ServiceResult<files::Attachment> {
     tokio::task::spawn_blocking(move || files::attachment(Path::new(&path)))
         .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| format!("{error:#}"))
+        .map_err(|error| service::ServiceError::other(error.to_string()))?
+        .map_err(|error| service::ServiceError::other(format!("{error:#}")))
 }
 
 #[tauri::command]

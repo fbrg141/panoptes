@@ -146,12 +146,32 @@ describe("store", () => {
     expect(store.getState().conversations["pi:s1"].busy).toBe(false);
   });
 
-  it("resumes an exited session before sending", async () => {
+  it("resumes a session whose process is gone and sends again", async () => {
     await store.getState().open(session);
     fake.emit({ key: "pi:s1", event: { type: "exited", code: 1, stderrTail: "" } });
+    fake.backend.sendPrompt.mockRejectedValueOnce({ kind: "notOpen", message: "Not open" });
     await store.getState().send("hello");
     expect(fake.backend.openSession).toHaveBeenCalledTimes(2);
-    expect(fake.backend.sendPrompt).toHaveBeenCalledWith("pi:s1", "hello", [], "start");
+    expect(fake.backend.sendPrompt).toHaveBeenCalledTimes(2);
+    expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "hello", [], "start");
+    expect(store.getState().error).toBeNull();
+  });
+
+  it("shows a rejected prompt without reopening", async () => {
+    await store.getState().open(session);
+    fake.backend.sendPrompt.mockRejectedValueOnce({ kind: "rejected", message: "No model" });
+    await store.getState().send("hello");
+    expect(fake.backend.openSession).toHaveBeenCalledTimes(1);
+    expect(store.getState().error).toBe("No model");
+  });
+
+  it("keeps the status the backend reports, until the session closes", async () => {
+    await store.getState().open(session);
+    fake.emit({ key: "pi:s1", event: { type: "statusChanged", status: "waiting" } });
+    expect(store.getState().statuses["pi:s1"]).toBe("waiting");
+    expect(store.getState().conversations["pi:s1"].messages).toEqual([]);
+    await store.getState().close("pi:s1");
+    expect(store.getState().statuses["pi:s1"]).toBeUndefined();
   });
 
   it("removes a question once answered", async () => {
@@ -186,6 +206,13 @@ describe("store", () => {
   });
 
   it("shows backend errors", async () => {
+    fake.backend.openSession.mockRejectedValueOnce({
+      kind: "unavailable",
+      message: "The pi harness is not available",
+    });
+    await store.getState().open(session);
+    expect(store.getState().error).toBe("The pi harness is not available");
+
     fake.backend.openSession.mockRejectedValueOnce("Pi is not installed");
     await store.getState().open(session);
     expect(store.getState().error).toBe("Pi is not installed");
