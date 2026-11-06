@@ -114,6 +114,7 @@ describe("store", () => {
           blocks: [{ type: "text", text: "then this" }],
           timestamp: null,
           error: null,
+          stopped: false,
         },
       },
     });

@@ -16,6 +16,7 @@ this way.
 | `src-tauri/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
 | `src/conversation.ts` | Pure reducer: harness events to conversation state |
 | `src/composer.ts` | Pure composer logic: mention parsing, fuzzy file matching, labels |
+| `src/turns.ts` | Pure transcript logic: messages to turns, tool rows and folded-work summaries (with `diff.ts` and `markdown.ts`) |
 | `src/store.ts` | Zustand store: talks to the backend through `src/api.ts` |
 | `src/components/` | Rendering only |
 | `src/dev/mockBackend.ts` | Fixture backend used when the UI runs in a plain browser |

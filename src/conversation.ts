@@ -4,6 +4,9 @@ import type { Block, HarnessEvent, Message, NoticeLevel, PromptMode, Question } 
 export interface ToolRun {
   status: "running" | "done" | "error";
   output: string;
+  /** Unix ms, as seen by the UI. */
+  startedAt: number;
+  endedAt: number | null;
 }
 
 export interface Notice {
@@ -28,6 +31,13 @@ export interface Conversation {
   exited: string | null;
   /** Steers and follow-ups sent during a run that the agent has not read yet. */
   queued: QueuedPrompt[];
+  /**
+   * How long each thinking block took, in ms, keyed by its text: harnesses
+   * do not report it, and the text survives the swap to stable ids.
+   */
+  thoughtFor: Record<string, number>;
+  /** The thinking block streaming now, and when it started. */
+  thinking: { messageId: string; index: number; at: number } | null;
 }
 
 /** Notices kept per conversation; older ones scroll away. */
@@ -41,6 +51,8 @@ export const emptyConversation = (messages: Message[] = []): Conversation => ({
   questions: [],
   exited: null,
   queued: [],
+  thoughtFor: {},
+  thinking: null,
 });
 
 function updateMessage(
@@ -77,7 +89,22 @@ function appendDelta(block: Block | undefined, kind: string, delta: string): Blo
   return kind === "thinking" ? { type: "thinking", text: delta } : { type: "text", text: delta };
 }
 
-/** Folds one harness event into a conversation. Pure, so it is easy to test. */
+/** Records how long the streaming thinking block took, once another block starts. */
+function endThinking(conversation: Conversation, messageId: string): Conversation {
+  const { thinking } = conversation;
+  if (!thinking || thinking.messageId !== messageId) return conversation;
+  const block = conversation.messages.find((m) => m.id === messageId)?.blocks[thinking.index];
+  const thoughtFor =
+    block?.type === "thinking" && block.text.trim()
+      ? { ...conversation.thoughtFor, [block.text.trim()]: Date.now() - thinking.at }
+      : conversation.thoughtFor;
+  return { ...conversation, thinking: null, thoughtFor };
+}
+
+/**
+ * Folds one harness event into a conversation. Pure apart from reading the
+ * clock for durations, so it is easy to test.
+ */
 export function applyEvent(conversation: Conversation, event: HarnessEvent): Conversation {
   switch (event.type) {
     case "runStarted":
@@ -87,16 +114,36 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
         ...conversation,
         messages: [
           ...conversation.messages,
-          { id: event.messageId, role: event.role, blocks: [], timestamp: Date.now(), error: null },
+          {
+            id: event.messageId,
+            role: event.role,
+            blocks: [],
+            timestamp: Date.now(),
+            error: null,
+            stopped: false,
+          },
         ],
       };
-    case "blockStarted":
-      return updateBlock(conversation, event.messageId, event.index, () => event.block);
+    case "blockStarted": {
+      const next = updateBlock(
+        endThinking(conversation, event.messageId),
+        event.messageId,
+        event.index,
+        () => event.block,
+      );
+      return event.block.type === "thinking"
+        ? {
+            ...next,
+            thinking: { messageId: event.messageId, index: event.index, at: Date.now() },
+          }
+        : next;
+    }
     case "blockDelta":
       return updateBlock(conversation, event.messageId, event.index, (block) =>
         appendDelta(block, event.kind, event.delta),
       );
     case "messageCompleted": {
+      conversation = endThinking(conversation, event.message.id);
       const exists = conversation.messages.some((m) => m.id === event.message.id);
       const next = exists
         ? updateMessage(conversation, event.message.id, () => event.message)
@@ -112,6 +159,8 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
           [event.callId]: {
             status: "running",
             output: event.type === "toolUpdated" ? event.output : "",
+            startedAt: conversation.tools[event.callId]?.startedAt ?? Date.now(),
+            endedAt: null,
           },
         },
       };
@@ -120,13 +169,18 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
         ...conversation,
         tools: {
           ...conversation.tools,
-          [event.callId]: { status: event.isError ? "error" : "done", output: event.output },
+          [event.callId]: {
+            status: event.isError ? "error" : "done",
+            output: event.output,
+            startedAt: conversation.tools[event.callId]?.startedAt ?? Date.now(),
+            endedAt: Date.now(),
+          },
         },
       };
     case "runSettled":
       // Anything still queued was delivered under a different text
       // (expanded by the harness) or dropped by an abort.
-      return { ...conversation, busy: false, queued: [] };
+      return { ...conversation, busy: false, queued: [], thinking: null };
     case "notice":
       return {
         ...conversation,
