@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use anyhow::Context;
 use panoptes_harness::{
     AgentSession, Answer, Harness, HarnessEvent, ImageAttachment, Message, ModelInfo, PromptMode,
     PromptOutcome, SessionRef, SessionSettings, SessionSummary, StartSession,
@@ -51,7 +52,8 @@ pub struct SidebarSession {
 #[serde(rename_all = "camelCase")]
 pub struct Listing {
     pub sessions: Vec<SidebarSession>,
-    /// One line per harness whose sessions could not be listed.
+    /// One line per harness whose sessions could not be listed, and one if
+    /// the pins could not be read.
     pub errors: Vec<String>,
 }
 
@@ -78,7 +80,8 @@ pub struct Service {
     /// session file.
     opening: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     generations: AtomicU64,
-    store: std::sync::Mutex<Store>,
+    /// Shared with the blocking threads that run every store call.
+    store: Arc<std::sync::Mutex<Store>>,
     /// Working directory to project root, so each is looked up once.
     project_roots: std::sync::Mutex<HashMap<String, String>>,
     emit: Emit,
@@ -94,7 +97,7 @@ impl Service {
             open: Arc::default(),
             opening: Mutex::default(),
             generations: AtomicU64::new(1),
-            store: std::sync::Mutex::new(store),
+            store: Arc::new(std::sync::Mutex::new(store)),
             project_roots: std::sync::Mutex::default(),
             emit,
         }
@@ -129,10 +132,13 @@ impl Service {
                 )),
             }
         }
-        let pinned = self.store.lock().unwrap().pinned().unwrap_or_else(|error| {
-            errors.push(format!("Could not read pins: {}", err(error)));
-            Default::default()
-        });
+        let pinned = self
+            .with_store(|store| store.pinned())
+            .await
+            .unwrap_or_else(|error| {
+                errors.push(format!("Could not read pins: {}", err(error)));
+                Default::default()
+            });
         let open = self.open.lock().await;
         let mut project_roots = self.project_roots.lock().unwrap();
         let sessions = summaries
@@ -140,10 +146,7 @@ impl Service {
             .map(|summary| {
                 let key = session_key(&summary.harness, &summary.id);
                 SidebarSession {
-                    project_root: project_roots
-                        .entry(summary.cwd.clone())
-                        .or_insert_with(|| project_root(&summary.cwd))
-                        .clone(),
+                    project_root: cached_project_root(&mut project_roots, &summary.cwd),
                     pinned: pinned.contains(&key),
                     open: open.contains_key(&key),
                     key,
@@ -362,10 +365,33 @@ impl Service {
         shutdowns.join_all().await;
     }
 
-    pub fn set_pinned(&self, key: String, pinned: bool) -> ServiceResult<()> {
-        let store = self.store.lock().unwrap();
-        store.set_pinned(&key, pinned).map_err(err)
+    pub async fn set_pinned(&self, key: String, pinned: bool) -> ServiceResult<()> {
+        self.with_store(move |store| store.set_pinned(&key, pinned))
+            .await
+            .map_err(err)
     }
+
+    /// Runs `call` on a blocking thread: SQLite calls block, for up to the
+    /// busy timeout when another process holds the database, and must not
+    /// stall the async runtime or the main thread.
+    async fn with_store<T: Send + 'static>(
+        &self,
+        call: impl FnOnce(&Store) -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<T> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || call(&store.lock().unwrap()))
+            .await
+            .context("The store call stopped")?
+    }
+}
+
+fn cached_project_root(cache: &mut HashMap<String, String>, cwd: &str) -> String {
+    if let Some(root) = cache.get(cwd) {
+        return root.clone();
+    }
+    let root = project_root(cwd);
+    cache.insert(cwd.to_string(), root.clone());
+    root
 }
 
 /// The project a working directory belongs to: the enclosing git repository
@@ -590,13 +616,33 @@ mod tests {
     #[tokio::test]
     async fn pins_are_saved_to_the_store() {
         let f = fixture(FakeHarness::default());
-        f.service.set_pinned("fake:s1".into(), true).unwrap();
+        f.service.set_pinned("fake:s1".into(), true).await.unwrap();
         assert!(f.service.list().await.sessions[0].pinned);
         let saved = Store::open(f._dir.path()).unwrap().pinned().unwrap();
         assert!(saved.contains("fake:s1"));
 
-        f.service.set_pinned("fake:s1".into(), false).unwrap();
+        f.service.set_pinned("fake:s1".into(), false).await.unwrap();
         assert!(!f.service.list().await.sessions[0].pinned);
+    }
+
+    #[tokio::test]
+    async fn unreadable_pins_are_reported_and_the_sessions_still_listed() {
+        let f = fixture(FakeHarness::default());
+        f.service.set_pinned("fake:s1".into(), true).await.unwrap();
+        rusqlite::Connection::open(f._dir.path().join("panoptes.db"))
+            .unwrap()
+            .execute_batch("DROP TABLE pins;")
+            .unwrap();
+
+        let listing = f.service.list().await;
+        assert_eq!(listing.sessions.len(), 1);
+        assert!(!listing.sessions[0].pinned);
+        assert_eq!(listing.errors.len(), 1);
+        assert!(
+            listing.errors[0].starts_with("Could not read pins:"),
+            "{:?}",
+            listing.errors
+        );
     }
 
     #[tokio::test]

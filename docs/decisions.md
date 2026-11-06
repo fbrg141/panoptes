@@ -65,12 +65,23 @@ SQLite bundled), because the domain model has several many-to-many links and
 SQLite gives transactions and integrity checks for free.
 
 - The schema version is SQLite's `user_version`. Each migration runs in its
-  own transaction, so a failed one leaves the previous version intact.
-- Before migrating, the database is copied to `panoptes.db.v<old>.bak`.
-- A damaged database, one from a newer Panoptes, or a failed migration stops
-  the app with an error dialog instead of starting empty.
-- The first migration imports the pins from `index.json` once and renames it
-  to `index.json.migrated`.
+  own `IMMEDIATE` transaction and reads the version again under the lock, so
+  a failed one leaves the previous version intact and two copies of Panoptes
+  opening the store at once never run the same step twice.
+- Foreign keys are off while migrating, so a step can rebuild a table the
+  way SQLite requires, and `foreign_key_check` must pass before it commits.
+- Before migrating, the database is copied to `panoptes.db.v<old>.bak`. The
+  copy is written under a temporary name first, so a failed copy never
+  replaces an earlier backup.
+- A damaged database, one from a newer Panoptes, one another Panoptes is
+  holding, or a failed migration stops the app with an error dialog instead
+  of starting empty.
+- The first migration imports the pins from `index.json` once and, after it
+  commits, renames it to `index.json.migrated`. An empty database next to
+  that file is refused rather than started fresh.
+- Debug builds keep their store in a `dev` folder inside the app data
+  folder, so a migration that has not shipped never touches the installed
+  app's data.
 
 ## The design system lives in the repo as a package
 

@@ -44,6 +44,8 @@ this way.
 - **Schema changes are migrations.** Append a step to `MIGRATIONS` in
   `store.rs`; never edit one that has shipped. A store that can't be read or
   migrated stops the app with an error, never a silent fresh start.
+  Debug builds use their own store (`<app data>/dev`), so a step can be
+  reworked freely until it ships.
 - **One process per open session.** `Service::open` serialises opens of the
   same key. Never start a second process on a session that is already open.
 - **Style only through the design system.** Use its components first

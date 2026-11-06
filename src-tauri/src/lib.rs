@@ -5,9 +5,10 @@ mod files;
 mod service;
 mod store;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context;
 use panoptes_harness::{
     Answer, Harness, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
     SessionSettings,
@@ -156,15 +157,22 @@ async fn close_session(state: State<'_, AppState>, key: String) -> ServiceResult
 }
 
 #[tauri::command]
-fn set_pinned(state: State<'_, AppState>, key: String, pinned: bool) -> ServiceResult<()> {
-    state.service.set_pinned(key, pinned)
+async fn set_pinned(state: State<'_, AppState>, key: String, pinned: bool) -> ServiceResult<()> {
+    state.service.set_pinned(key, pinned).await
 }
 
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app
         .path()
         .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."));
+        .context("Could not find the app data folder")?;
+    // Debug builds keep their own store, so a migration that has not shipped
+    // never touches the installed app's data.
+    let data_dir = if cfg!(debug_assertions) {
+        data_dir.join("dev")
+    } else {
+        data_dir
+    };
     let store = Store::open(&data_dir)?;
 
     let mut harnesses: Vec<Arc<dyn Harness>> = Vec::new();
@@ -218,6 +226,11 @@ pub fn run() {
                 Err(error) => {
                     let message = format!("{error:#}");
                     eprintln!("Panoptes could not start: {message}");
+                    // The window already exists, and without the state every
+                    // command it makes would fail behind the dialog.
+                    for window in app.webview_windows().values() {
+                        let _ = window.hide();
+                    }
                     let handle = app.handle().clone();
                     app.dialog()
                         .message(message)

@@ -105,7 +105,7 @@ export interface SidebarSession {
 
 export interface Listing {
   sessions: SidebarSession[];
-  /** One line per harness whose sessions could not be listed. */
+  /** One line per harness whose sessions could not be listed, and one if the pins could not be read. */
   errors: string[];
 }
 
