@@ -190,6 +190,24 @@ Smaller fixes from the backend review, needed by the model above:
   issue's open question 3. The main checkout is the quick option.
 - **#11:** the tool-call entity and approvals come first.
 
+## Tracking
+
+In a workable order. The first four build the model; the rest fix the
+contract and can go in any order.
+
+| Issue | Covers |
+|---|---|
+| #18 | Versioned Panoptes store |
+| #19 | Projects and their settings |
+| #20 | Workspaces: a worktree per session |
+| #21 | Nested groups and multi-repo sessions |
+| #22 | Session identity, titles, tags and archiving |
+| #23 | Status from the backend |
+| #24 | Tool calls as one entity |
+| #25 | Approvals |
+| #26 | Stable message ids and images |
+| #27 | Typed errors |
+
 ## Open questions
 
 1. **Group context** (#8): instructions a group gives the agents in its
