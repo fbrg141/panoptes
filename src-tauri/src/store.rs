@@ -1,0 +1,582 @@
+//! Panoptes' own data, in a SQLite database in the app data folder. Harnesses
+//! keep their conversations; this holds what Panoptes adds on top (pins now,
+//! then projects, groups, workspaces, sessions and tags, see
+//! `docs/domain-model.md`).
+//!
+//! The schema version is SQLite's `user_version`. Opening the store runs
+//! every migration it is missing, each in its own transaction, after copying
+//! the database aside. A damaged database, one written by a newer Panoptes,
+//! or a migration that fails stops the open with an error: the store never
+//! starts empty in place of data it could not read.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::{Context, bail};
+use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, TransactionBehavior};
+use serde::Deserialize;
+
+const DATABASE: &str = "panoptes.db";
+/// The JSON file that held pins before the store existed.
+const LEGACY_INDEX: &str = "index.json";
+/// What `index.json` is renamed to once its pins are in the database.
+const IMPORTED_INDEX: &str = "index.json.migrated";
+
+/// How long to wait for another Panoptes that holds the database.
+const BUSY_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(5)
+};
+const IN_USE: &str = "Another Panoptes is using it. Quit that one and try again";
+
+/// One schema step.
+#[derive(Clone, Copy)]
+struct Migration {
+    /// Changes the schema, inside the step's transaction. `dir` is the app
+    /// data folder, for steps that import files from it.
+    apply: fn(&Transaction, &Path) -> anyhow::Result<()>,
+    /// Runs once the step has committed, for file changes that must not
+    /// happen unless it did.
+    committed: fn(&Path),
+}
+
+/// Schema version `n` is reached by running `MIGRATIONS[n - 1]`. Append new
+/// steps; never edit or reorder one that has shipped.
+const MIGRATIONS: &[Migration] = &[Migration {
+    apply: v1_pins,
+    committed: retire_legacy_index,
+}];
+
+fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE pins (
+            session_key TEXT PRIMARY KEY NOT NULL
+        ) STRICT;",
+    )?;
+    for key in legacy_pins(dir)? {
+        tx.execute(
+            "INSERT OR IGNORE INTO pins (session_key) VALUES (?1)",
+            [key],
+        )?;
+    }
+    Ok(())
+}
+
+/// Pins from `index.json`, if there is one. An unreadable file fails the
+/// migration rather than losing the pins.
+fn legacy_pins(dir: &Path) -> anyhow::Result<BTreeSet<String>> {
+    #[derive(Deserialize)]
+    struct IndexFile {
+        #[serde(default)]
+        pinned: BTreeSet<String>,
+    }
+    let path = dir.join(LEGACY_INDEX);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Could not read {}", path.display()));
+        }
+    };
+    let file: IndexFile = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "{} could not be read, so its pins were not imported. Move it away to start without them",
+            path.display()
+        )
+    })?;
+    Ok(file.pinned)
+}
+
+/// The pins are in the database now; keep the old file for reference under
+/// a name that is never imported again.
+fn retire_legacy_index(dir: &Path) {
+    let legacy = dir.join(LEGACY_INDEX);
+    match std::fs::rename(&legacy, dir.join(IMPORTED_INDEX)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!("Could not rename {}: {error}", legacy.display()),
+    }
+}
+
+pub struct Store {
+    conn: Connection,
+}
+
+impl Store {
+    /// Opens the store in `dir`, creating it or migrating it to the current
+    /// schema as needed.
+    pub fn open(dir: &Path) -> anyhow::Result<Self> {
+        Self::open_with(dir, MIGRATIONS)
+    }
+
+    fn open_with(dir: &Path, migrations: &[Migration]) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Could not create {}", dir.display()))?;
+        let path = dir.join(DATABASE);
+        let mut conn = Connection::open(&path)
+            .with_context(|| format!("Could not open {}", path.display()))?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        let result = check(&conn).and_then(|version| migrate(&mut conn, dir, version, migrations));
+        result.with_context(|| format!("Could not load Panoptes data from {}", path.display()))?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        Ok(Self { conn })
+    }
+
+    pub fn pinned(&self) -> anyhow::Result<BTreeSet<String>> {
+        let mut statement = self.conn.prepare_cached("SELECT session_key FROM pins")?;
+        let keys = statement.query_map([], |row| row.get(0))?;
+        Ok(keys.collect::<Result<_, _>>()?)
+    }
+
+    pub fn set_pinned(&self, key: &str, pinned: bool) -> anyhow::Result<()> {
+        let sql = if pinned {
+            "INSERT OR IGNORE INTO pins (session_key) VALUES (?1)"
+        } else {
+            "DELETE FROM pins WHERE session_key = ?1"
+        };
+        self.conn.execute(sql, [key])?;
+        Ok(())
+    }
+}
+
+/// The database's schema version, after making sure it is a sound database
+/// this build can read.
+fn check(conn: &Connection) -> anyhow::Result<u32> {
+    let status: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|error| explain(error, "The file is not a readable database"))?;
+    if status != "ok" {
+        bail!("The database is damaged: {status}");
+    }
+    user_version(conn)
+}
+
+fn user_version(conn: &Connection) -> anyhow::Result<u32> {
+    Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+/// `error` with `otherwise` as its reason, unless it only means another
+/// Panoptes holds the database: that is not damage and must not read as it.
+fn explain(error: rusqlite::Error, otherwise: &'static str) -> anyhow::Error {
+    let in_use = matches!(
+        error.sqlite_error_code(),
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    );
+    anyhow::Error::new(error).context(if in_use { IN_USE } else { otherwise })
+}
+
+fn refuse_newer(version: u32, latest: u32) -> anyhow::Result<()> {
+    if version > latest {
+        bail!(
+            "It was written by a newer version of Panoptes (schema {version}; this version reads up to {latest})"
+        );
+    }
+    Ok(())
+}
+
+fn migrate(
+    conn: &mut Connection,
+    dir: &Path,
+    version: u32,
+    migrations: &[Migration],
+) -> anyhow::Result<()> {
+    let latest = migrations.len() as u32;
+    refuse_newer(version, latest)?;
+    if version == latest {
+        return Ok(());
+    }
+    if version > 0 {
+        back_up(conn, dir, version)?;
+    }
+    // Bundled SQLite enforces foreign keys by default, and a step that
+    // rebuilds a table (create, copy, drop, rename) needs them off. The
+    // pragma does nothing inside a transaction, so it is turned off here and
+    // each step is checked before it commits instead.
+    conn.pragma_update(None, "foreign_keys", false)?;
+    loop {
+        // IMMEDIATE takes the write lock up front and the version is read
+        // again under it, so a second Panoptes opening the same store waits,
+        // then skips the steps the first one ran.
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| explain(error, "Could not start a migration"))?;
+        let current = user_version(&tx)?;
+        refuse_newer(current, latest)?;
+        if current == latest {
+            return Ok(());
+        }
+        if current == 0 && dir.join(IMPORTED_INDEX).exists() {
+            bail!(
+                "The database is empty, but Panoptes data was stored in it before ({IMPORTED_INDEX} is next to it). Rename {IMPORTED_INDEX} back to {LEGACY_INDEX} to import those pins again, or move it away to start without them"
+            );
+        }
+        let target = current + 1;
+        let step = migrations[current as usize];
+        (step.apply)(&tx, dir)
+            .and_then(|()| check_foreign_keys(&tx))
+            .with_context(|| format!("Migration to schema {target} failed"))?;
+        tx.pragma_update(None, "user_version", target)?;
+        tx.commit()?;
+        (step.committed)(dir);
+    }
+}
+
+/// Fails if a step left a row pointing at one that does not exist, which it
+/// could while foreign keys were off.
+fn check_foreign_keys(tx: &Transaction) -> anyhow::Result<()> {
+    let mut statement = tx.prepare("PRAGMA foreign_key_check")?;
+    let mut rows = statement.query([])?;
+    if let Some(row) = rows.next()? {
+        let table: String = row.get(0)?;
+        let parent: String = row.get(2)?;
+        bail!("It left a row in {table} pointing to a missing row in {parent}");
+    }
+    Ok(())
+}
+
+/// Copies the database to `panoptes.db.v<version>.bak` before migrating away
+/// from `version`. The copy is written under a temporary name and only then
+/// replaces an older backup of the same version, so a failed copy never
+/// costs the previous one. If another Panoptes migrated the store in the
+/// meantime, the copy no longer holds `version` and is dropped: that one
+/// took its own backup first.
+fn back_up(conn: &Connection, dir: &Path, version: u32) -> anyhow::Result<()> {
+    let backup = dir.join(format!("{DATABASE}.v{version}.bak"));
+    let partial = partial_backup(dir);
+    let result = copy_holds(conn, &partial, version).and_then(|holds| {
+        if holds {
+            std::fs::rename(&partial, &backup)?;
+        }
+        Ok(())
+    });
+    let _ = std::fs::remove_file(&partial);
+    result.with_context(|| format!("Could not back up to {}", backup.display()))
+}
+
+/// Per process, so two copies being written at once don't collide.
+fn partial_backup(dir: &Path) -> PathBuf {
+    dir.join(format!("{DATABASE}.{}.partial", std::process::id()))
+}
+
+/// Writes a copy of the database to `path` and says whether it holds
+/// schema `version`.
+fn copy_holds(conn: &Connection, path: &Path, version: u32) -> anyhow::Result<bool> {
+    // VACUUM INTO refuses to write over an existing file.
+    let _ = std::fs::remove_file(path);
+    conn.execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
+    let copy = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    Ok(user_version(&copy)? == version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version(dir: &Path) -> u32 {
+        let conn = Connection::open(dir.join(DATABASE)).unwrap();
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn step(apply: fn(&Transaction, &Path) -> anyhow::Result<()>) -> Migration {
+        Migration {
+            apply,
+            committed: |_| {},
+        }
+    }
+
+    fn broken(_: &Transaction, _: &Path) -> anyhow::Result<()> {
+        bail!("no room")
+    }
+
+    fn v2_notes(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+        tx.execute_batch("CREATE TABLE notes (body TEXT NOT NULL) STRICT;")?;
+        Ok(())
+    }
+
+    fn v2_parents(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+        tx.execute_batch(
+            "CREATE TABLE parents (id INTEGER PRIMARY KEY) STRICT;
+            CREATE TABLE children (
+                parent INTEGER NOT NULL REFERENCES parents (id) ON DELETE CASCADE
+            ) STRICT;
+            INSERT INTO parents (id) VALUES (1);
+            INSERT INTO children (parent) VALUES (1);",
+        )?;
+        Ok(())
+    }
+
+    /// SQLite's way to change a table: build a new one, copy, drop, rename.
+    fn v3_rebuild_parents(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+        tx.execute_batch(
+            "CREATE TABLE parents_new (id INTEGER PRIMARY KEY, name TEXT) STRICT;
+            INSERT INTO parents_new (id) SELECT id FROM parents;
+            DROP TABLE parents;
+            ALTER TABLE parents_new RENAME TO parents;",
+        )?;
+        Ok(())
+    }
+
+    fn v3_orphan_child(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+        tx.execute_batch("INSERT INTO children (parent) VALUES (9);")?;
+        Ok(())
+    }
+
+    fn v1() -> Migration {
+        MIGRATIONS[0]
+    }
+
+    #[test]
+    fn a_new_store_starts_at_the_latest_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert!(store.pinned().unwrap().is_empty());
+        assert_eq!(version(dir.path()), MIGRATIONS.len() as u32);
+    }
+
+    #[test]
+    fn pins_survive_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.set_pinned("pi:a", true).unwrap();
+        store.set_pinned("pi:b", true).unwrap();
+        store.set_pinned("pi:b", true).unwrap();
+        store.set_pinned("pi:a", false).unwrap();
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.pinned().unwrap(), BTreeSet::from(["pi:b".into()]));
+    }
+
+    #[test]
+    fn pins_in_index_json_are_imported_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(LEGACY_INDEX);
+        std::fs::write(&legacy, r#"{"pinned":["pi:a","pi:b"]}"#).unwrap();
+
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            store.pinned().unwrap(),
+            BTreeSet::from(["pi:a".into(), "pi:b".into()])
+        );
+        assert!(!legacy.exists());
+        assert!(dir.path().join("index.json.migrated").exists());
+
+        // Unpinning sticks, and a stray index.json is not imported again.
+        store.set_pinned("pi:a", false).unwrap();
+        drop(store);
+        std::fs::write(&legacy, r#"{"pinned":["pi:a","pi:c"]}"#).unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.pinned().unwrap(), BTreeSet::from(["pi:b".into()]));
+    }
+
+    #[test]
+    fn an_unreadable_index_json_stops_the_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(LEGACY_INDEX);
+        std::fs::write(&legacy, "{not json").unwrap();
+
+        let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
+        assert!(error.contains("Migration to schema 1 failed"), "{error}");
+        assert!(error.contains("its pins were not imported"), "{error}");
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "{not json");
+        assert_eq!(version(dir.path()), 0);
+    }
+
+    #[test]
+    fn a_failed_migration_stops_and_keeps_the_data() {
+        let dir = tempfile::tempdir().unwrap();
+        Store::open(dir.path())
+            .unwrap()
+            .set_pinned("pi:a", true)
+            .unwrap();
+
+        let error = Store::open_with(dir.path(), &[v1(), step(broken)])
+            .err()
+            .unwrap();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("Migration to schema 2 failed: no room"),
+            "{error}"
+        );
+        assert_eq!(version(dir.path()), 1);
+
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.pinned().unwrap(), BTreeSet::from(["pi:a".into()]));
+    }
+
+    #[test]
+    fn migrating_backs_up_the_database_first() {
+        let dir = tempfile::tempdir().unwrap();
+        Store::open(dir.path())
+            .unwrap()
+            .set_pinned("pi:a", true)
+            .unwrap();
+
+        let store = Store::open_with(dir.path(), &[v1(), step(v2_notes)]).unwrap();
+        assert_eq!(version(dir.path()), 2);
+        assert_eq!(store.pinned().unwrap(), BTreeSet::from(["pi:a".into()]));
+
+        let backup = Connection::open(dir.path().join("panoptes.db.v1.bak")).unwrap();
+        let backed_up: Vec<String> = backup
+            .prepare("SELECT session_key FROM pins")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(backed_up, ["pi:a"]);
+        let backup_version: u32 = backup
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(backup_version, 1);
+        assert!(!partial_backup(dir.path()).exists());
+    }
+
+    #[test]
+    fn a_store_from_a_newer_panoptes_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        Store::open_with(dir.path(), &[v1(), step(v2_notes)]).unwrap();
+        let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
+        assert!(error.contains("newer version of Panoptes"), "{error}");
+        assert_eq!(version(dir.path()), 2);
+    }
+
+    #[test]
+    fn a_damaged_database_is_refused_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DATABASE);
+        std::fs::write(&path, b"this is not a database at all, not even close").unwrap();
+
+        let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
+        assert!(error.contains("not a readable database"), "{error}");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"this is not a database at all, not even close"
+        );
+    }
+
+    #[test]
+    fn steps_another_panoptes_already_ran_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        // Both read version 0; the other one migrates first.
+        let mut late = Connection::open(dir.path().join(DATABASE)).unwrap();
+        Store::open_with(dir.path(), &[v1(), step(v2_notes)]).unwrap();
+
+        migrate(&mut late, dir.path(), 0, &[v1(), step(v2_notes)]).unwrap();
+        assert_eq!(version(dir.path()), 2);
+    }
+
+    #[test]
+    fn a_backup_is_kept_only_if_it_holds_the_version_it_is_named_after() {
+        let dir = tempfile::tempdir().unwrap();
+        Store::open(dir.path())
+            .unwrap()
+            .set_pinned("pi:a", true)
+            .unwrap();
+        // Both read version 1; the other one backs up and migrates first.
+        let mut late = Connection::open(dir.path().join(DATABASE)).unwrap();
+        Store::open_with(dir.path(), &[v1(), step(v2_notes)]).unwrap();
+
+        migrate(&mut late, dir.path(), 1, &[v1(), step(v2_notes)]).unwrap();
+        let backup = Connection::open(dir.path().join("panoptes.db.v1.bak")).unwrap();
+        assert_eq!(user_version(&backup).unwrap(), 1);
+        assert!(!partial_backup(dir.path()).exists());
+    }
+
+    #[test]
+    fn a_failed_backup_keeps_the_previous_one() {
+        let dir = tempfile::tempdir().unwrap();
+        Store::open(dir.path()).unwrap();
+        let backup = dir.path().join("panoptes.db.v1.bak");
+        std::fs::write(&backup, "an earlier backup").unwrap();
+        // A folder in the way makes the copy fail.
+        std::fs::create_dir(partial_backup(dir.path())).unwrap();
+
+        let error = Store::open_with(dir.path(), &[v1(), step(v2_notes)])
+            .err()
+            .unwrap();
+        assert!(
+            format!("{error:#}").contains("Could not back up"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "an earlier backup"
+        );
+        assert_eq!(version(dir.path()), 1);
+    }
+
+    #[test]
+    fn steps_can_rebuild_a_table_without_losing_the_rows_that_point_at_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let migrations = [v1(), step(v2_parents), step(v3_rebuild_parents)];
+        let store = Store::open_with(dir.path(), &migrations).unwrap();
+
+        let children: u32 = store
+            .conn
+            .query_row("SELECT count(*) FROM children", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(children, 1);
+        let enforced: bool = store
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert!(enforced);
+    }
+
+    #[test]
+    fn a_step_that_leaves_a_broken_reference_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let migrations = [v1(), step(v2_parents), step(v3_orphan_child)];
+        let error = format!(
+            "{:#}",
+            Store::open_with(dir.path(), &migrations).err().unwrap()
+        );
+        assert!(
+            error.contains("Migration to schema 3 failed: It left a row in children"),
+            "{error}"
+        );
+        assert_eq!(version(dir.path()), 2);
+    }
+
+    #[test]
+    fn index_json_is_retired_once_its_pins_are_committed() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(LEGACY_INDEX);
+        std::fs::write(&legacy, r#"{"pinned":["pi:a"]}"#).unwrap();
+
+        // A later step failing does not undo the import, so the file goes.
+        Store::open_with(dir.path(), &[v1(), step(broken)])
+            .err()
+            .unwrap();
+        assert_eq!(version(dir.path()), 1);
+        assert!(!legacy.exists());
+        assert!(dir.path().join(IMPORTED_INDEX).exists());
+    }
+
+    #[test]
+    fn an_emptied_database_is_refused_once_pins_were_imported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_INDEX), r#"{"pinned":["pi:a"]}"#).unwrap();
+        drop(Store::open(dir.path()).unwrap());
+        std::fs::write(dir.path().join(DATABASE), "").unwrap();
+
+        let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
+        assert!(error.contains("The database is empty"), "{error}");
+        assert_eq!(version(dir.path()), 0);
+    }
+
+    #[test]
+    fn a_store_held_by_another_panoptes_is_reported_as_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Store::open(dir.path()).unwrap());
+        let other = Connection::open(dir.path().join(DATABASE)).unwrap();
+        other.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+
+        let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
+        assert!(error.contains(IN_USE), "{error}");
+        assert!(!error.contains("not a readable database"), "{error}");
+    }
+}

@@ -49,9 +49,39 @@ blocks, questions and `HarnessEvent`. Each harness is an adapter crate. The
 shape follows Zed's Agent Client Protocol (ACP) loosely, so an ACP adapter
 could cover several harnesses at once.
 
-Sessions stay in each harness's own storage. Panoptes keeps only its own
-small index (pins now; groups and tags later), keyed by
-`<harness>:<session id>`, so new organisation features need no migration.
+Sessions stay in each harness's own storage. Panoptes keeps only what it adds
+on top (pins now; projects, groups, workspaces and tags next) in its own
+store, keyed by `<harness>:<session id>`.
+
+## Panoptes' data in SQLite, with versioned migrations
+
+*Decided 2026-11-06.*
+
+Once Panoptes owns renames, tags, groups and workspaces, its data can't be
+rebuilt from the harnesses, so losing it matters. `index.json` was read as
+empty when it was damaged and then overwritten on the next pin. The store is
+now SQLite (`panoptes.db` in the app data folder, through `rusqlite` with
+SQLite bundled), because the domain model has several many-to-many links and
+SQLite gives transactions and integrity checks for free.
+
+- The schema version is SQLite's `user_version`. Each migration runs in its
+  own `IMMEDIATE` transaction and reads the version again under the lock, so
+  a failed one leaves the previous version intact and two copies of Panoptes
+  opening the store at once never run the same step twice.
+- Foreign keys are off while migrating, so a step can rebuild a table the
+  way SQLite requires, and `foreign_key_check` must pass before it commits.
+- Before migrating, the database is copied to `panoptes.db.v<old>.bak`. The
+  copy is written under a temporary name first, so a failed copy never
+  replaces an earlier backup.
+- A damaged database, one from a newer Panoptes, one another Panoptes is
+  holding, or a failed migration stops the app with an error dialog instead
+  of starting empty.
+- The first migration imports the pins from `index.json` once and, after it
+  commits, renames it to `index.json.migrated`. An empty database next to
+  that file is refused rather than started fresh.
+- Debug builds keep their store in a `dev` folder inside the app data
+  folder, so a migration that has not shipped never touches the installed
+  app's data.
 
 ## The design system lives in the repo as a package
 

@@ -2,12 +2,13 @@
 //! UI as commands, with session events emitted as `session-event`.
 
 mod files;
-mod index;
 mod service;
+mod store;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context;
 use panoptes_harness::{
     Answer, Harness, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
     SessionSettings,
@@ -15,9 +16,10 @@ use panoptes_harness::{
 use panoptes_pi::PiHarness;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-use index::Index;
 use service::{Listing, OpenedSession, Service, ServiceResult};
+use store::Store;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,11 +157,24 @@ async fn close_session(state: State<'_, AppState>, key: String) -> ServiceResult
 }
 
 #[tauri::command]
-fn set_pinned(state: State<'_, AppState>, key: String, pinned: bool) -> ServiceResult<()> {
-    state.service.set_pinned(key, pinned)
+async fn set_pinned(state: State<'_, AppState>, key: String, pinned: bool) -> ServiceResult<()> {
+    state.service.set_pinned(key, pinned).await
 }
 
-fn load_state(app: &AppHandle) -> AppState {
+fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .context("Could not find the app data folder")?;
+    // Debug builds keep their own store, so a migration that has not shipped
+    // never touches the installed app's data.
+    let data_dir = if cfg!(debug_assertions) {
+        data_dir.join("dev")
+    } else {
+        data_dir
+    };
+    let store = Store::open(&data_dir)?;
+
     let mut harnesses: Vec<Arc<dyn Harness>> = Vec::new();
     let mut info = AppInfo {
         harnesses: Vec::new(),
@@ -185,20 +200,15 @@ fn load_state(app: &AppHandle) -> AppState {
         Err(error) => info.errors.push(format!("{error:#}")),
     }
 
-    let index_path = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("index.json");
     let emitter = app.clone();
     let service = Service::new(
         harnesses,
-        Index::load(index_path),
+        store,
         Arc::new(move |event| {
             let _ = emitter.emit("session-event", event);
         }),
     );
-    AppState { info, service }
+    Ok(AppState { info, service })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -207,8 +217,28 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let state = load_state(app.handle());
-            app.manage(state);
+            match load_state(app.handle()) {
+                Ok(state) => {
+                    app.manage(state);
+                }
+                // Starting without the store would show an empty app and
+                // risk overwriting what could not be read, so stop instead.
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    eprintln!("Panoptes could not start: {message}");
+                    // The window already exists, and without the state every
+                    // command it makes would fail behind the dialog.
+                    for window in app.webview_windows().values() {
+                        let _ = window.hide();
+                    }
+                    let handle = app.handle().clone();
+                    app.dialog()
+                        .message(message)
+                        .title("Panoptes could not start")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -233,8 +263,9 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             // Let every agent process shut down cleanly when the app quits.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                let state = app.state::<AppState>();
+            if let tauri::RunEvent::ExitRequested { .. } = event
+                && let Some(state) = app.try_state::<AppState>()
+            {
                 tauri::async_runtime::block_on(state.service.close_all());
             }
         });

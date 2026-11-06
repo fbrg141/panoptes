@@ -56,7 +56,7 @@ There is no CI. A pre-push hook (installed by `pnpm install`) runs
 |---|---|
 | `crates/panoptes-harness` | The harness-neutral interface: sessions, messages, events, and the `Harness` / `AgentSession` traits |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `src-tauri` | The app: `service.rs` (open sessions, event forwarding, Panoptes' own index of pins), exposed as Tauri commands in `lib.rs` |
+| `src-tauri` | The app: `service.rs` (open sessions, event forwarding), `store.rs` (Panoptes' own data in SQLite), exposed as Tauri commands in `lib.rs` |
 | `src` | React UI: `conversation.ts` folds events into state, `store.ts` talks to the app, `components/` renders |
 
 The UI only ever sees the neutral types, so a new harness means a new adapter

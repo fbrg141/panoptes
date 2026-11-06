@@ -11,7 +11,8 @@ this way.
 |---|---|
 | `crates/panoptes-harness` | The neutral interface: `Harness` and `AgentSession` traits, `HarnessEvent`, `Message`, `Block`, `Question` |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `src-tauri/src/service.rs` | Open sessions (one process each), event forwarding, Panoptes' index |
+| `src-tauri/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
+| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup |
 | `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |
 | `src-tauri/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
 | `src/conversation.ts` | Pure reducer: harness events to conversation state |
@@ -38,7 +39,13 @@ this way.
 - **Sessions belong to the harness.** Pi keeps its sessions in its own files
   (`~/.pi/agent/sessions` by default), shared with the CLI. Panoptes never
   copies or rewrites them. What Panoptes adds (pins for now) lives in its own
-  `index.json` in the app data folder, keyed by `<harness>:<session id>`.
+  store, `panoptes.db` in the app data folder, keyed by
+  `<harness>:<session id>`.
+- **Schema changes are migrations.** Append a step to `MIGRATIONS` in
+  `store.rs`; never edit one that has shipped. A store that can't be read or
+  migrated stops the app with an error, never a silent fresh start.
+  Debug builds use their own store (`<app data>/dev`), so a step can be
+  reworked freely until it ships.
 - **One process per open session.** `Service::open` serialises opens of the
   same key. Never start a second process on a session that is already open.
 - **Style only through the design system.** Use its components first
