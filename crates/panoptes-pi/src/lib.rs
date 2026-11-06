@@ -67,7 +67,8 @@ impl Harness for PiHarness {
         // A session whose folder has since been deleted still opens, from
         // the root, so its history stays readable.
         let cwd = if cwd.is_dir() { cwd } else { Path::new("/") };
-        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, events)?;
+        let tool_times = map::ToolTimes::default();
+        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, events, tool_times.clone())?;
 
         let state = match process.call(json!({"type": "get_state"})).await {
             Ok(state) => state,
@@ -92,6 +93,7 @@ impl Harness for PiHarness {
             process,
             session_ref,
             entries: tokio::sync::Mutex::default(),
+            tool_times,
         }))
     }
 }
@@ -113,6 +115,7 @@ struct PiSession {
     process: rpc::RpcProcess,
     session_ref: SessionRef,
     entries: tokio::sync::Mutex<EntryCache>,
+    tool_times: map::ToolTimes,
 }
 
 #[async_trait]
@@ -145,7 +148,11 @@ impl AgentSession for PiSession {
         if let Some(new_entries) = data["entries"].as_array() {
             cache.entries.extend(new_entries.iter().cloned());
         }
-        Ok(map::history(&cache.entries, data["leafId"].as_str()))
+        Ok(map::history(
+            &cache.entries,
+            data["leafId"].as_str(),
+            &self.tool_times,
+        ))
     }
 
     async fn prompt(

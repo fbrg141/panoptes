@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyConversation } from "./conversation";
 import { buildTurns, formatDuration, groupLabel, summarizeWork, toolSteps } from "./turns";
-import type { Block, Message, ToolKind } from "./types";
+import type { Block, Message, ToolCall, ToolKind } from "./types";
 
 const message = (
   id: string,
@@ -18,38 +18,44 @@ const message = (
   ...over,
 });
 const text = (t: string): Block => ({ type: "text", text: t });
-const call = (callId: string, kind: ToolKind, subject: string): Block => ({
+const call = (
+  id: string,
+  kind: ToolKind,
+  subject: string,
+  over: Partial<ToolCall> = {},
+): Block => ({
   type: "toolCall",
-  callId,
+  id,
   name: kind,
-  args: {},
   kind,
   subject,
-  edits: [],
-});
-const result = (callId: string, output: string, isError = false): Block => ({
-  type: "toolResult",
-  callId,
-  name: "x",
-  output,
-  isError,
+  input: {},
+  status: "done",
+  output: null,
+  startedAt: null,
+  endedAt: null,
+  ...over,
 });
 
 const turnsOf = (messages: Message[], busy = false) =>
   buildTurns({ ...emptyConversation(messages), busy });
 
 describe("buildTurns", () => {
-  it("starts a turn at each prompt and joins tool results to their calls", () => {
+  it("starts a turn at each prompt and times tool calls", () => {
+    const output = { type: "shell", text: "a\nb", exitCode: 0 } as const;
     const turns = turnsOf([
       message("u1", "user", [text("list files")]),
-      message("a1", "assistant", [call("c1", "execute", "ls")]),
-      message("t1", "tool", [result("c1", "a\nb")]),
+      message("a1", "assistant", [
+        call("c1", "execute", "ls", { output, startedAt: 1000, endedAt: 3500 }),
+      ]),
       message("a2", "assistant", [text("Two files.")]),
       message("u2", "user", [text("thanks")]),
     ]);
     expect(turns.map((t) => t.key)).toEqual(["u1", "u2"]);
     const [first] = turns;
-    expect(first.work).toMatchObject([{ type: "tool", status: "done", output: "a\nb" }]);
+    expect(first.work).toMatchObject([
+      { type: "tool", call: { status: "done", output }, durationMs: 2500 },
+    ]);
     expect(first.answer).toMatchObject([{ type: "text", text: "Two files." }]);
   });
 
@@ -64,11 +70,10 @@ describe("buildTurns", () => {
       message("a1", "assistant", [
         call("c1", "read", "a.ts"),
         call("c2", "search", "TODO"),
-        call("c3", "read", "b.ts"),
+        call("c3", "read", "b.ts", { status: "failed" }),
         call("c4", "execute", "pnpm test"),
         call("c5", "read", "c.ts"),
       ]),
-      message("t1", "tool", [result("c1", ""), result("c2", ""), result("c3", "", true)]),
     ]);
     // The failed read breaks the run, so only the first two group.
     expect(turn.work.map((s) => s.type)).toEqual(["group", "tool", "tool", "tool"]);

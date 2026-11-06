@@ -1,22 +1,41 @@
 // Mirrors the Rust types in crates/panoptes-harness and src-tauri/src/lib.rs.
 
-export type Role = "user" | "assistant" | "tool" | "other";
+export type Role = "user" | "assistant" | "other";
 
 export type Block =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
-  | {
-      type: "toolCall";
-      callId: string;
-      name: string;
-      args: unknown;
-      argsText?: string;
-      kind: ToolKind;
-      subject: string | null;
-      edits: FileEdit[];
-    }
-  | { type: "toolResult"; callId: string; name: string; output: string; isError: boolean }
+  | ({ type: "toolCall"; argsText?: string } & ToolCall)
   | { type: "image"; mimeType: string };
+
+/**
+ * One tool call with its status and output. History and live events give
+ * the same values; `argsText` is only the UI's copy of arguments still
+ * streaming in.
+ */
+export interface ToolCall {
+  id: string;
+  name: string;
+  kind: ToolKind;
+  subject: string | null;
+  /** The arguments as sent; null while they stream. */
+  input: unknown;
+  status: ToolStatus;
+  /** Null until there is something to show; edits carry their changes from the start. */
+  output: ToolOutput | null;
+  /** Unix ms, when the harness reports them. */
+  startedAt: number | null;
+  endedAt: number | null;
+}
+
+/** `pending`: written by the model but not started yet. */
+export type ToolStatus = "pending" | "running" | "done" | "failed";
+
+export type ToolOutput =
+  | { type: "text"; text: string }
+  | { type: "edits"; edits: FileEdit[]; text: string | null }
+  /** `exitCode` is null while it runs, or when it was stopped before exiting. */
+  | { type: "shell"; text: string; exitCode: number | null };
 
 /** What a tool call does, so it can be shown without knowing tool names. */
 export type ToolKind = "read" | "edit" | "search" | "execute" | "other";
@@ -72,9 +91,8 @@ export type HarnessEvent =
       delta: string;
     }
   | { type: "messageCompleted"; message: Message }
-  | { type: "toolStarted"; callId: string; name: string; args: unknown }
-  | { type: "toolUpdated"; callId: string; output: string }
-  | { type: "toolFinished"; callId: string; output: string; isError: boolean }
+  /** Replaces the tool-call block with the same id. */
+  | { type: "toolCallUpdated"; call: ToolCall }
   | { type: "runSettled"; aborted: boolean }
   | { type: "titleChanged"; title: string | null }
   | { type: "notice"; level: NoticeLevel; text: string }

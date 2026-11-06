@@ -8,6 +8,7 @@ use std::time::Duration;
 use panoptes_harness::{
     AgentSession, Answer, Block, ContextUsage, Harness, HarnessError, HarnessErrorKind,
     HarnessEvent, ImageAttachment, PromptMode, PromptOutcome, QuestionKind, Role, StartSession,
+    ToolKind, ToolOutput, ToolStatus,
 };
 use panoptes_pi::{PiHarness, PiInstall};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -120,6 +121,55 @@ async fn history_is_fetched_incrementally() {
         .map(|m| m.id)
         .collect();
     assert_eq!(ids, ["e1", "e2", "e3", "e4"]);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_tool_call_is_one_value_live_and_in_history() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("tool".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    let updates: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            HarnessEvent::ToolCallUpdated { call } => Some(call.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        updates.iter().map(|c| c.status).collect::<Vec<_>>(),
+        [ToolStatus::Running, ToolStatus::Running, ToolStatus::Failed]
+    );
+    let live = updates[2];
+    assert_eq!(live.kind, ToolKind::Execute);
+    assert_eq!(
+        live.output,
+        Some(ToolOutput::Shell {
+            text: "building\nbroken".into(),
+            exit_code: Some(3)
+        })
+    );
+    assert!(live.started_at.is_some() && live.ended_at >= live.started_at);
+    assert!(
+        events.iter().all(|e| !matches!(
+            e,
+            HarnessEvent::MessageCompleted { message } if message.blocks.is_empty()
+        )),
+        "the tool result is not sent as a message"
+    );
+
+    let history = session.history().await.unwrap();
+    assert_eq!(
+        history.iter().map(|m| m.role).collect::<Vec<_>>(),
+        [Role::User, Role::Assistant, Role::Assistant]
+    );
+    assert_eq!(
+        history[1].blocks,
+        vec![Block::ToolCall(Box::new(live.clone()))]
+    );
     session.shutdown().await;
 }
 

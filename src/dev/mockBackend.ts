@@ -4,7 +4,15 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { Message, ModelInfo, SessionSettings, SessionUpdate, SidebarSession } from "../types";
+import type {
+  Message,
+  ModelInfo,
+  SessionSettings,
+  SessionUpdate,
+  SidebarSession,
+  ToolCall,
+  ToolOutput,
+} from "../types";
 
 const now = Date.now();
 const hour = 3_600_000;
@@ -46,23 +54,34 @@ const sessions: SidebarSession[] = [
   }),
 ];
 
-type ToolCall = Extract<Message["blocks"][number], { type: "toolCall" }>;
+type ToolCallBlock = Extract<Message["blocks"][number], { type: "toolCall" }>;
 
 const call = (
-  callId: string,
+  id: string,
   name: string,
-  kind: ToolCall["kind"],
-  args: Record<string, unknown>,
+  kind: ToolCallBlock["kind"],
+  input: Record<string, unknown>,
   subject: string | null,
-  edits: ToolCall["edits"] = [],
-): ToolCall => ({
+  output: ToolOutput | null = null,
+  tookMs = 1_000,
+): ToolCallBlock => ({
   type: "toolCall",
-  callId,
+  id,
   name,
-  args,
   kind,
   subject,
-  edits,
+  input,
+  status: "done",
+  output,
+  startedAt: now - tookMs,
+  endedAt: now,
+});
+
+const text = (text: string): ToolOutput => ({ type: "text", text });
+const shell = (text: string, exitCode: number | null = 0): ToolOutput => ({
+  type: "shell",
+  text,
+  exitCode,
 });
 
 const msg = (
@@ -78,9 +97,6 @@ const msg = (
   error: null,
   stopped: false,
 });
-
-const result = (callId: string, name: string, output: string, isError = false) =>
-  ({ type: "toolResult", callId, name, output, isError }) as const;
 
 const RETRY_OLD = `      {message.error && (
         <div className="flex items-center gap-2 text-error">
@@ -107,11 +123,17 @@ const history: Message[] = [
     "assistant",
     [
       { type: "thinking", text: "I should list the directory." },
-      call("t1", "bash", "execute", { command: "ls src" }, "ls src"),
+      call(
+        "t1",
+        "bash",
+        "execute",
+        { command: "ls src" },
+        "ls src",
+        shell("App.tsx\napi.ts\nstore.ts"),
+      ),
     ],
     20 * 60_000 - 2_000,
   ),
-  msg("m3", "tool", [result("t1", "bash", "App.tsx\napi.ts\nstore.ts")], 20 * 60_000 - 3_000),
   msg(
     "m4",
     "assistant",
@@ -143,21 +165,26 @@ const history: Message[] = [
         "read",
         { path: "src/components/ChatPane.tsx" },
         "src/components/ChatPane.tsx",
+        text(RETRY_OLD),
       ),
-      call("t3", "read", "read", { path: "src/conversation.ts" }, "src/conversation.ts"),
-      call("t4", "grep", "search", { pattern: "message.error" }, "message.error"),
+      call(
+        "t3",
+        "read",
+        "read",
+        { path: "src/conversation.ts" },
+        "src/conversation.ts",
+        text("export interface Conversation {\n  messages: Message[];\n}"),
+      ),
+      call(
+        "t4",
+        "grep",
+        "search",
+        { pattern: "message.error" },
+        "message.error",
+        text("src/components/ChatPane.tsx:202:      {message.error && ("),
+      ),
     ],
     10 * 60_000 - 4_000,
-  ),
-  msg(
-    "m7",
-    "tool",
-    [
-      result("t2", "read", RETRY_OLD),
-      result("t3", "read", "export interface Conversation {\n  messages: Message[];\n}"),
-      result("t4", "grep", "src/components/ChatPane.tsx:202:      {message.error && ("),
-    ],
-    10 * 60_000 - 6_000,
   ),
   msg(
     "m8",
@@ -169,24 +196,25 @@ const history: Message[] = [
         "edit",
         { path: "src/components/ChatPane.tsx" },
         "src/components/ChatPane.tsx",
-        [{ path: "src/components/ChatPane.tsx", oldText: RETRY_OLD, newText: RETRY_NEW }],
+        {
+          type: "edits",
+          edits: [{ path: "src/components/ChatPane.tsx", oldText: RETRY_OLD, newText: RETRY_NEW }],
+          text: "Edited src/components/ChatPane.tsx",
+        },
       ),
-      call("t6", "bash", "execute", { command: "pnpm test" }, "pnpm test"),
-    ],
-    10 * 60_000 - 30_000,
-  ),
-  msg(
-    "m9",
-    "tool",
-    [
-      result("t5", "edit", "Edited src/components/ChatPane.tsx"),
-      result(
+      call(
         "t6",
         "bash",
-        " RUN  v3.2.4\n ✓ src/composer.test.ts (18 tests) 41ms\n ✓ src/store.test.ts (12 tests) 33ms\n ✓ src/conversation.test.ts (9 tests) 12ms\n\n Test Files  3 passed (3)\n      Tests  39 passed (39)",
+        "execute",
+        { command: "pnpm test" },
+        "pnpm test",
+        shell(
+          " RUN  v3.2.4\n ✓ src/composer.test.ts (18 tests) 41ms\n ✓ src/store.test.ts (12 tests) 33ms\n ✓ src/conversation.test.ts (9 tests) 12ms\n\n Test Files  3 passed (3)\n      Tests  39 passed (39)",
+        ),
+        8_000,
       ),
     ],
-    10 * 60_000 - 70_000,
+    10 * 60_000 - 30_000,
   ),
   msg(
     "m10",
@@ -300,11 +328,23 @@ async function stream(key: string, text: string) {
       delta: `${word} `,
     });
   }
-  const test = call("live-t", "bash", "execute", { command: "pnpm test" }, "pnpm test");
+  const pending: ToolCall = {
+    id: "live-t",
+    name: "bash",
+    kind: "execute",
+    subject: "pnpm test",
+    input: { command: "pnpm test" },
+    status: "pending",
+    output: null,
+    startedAt: null,
+    endedAt: null,
+  };
+  const test: ToolCallBlock = { type: "toolCall", ...pending };
   await send({ type: "blockStarted", messageId: "work", index: 1, block: test });
   const work = msg(`w${Date.now()}`, "assistant", [{ type: "thinking", text: thought }, test], 0);
   await send({ type: "messageCompleted", message: { ...work, id: "work", timestamp: Date.now() } });
-  await send({ type: "toolStarted", callId: "live-t", name: "bash", args: test.args });
+  const running: ToolCall = { ...pending, status: "running", startedAt: Date.now() };
+  await send({ type: "toolCallUpdated", call: running });
   let output = " RUN  v3.2.4";
   for (const line of [
     " ✓ src/composer.test.ts (18 tests) 41ms",
@@ -313,11 +353,15 @@ async function stream(key: string, text: string) {
   ]) {
     await wait(text === "slow" ? 4000 : 600);
     output += `\n${line}`;
-    await send({ type: "toolUpdated", callId: "live-t", output });
+    await send({ type: "toolCallUpdated", call: { ...running, output: shell(output, null) } });
   }
-  await send({ type: "toolFinished", callId: "live-t", output, isError: false });
-  const tested = msg("r-t", "tool", [result("live-t", "bash", output)], 0);
-  await send({ type: "messageCompleted", message: { ...tested, timestamp: Date.now() } });
+  const tested: ToolCall = {
+    ...running,
+    status: "done",
+    output: shell(output),
+    endedAt: Date.now(),
+  };
+  await send({ type: "toolCallUpdated", call: tested });
   await send({ type: "messageStarted", messageId: "live", role: "assistant" });
   await send({
     type: "blockStarted",
@@ -339,8 +383,11 @@ async function stream(key: string, text: string) {
   }
   history.push(
     user,
-    { ...work, timestamp: Date.now() },
-    { ...tested, id: `t${Date.now()}`, timestamp: Date.now() },
+    {
+      ...work,
+      blocks: [work.blocks[0], { type: "toolCall", ...tested }],
+      timestamp: Date.now(),
+    },
     msg(`r${Date.now()}`, "assistant", [{ type: "text", text: reply }], 0),
   );
   await send({ type: "runSettled", aborted: false });

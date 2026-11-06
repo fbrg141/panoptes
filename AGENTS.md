@@ -33,7 +33,9 @@ this way.
   a neutral type.
 - **The event model is the contract.** The UI rebuilds streaming state from
   `HarnessEvent`s. `MessageCompleted` replaces whatever was streamed under
-  the same id, `RunSettled` means the run is finished, and the history is then
+  the same id, `ToolCallUpdated` replaces the tool call with the same id (a
+  `ToolCall` holds its status and output; there are no result messages, and
+  the UI keeps no tool state of its own), `RunSettled` means the run is finished, and the history is then
   reloaded to swap live ids for stable ones. A session's status (Running,
   Waiting, Failed, Done) is worked out once, in the service, and sent as
   `statusChanged`; the UI never derives it. Errors reach the UI as

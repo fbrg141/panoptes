@@ -167,11 +167,10 @@ Smaller fixes from the backend review, needed by the model above:
    its `harnessRef`.
 2. **Explicit status.** A `StatusChanged` event from the service, with the
    four statuses above.
-3. **Tool calls as one entity.** #16 added a kind, a subject and file edits to
-   the tool-call block. What remains: a call's status and output still live in
-   three places (the call block, a separate tool-result message, and a UI-only
-   map), joined by `callId`. One tool call with its kind, status, input and
-   output, including shell output, removes that.
+3. **Tool calls as one entity.** Done in #24: a `ToolCall` holds its kind,
+   subject, input, status and output (text, file edits, or shell output with
+   an exit code). The adapter folds results into their calls, live and in
+   history, and `ToolCallUpdated` replaces the call in place.
 4. **Approvals as their own type.** An approval is tied to a tool call and
    offers allow or reject. Pi has no permission system of its own; its
    extensions ask through confirm dialogs, so the Pi adapter maps those it can

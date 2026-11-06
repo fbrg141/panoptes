@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyEvent, emptyConversation, enqueue } from "./conversation";
 import { groupSessions, relativeTime } from "./grouping";
-import type { HarnessEvent, SidebarSession } from "./types";
+import type { HarnessEvent, SidebarSession, ToolCall } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
 
@@ -48,14 +48,41 @@ describe("applyEvent", () => {
     vi.useRealTimers();
   });
 
-  it("tracks tool runs by call id, with how long they took", () => {
-    vi.useFakeTimers({ now: 1000 });
-    let c = fold([{ type: "toolStarted", callId: "c1", name: "bash", args: { command: "ls" } }]);
-    vi.setSystemTime(1500);
-    c = applyEvent(c, { type: "toolUpdated", callId: "c1", output: "a" });
-    vi.setSystemTime(4000);
-    c = applyEvent(c, { type: "toolFinished", callId: "c1", output: "a\nb", isError: false });
-    expect(c.tools.c1).toEqual({ status: "done", output: "a\nb", startedAt: 1000, endedAt: 4000 });
+  it("updates a tool call in place, keeping its streamed arguments", () => {
+    const pending: ToolCall = {
+      id: "c1",
+      name: "bash",
+      kind: "execute",
+      subject: null,
+      input: null,
+      status: "pending",
+      output: null,
+      startedAt: null,
+      endedAt: null,
+    };
+    let c = fold([
+      { type: "messageStarted", messageId: "live-1", role: "assistant" },
+      {
+        type: "blockStarted",
+        messageId: "live-1",
+        index: 0,
+        block: { type: "toolCall", ...pending },
+      },
+      { type: "blockDelta", messageId: "live-1", index: 0, kind: "toolArgs", delta: '{"command"' },
+    ]);
+    const done: ToolCall = {
+      ...pending,
+      subject: "ls",
+      input: { command: "ls" },
+      status: "done",
+      output: { type: "shell", text: "a", exitCode: 0 },
+      startedAt: 1000,
+      endedAt: 2000,
+    };
+    c = applyEvent(c, { type: "toolCallUpdated", call: done });
+    expect(c.messages[0].blocks[0]).toEqual({ type: "toolCall", argsText: '{"command"', ...done });
+    // An update for a call no message holds changes nothing.
+    expect(applyEvent(c, { type: "toolCallUpdated", call: { ...done, id: "other" } })).toBe(c);
   });
 
   it("times a thinking block until the next block starts", () => {
