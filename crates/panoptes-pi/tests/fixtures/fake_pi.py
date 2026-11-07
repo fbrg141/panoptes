@@ -7,13 +7,21 @@ for the adapter's tests. Prompts select behaviour:
   "tool"   runs a `bash` call that fails with exit code 3, then replies
   "queue"  lists two steering prompts, then one, then none, before replying
   "gate"   starts a `bash` call, asks Yes/No before running it (as a
-           permission extension would) and replies with the answer
+           permission extension would, tagged the way Panoptes' own
+           `--extension` tags it, if one was passed) and replies with the
+           answer
+  "tool-ask"  starts a call whose tool asks its own Yes/No question, untagged,
+           and replies with the answer
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
 
 import json
 import sys
+
+# Panoptes passes its approvals extension; only a real file counts.
+extension = sys.argv[sys.argv.index("--extension") + 1] if "--extension" in sys.argv else None
+tags_approvals = extension is not None and "panoptes.approval" in open(extension).read()
 
 entries = []
 counter = 0
@@ -106,10 +114,18 @@ def run(text, images):
         send({"type": "queue_update", "steering": [], "followUp": []})
     if text == "gate":
         send({"type": "tool_execution_start", "toolCallId": "call-g", "toolName": "bash", "args": {"command": "rm -rf build"}})
+        if tags_approvals:
+            send({"type": "extension_ui_request", "id": "s1", "method": "setStatus",
+                  "statusKey": "panoptes.approval", "statusText": "call-g"})
         send({"type": "extension_ui_request", "id": "g1", "method": "select",
               "title": "Dangerous command:\n\n  rm -rf build\n\nAllow?", "options": ["Yes", "No"]})
         answer = json.loads(sys.stdin.readline())
         reply = f"gate={answer.get('value')}"
+    if text == "tool-ask":
+        send({"type": "tool_execution_start", "toolCallId": "call-t", "toolName": "ask_preference", "args": {"question": "Tabs?"}})
+        send({"type": "extension_ui_request", "id": "t1", "method": "select", "title": "Tabs?", "options": ["Yes", "No"]})
+        answer = json.loads(sys.stdin.readline())
+        reply = f"tabs={answer.get('value')}"
     if text == "ask":
         send({"type": "extension_ui_request", "id": "q1", "method": "confirm", "title": "Proceed?"})
         answer = json.loads(sys.stdin.readline())

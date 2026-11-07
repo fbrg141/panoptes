@@ -174,10 +174,13 @@ Smaller fixes from the backend review, needed by the model above:
 4. **Approvals as their own type.** Done in #25: an `Approval` names its tool
    call and is answered with allow or reject, and puts the session in
    Waiting. Pi has no permission system of its own; its extensions ask
-   through dialogs from their `tool_call` hook, which runs after Pi reports
-   the call started and before it runs. The Pi adapter treats a confirm, or a
-   select between one allow and one reject option, that arrives in that gap
-   as the call's approval, and leaves every other dialog a question.
+   through dialogs from their `tool_call` hook. Over RPC such a dialog looks
+   the same as a question a tool asks while it runs, so Panoptes starts Pi
+   with a small extension of its own (`crates/panoptes-pi/src/approvals.js`)
+   that tags each confirm or select a `tool_call` hook raises with the call's
+   id. The Pi adapter treats a tagged confirm, or a tagged select between one
+   allow and one reject option, as the call's approval, and leaves every
+   other dialog a question.
 5. **Stable message ids and images.** Done in #26: a message keeps the id it
    streamed under while the session is open (the Pi adapter finds each
    history entry's live id by the message's role and timestamp), the harness
