@@ -147,13 +147,37 @@ export interface SidebarSession {
   messageCount: number;
   parentLocator: string | null;
   projectRoot: string;
+  /** Main checkout of the git repository the session runs in, shared by its worktrees; null outside git. */
+  checkout: string | null;
+  /** The registered project whose repository (or one of its worktrees) the session runs in. */
+  projectId: number | null;
   pinned: boolean;
   open: boolean;
 }
 
+/** What can be changed about a project (`ProjectSettings` in src-tauri/src/store.rs). */
+export interface ProjectSettings {
+  name: string;
+  /** What new worktrees branch from. */
+  baseBranch: string;
+  /** Untracked files copied from the main checkout into new worktrees. */
+  copyFiles: string[];
+  /** Run in a new worktree once it is made. */
+  setup: string | null;
+}
+
+/** A registered git repository (`Project` in src-tauri/src/store.rs). */
+export interface Project extends ProjectSettings {
+  id: number;
+  /** Path of the main checkout. */
+  repo: string;
+}
+
 export interface Listing {
   sessions: SidebarSession[];
-  /** One line per harness whose sessions could not be listed, and one if the pins could not be read. */
+  /** Every registered project, by name. */
+  projects: Project[];
+  /** One line per harness whose sessions could not be listed, and one each if the pins or projects could not be read. */
   errors: string[];
 }
 

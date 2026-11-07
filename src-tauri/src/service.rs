@@ -16,7 +16,8 @@ use panoptes_harness::{
 use serde::Serialize;
 use tokio::sync::{Mutex, oneshot};
 
-use crate::store::Store;
+use crate::projects::{self, Location};
+use crate::store::{Project, ProjectSettings, Store};
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -217,6 +218,12 @@ pub struct SidebarSession {
     #[serde(flatten)]
     pub summary: SessionSummary,
     pub project_root: String,
+    /// The main checkout of the git repository the session runs in, shared
+    /// by all its worktrees. `None` outside git.
+    pub checkout: Option<String>,
+    /// The registered project whose repository the session runs in, in its
+    /// main checkout or one of its worktrees.
+    pub project_id: Option<i64>,
     pub pinned: bool,
     pub open: bool,
 }
@@ -225,8 +232,10 @@ pub struct SidebarSession {
 #[serde(rename_all = "camelCase")]
 pub struct Listing {
     pub sessions: Vec<SidebarSession>,
-    /// One line per harness whose sessions could not be listed, and one if
-    /// the pins could not be read.
+    /// Every registered project, by name, with or without sessions.
+    pub projects: Vec<Project>,
+    /// One line per harness whose sessions could not be listed, and one
+    /// each if the pins or projects could not be read.
     pub errors: Vec<String>,
 }
 
@@ -256,8 +265,8 @@ pub struct Service {
     generations: AtomicU64,
     /// Shared with the blocking threads that run every store call.
     store: Arc<std::sync::Mutex<Store>>,
-    /// Working directory to project root, so each is looked up once.
-    project_roots: std::sync::Mutex<HashMap<String, String>>,
+    /// Where each working directory sits in git, so each is looked up once.
+    locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
 }
 
@@ -272,7 +281,7 @@ impl Service {
             opening: Mutex::default(),
             generations: AtomicU64::new(1),
             store: Arc::new(std::sync::Mutex::new(store)),
-            project_roots: std::sync::Mutex::default(),
+            locations: std::sync::Mutex::default(),
             emit,
         }
     }
@@ -315,14 +324,34 @@ impl Service {
                 errors.push(format!("Could not read pins: {}", err(error)));
                 Default::default()
             });
+        let projects = self
+            .with_store(|store| store.projects())
+            .await
+            .unwrap_or_else(|error| {
+                errors.push(format!("Could not read projects: {}", err(error)));
+                Vec::new()
+            });
+        let by_checkout: HashMap<&Path, i64> = projects
+            .iter()
+            .map(|project| (Path::new(&project.repo), project.id))
+            .collect();
         let open = self.open.lock().await;
-        let mut project_roots = self.project_roots.lock().unwrap();
+        let mut locations = self.locations.lock().unwrap();
         let sessions = summaries
             .into_iter()
             .map(|summary| {
                 let key = session_key(&summary.harness, &summary.id);
+                let location = cached_location(&mut locations, &summary.cwd);
                 SidebarSession {
-                    project_root: cached_project_root(&mut project_roots, &summary.cwd),
+                    project_id: location
+                        .checkout
+                        .as_deref()
+                        .and_then(|checkout| by_checkout.get(checkout).copied()),
+                    checkout: location
+                        .checkout
+                        .as_deref()
+                        .map(|c| c.to_string_lossy().into_owned()),
+                    project_root: location.root,
                     pinned: pinned.contains(&key),
                     open: open.contains_key(&key),
                     key,
@@ -330,7 +359,12 @@ impl Service {
                 }
             })
             .collect();
-        Listing { sessions, errors }
+        drop(locations);
+        Listing {
+            sessions,
+            projects,
+            errors,
+        }
     }
 
     /// Opens a listed session, or returns it if it is already open.
@@ -580,6 +614,36 @@ impl Service {
             .map_err(err)
     }
 
+    /// Registers the git repository `folder` is in, by its main checkout,
+    /// with the default settings. Registering a repository twice fails.
+    pub async fn add_project(&self, folder: String) -> ServiceResult<Project> {
+        self.with_store(move |store| {
+            let repo = projects::repository_of(Path::new(&folder))?;
+            let settings = projects::validate(projects::default_settings(&repo))?;
+            store.add_project(&repo.to_string_lossy(), &settings)
+        })
+        .await
+        .map_err(err)
+    }
+
+    pub async fn update_project(
+        &self,
+        id: i64,
+        settings: ProjectSettings,
+    ) -> ServiceResult<Project> {
+        self.with_store(move |store| store.update_project(id, &projects::validate(settings)?))
+            .await
+            .map_err(err)
+    }
+
+    /// Forgets a project. Nothing on disk changes, and its sessions are
+    /// listed by folder again.
+    pub async fn remove_project(&self, id: i64) -> ServiceResult<()> {
+        self.with_store(move |store| store.remove_project(id))
+            .await
+            .map_err(err)
+    }
+
     /// Runs `call` on a blocking thread: SQLite calls block, for up to the
     /// busy timeout when another process holds the database, and must not
     /// stall the async runtime or the main thread.
@@ -594,23 +658,11 @@ impl Service {
     }
 }
 
-fn cached_project_root(cache: &mut HashMap<String, String>, cwd: &str) -> String {
-    if let Some(root) = cache.get(cwd) {
-        return root.clone();
-    }
-    let root = project_root(cwd);
-    cache.insert(cwd.to_string(), root.clone());
-    root
-}
-
-/// The project a working directory belongs to: the enclosing git repository
-/// (or worktree) root, else the directory itself.
-fn project_root(cwd: &str) -> String {
-    Path::new(cwd)
-        .ancestors()
-        .find(|dir| dir.join(".git").exists())
-        .map(|dir| dir.to_string_lossy().into_owned())
-        .unwrap_or_else(|| cwd.to_string())
+fn cached_location(cache: &mut HashMap<String, Location>, cwd: &str) -> Location {
+    cache
+        .entry(cwd.to_string())
+        .or_insert_with(|| projects::locate(Path::new(cwd)))
+        .clone()
 }
 
 #[cfg(test)]
@@ -627,6 +679,8 @@ mod tests {
     struct FakeHarness {
         starts: AtomicUsize,
         fail_listing: bool,
+        /// Where its sessions run, one session per folder; `/tmp` when empty.
+        cwds: Vec<String>,
         sinks: std::sync::Mutex<Vec<EventSink>>,
     }
 
@@ -645,17 +699,26 @@ mod tests {
             if self.fail_listing {
                 anyhow::bail!("disk on fire");
             }
-            Ok(vec![SessionSummary {
-                harness: "fake".into(),
-                id: "s1".into(),
-                locator: "s1".into(),
-                cwd: "/tmp".into(),
-                title: "One".into(),
-                created_at: 0,
-                updated_at: 0,
-                message_count: 0,
-                parent_locator: None,
-            }])
+            let cwds = if self.cwds.is_empty() {
+                vec!["/tmp".to_string()]
+            } else {
+                self.cwds.clone()
+            };
+            Ok(cwds
+                .into_iter()
+                .enumerate()
+                .map(|(i, cwd)| SessionSummary {
+                    harness: "fake".into(),
+                    id: format!("s{}", i + 1),
+                    locator: format!("s{}", i + 1),
+                    cwd,
+                    title: "One".into(),
+                    created_at: 0,
+                    updated_at: 0,
+                    message_count: 0,
+                    parent_locator: None,
+                })
+                .collect())
         }
 
         async fn start_session(
@@ -1020,6 +1083,113 @@ mod tests {
             "{:?}",
             listing.errors
         );
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[tokio::test]
+    async fn sessions_are_matched_to_projects_by_their_folder() {
+        let code = tempfile::tempdir().unwrap();
+        let code = std::fs::canonicalize(code.path()).unwrap();
+        let repo = code.join("web");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let worktree = code.join("workspaces/fix/web");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "fix",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let other = code.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+        let f = fixture(FakeHarness {
+            cwds: vec![path(&repo.join("src")), path(&worktree), path(&other)],
+            ..FakeHarness::default()
+        });
+
+        // Registering from a worktree registers the main checkout.
+        let project = f.service.add_project(path(&worktree)).await.unwrap();
+        assert_eq!(project.repo, path(&repo));
+        assert_eq!(project.settings.name, "web");
+        assert_eq!(project.settings.base_branch, "trunk");
+        assert_eq!(project.settings.copy_files, [".env"]);
+        let again = f.service.add_project(path(&repo)).await.unwrap_err();
+        assert!(again.message.contains("already registered"), "{again}");
+
+        let listing = f.service.list().await;
+        assert_eq!(listing.projects, std::slice::from_ref(&project));
+        let matched: Vec<_> = listing.sessions.iter().map(|s| s.project_id).collect();
+        assert_eq!(matched, [Some(project.id), Some(project.id), None]);
+        assert_eq!(listing.sessions[1].project_root, path(&worktree));
+        assert_eq!(listing.sessions[1].checkout, Some(path(&repo)));
+        assert_eq!(listing.sessions[2].checkout, None);
+
+        f.service.remove_project(project.id).await.unwrap();
+        let listing = f.service.list().await;
+        assert!(listing.projects.is_empty());
+        assert!(listing.sessions.iter().all(|s| s.project_id.is_none()));
+    }
+
+    #[tokio::test]
+    async fn project_settings_are_checked_before_they_are_saved() {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "--quiet"]);
+        let f = fixture(FakeHarness::default());
+        let project = f
+            .service
+            .add_project(repo.path().to_string_lossy().into_owned())
+            .await
+            .unwrap();
+
+        let mut settings = project.settings.clone();
+        settings.copy_files = vec!["../outside".into()];
+        let error = f
+            .service
+            .update_project(project.id, settings)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("not a path inside"), "{error}");
+
+        let mut settings = project.settings.clone();
+        settings.setup = Some(" pnpm install ".into());
+        let saved = f
+            .service
+            .update_project(project.id, settings)
+            .await
+            .unwrap();
+        assert_eq!(saved.settings.setup.as_deref(), Some("pnpm install"));
+        assert_eq!(f.service.list().await.projects, [saved]);
+
+        let outside = tempfile::tempdir().unwrap();
+        let error = f
+            .service
+            .add_project(outside.path().to_string_lossy().into_owned())
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("not in a git repository"), "{error}");
     }
 
     #[tokio::test]

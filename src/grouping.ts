@@ -1,10 +1,14 @@
-import type { SidebarSession } from "./types";
+import type { Project, SidebarSession } from "./types";
 
 export interface SessionGroup {
   id: string;
   label: string;
-  /** Folder new sessions in this group start in, when the group is a project. */
+  /** Folder new sessions in this group start in, when the group is a project or a folder. */
   cwd?: string;
+  /** The registered project this group shows. */
+  project?: Project;
+  /** For a folder that is not registered: the git repository it can be registered as. */
+  checkout?: string;
   sessions: SidebarSession[];
 }
 
@@ -14,37 +18,63 @@ const byRecent = (a: SidebarSession, b: SidebarSession) => b.updatedAt - a.updat
 
 /**
  * Sidebar groups: open sessions (with a live process), then pinned sessions, then
- * every project (git root, else folder) by most recent activity. A session
- * appears once, in the first group that claims it.
+ * every registered project and every other folder (git root, else folder) by most
+ * recent activity, then registered projects with no sessions yet. A session appears
+ * once, in the first group that claims it. A filter hides empty projects.
  */
-export function groupSessions(sessions: SidebarSession[], query = ""): SessionGroup[] {
+export function groupSessions(
+  sessions: SidebarSession[],
+  projects: Project[] = [],
+  query = "",
+): SessionGroup[] {
   const needle = query.trim().toLowerCase();
-  const visible = sessions
-    .filter(
-      (s) =>
-        !needle ||
-        s.title.toLowerCase().includes(needle) ||
-        s.projectRoot.toLowerCase().includes(needle),
-    )
-    .sort(byRecent);
+  const projectById = new Map(projects.map((p) => [p.id, p]));
+  const matches = (s: SidebarSession) => {
+    if (!needle) return true;
+    const project = s.projectId === null ? undefined : projectById.get(s.projectId);
+    return [s.title, s.projectRoot, project?.name ?? ""].some((text) =>
+      text.toLowerCase().includes(needle),
+    );
+  };
+  const visible = sessions.filter(matches).sort(byRecent);
 
   const open = visible.filter((s) => s.open);
   const pinned = visible.filter((s) => !s.open && s.pinned);
   const rest = visible.filter((s) => !s.open && !s.pinned);
 
-  const projects = new Map<string, SidebarSession[]>();
+  // Insertion order is most recent first, since `rest` is sorted.
+  const places = new Map<string, SessionGroup>();
   for (const session of rest) {
-    const list = projects.get(session.projectRoot) ?? [];
-    list.push(session);
-    projects.set(session.projectRoot, list);
+    const project = session.projectId === null ? undefined : projectById.get(session.projectId);
+    const id = project ? `project:${project.id}` : `folder:${session.projectRoot}`;
+    let group = places.get(id);
+    if (!group) {
+      group = project
+        ? { id, label: project.name, cwd: project.repo, project, sessions: [] }
+        : {
+            id,
+            label: basename(session.projectRoot),
+            cwd: session.projectRoot,
+            checkout: session.checkout ?? undefined,
+            sessions: [],
+          };
+      places.set(id, group);
+    }
+    group.sessions.push(session);
+  }
+  if (!needle) {
+    for (const project of projects) {
+      const id = `project:${project.id}`;
+      if (!places.has(id)) {
+        places.set(id, { id, label: project.name, cwd: project.repo, project, sessions: [] });
+      }
+    }
   }
 
   const groups: SessionGroup[] = [];
   if (open.length) groups.push({ id: "open", label: "Open", sessions: open });
   if (pinned.length) groups.push({ id: "pinned", label: "Pinned", sessions: pinned });
-  for (const [root, list] of projects) {
-    groups.push({ id: `project:${root}`, label: basename(root), cwd: root, sessions: list });
-  }
+  groups.push(...places.values());
   return groups;
 }
 

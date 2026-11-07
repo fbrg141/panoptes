@@ -8,8 +8,8 @@ import type { SidebarSession } from "../types";
 /** Sessions shown per project before "more". */
 const COLLAPSED_PROJECT_LIMIT = 5;
 
-async function pickFolder(): Promise<string | null> {
-  const folder = await openDialog({ directory: true, title: "Start a session in…" });
+async function pickFolder(title: string): Promise<string | null> {
+  const folder = await openDialog({ directory: true, title });
   return typeof folder === "string" ? folder : null;
 }
 
@@ -19,16 +19,23 @@ export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
   const drafts = useStore((s) => s.drafts);
   const listErrors = useStore((s) => s.listErrors);
+  const projects = useStore((s) => s.projects);
   const create = useStore((s) => s.create);
+  const addProject = useStore((s) => s.addProject);
   const [query, setQuery] = useState("");
   const groups = useMemo(
-    () => groupSessions([...drafts, ...sessions], query),
-    [sessions, drafts, query],
+    () => groupSessions([...drafts, ...sessions], projects, query),
+    [sessions, drafts, projects, query],
   );
 
-  const startIn = async (cwd?: string) => {
-    const folder = cwd ?? (await pickFolder());
-    if (folder) await create(folder);
+  const startIn = async (cwd?: string, projectId?: number) => {
+    const folder = cwd ?? (await pickFolder("Start a session in…"));
+    if (folder) await create(folder, projectId);
+  };
+
+  const register = async () => {
+    const folder = await pickFolder("Add a git repository as a project");
+    if (folder) await addProject(folder);
   };
 
   return (
@@ -36,6 +43,14 @@ export function Sidebar() {
       <header className="flex h-[var(--titlebar)] items-center gap-2 border-b border-line px-3">
         <LoopMark size={20} />
         <span className="text-wordmark flex-1">Panoptes</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="folder"
+          aria-label="Add project"
+          title="Add a git repository as a project"
+          onClick={() => void register()}
+        />
         <Button
           variant="ghost"
           size="sm"
@@ -64,7 +79,7 @@ export function Sidebar() {
           <Group
             key={group.id}
             group={group}
-            onNew={group.cwd ? () => void startIn(group.cwd) : undefined}
+            onNew={group.cwd ? () => void startIn(group.cwd, group.project?.id) : undefined}
           />
         ))}
         {groups.length === 0 && (
@@ -78,7 +93,10 @@ export function Sidebar() {
 }
 
 function Group({ group, onNew }: { group: SessionGroup; onNew?: () => void }) {
+  const addProject = useStore((s) => s.addProject);
+  const removeProject = useStore((s) => s.removeProject);
   const [expanded, setExpanded] = useState(false);
+  const project = group.project;
   const collapsible = group.cwd !== undefined;
   const shown =
     collapsible && !expanded ? group.sessions.slice(0, COLLAPSED_PROJECT_LIMIT) : group.sessions;
@@ -90,18 +108,42 @@ function Group({ group, onNew }: { group: SessionGroup; onNew?: () => void }) {
         <h2 className="text-caption" title={group.cwd}>
           {group.label}
         </h2>
-        {onNew && (
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="plus"
-            aria-label={`New session in ${group.label}`}
-            title={`New session in ${group.cwd}`}
-            className="invisible group-hover/section:visible"
-            onClick={onNew}
-          />
-        )}
+        <span className="invisible flex gap-1 group-hover/section:visible">
+          {project && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="x"
+              aria-label={`Remove project ${group.label}`}
+              title="Remove this project from Panoptes. Nothing on disk changes"
+              onClick={() => void removeProject(project.id)}
+            />
+          )}
+          {!project && group.checkout && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="folder"
+              aria-label={`Add ${group.label} as a project`}
+              title={`Add ${group.checkout} as a project`}
+              onClick={() => void addProject(group.checkout as string)}
+            />
+          )}
+          {onNew && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="plus"
+              aria-label={`New session in ${group.label}`}
+              title={`New session in ${group.cwd}`}
+              onClick={onNew}
+            />
+          )}
+        </span>
       </header>
+      {project && group.sessions.length === 0 && (
+        <p className="px-3 pb-1 text-ink-muted">No sessions yet.</p>
+      )}
       <ul>
         {shown.map((session) => (
           <SessionItem key={session.key} session={session} />

@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { api } from "./api";
 import { createAppStore } from "./store";
 import type {
+  Listing,
   OpenedSession,
+  Project,
   PromptOutcome,
   SessionEvent,
   SessionSettings,
@@ -21,8 +23,19 @@ const session: SidebarSession = {
   messageCount: 0,
   parentLocator: null,
   projectRoot: "/code",
+  checkout: null,
+  projectId: null,
   pinned: false,
   open: false,
+};
+
+const project: Project = {
+  id: 1,
+  repo: "/code",
+  name: "code",
+  baseBranch: "main",
+  copyFiles: [".env"],
+  setup: null,
 };
 
 const opened: OpenedSession = {
@@ -42,7 +55,9 @@ function fakeBackend() {
   let emit: (event: SessionEvent) => void = () => {};
   const backend = {
     appInfo: vi.fn(async () => ({ harnesses: [], errors: [] })),
-    listSessions: vi.fn(async () => ({ sessions: [session], errors: [] })),
+    listSessions: vi.fn(
+      async (): Promise<Listing> => ({ sessions: [session], projects: [], errors: [] }),
+    ),
     openSession: vi.fn(async () => opened),
     newSession: vi.fn(async () => opened),
     history: vi.fn(async () => []),
@@ -60,6 +75,9 @@ function fakeBackend() {
     answer: vi.fn(async () => {}),
     closeSession: vi.fn(async () => {}),
     setPinned: vi.fn(async () => {}),
+    addProject: vi.fn(async (): Promise<Project> => project),
+    updateProject: vi.fn(async (): Promise<Project> => project),
+    removeProject: vi.fn(async () => {}),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
       return () => {};
@@ -205,5 +223,35 @@ describe("store", () => {
     fake.backend.openSession.mockRejectedValueOnce("Pi is not installed");
     await store.getState().open(session);
     expect(store.getState().error).toBe("Pi is not installed");
+  });
+
+  it("registers a project and lists it after", async () => {
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [{ ...session, projectId: 1 }],
+      projects: [project],
+      errors: [],
+    });
+    await store.getState().addProject("/code/src");
+    expect(fake.backend.addProject).toHaveBeenCalledWith("/code/src");
+    expect(store.getState().projects).toEqual([project]);
+    expect(store.getState().sessions[0].projectId).toBe(1);
+
+    await store.getState().removeProject(1);
+    expect(fake.backend.removeProject).toHaveBeenCalledWith(1);
+    expect(store.getState().projects).toEqual([]);
+  });
+
+  it("shows why a folder could not be registered", async () => {
+    fake.backend.addProject.mockRejectedValueOnce({
+      kind: "other",
+      message: "/tmp is not in a git repository",
+    });
+    await store.getState().addProject("/tmp");
+    expect(store.getState().error).toBe("/tmp is not in a git repository");
+  });
+
+  it("lists a new session under the project it was started from", async () => {
+    await store.getState().create("/code", 1);
+    expect(store.getState().drafts[0].projectId).toBe(1);
   });
 });

@@ -8,6 +8,7 @@ import type {
   Answer,
   Message,
   ModelInfo,
+  Project,
   QueuedPrompt,
   SessionSettings,
   SessionUpdate,
@@ -31,6 +32,8 @@ const session = (
   messageCount: 12,
   parentLocator: null,
   projectRoot: "/Users/you/code/panoptes",
+  checkout: "/Users/you/code/panoptes",
+  projectId: 1,
   pinned: false,
   open: false,
   ...over,
@@ -45,6 +48,8 @@ const sessions: SidebarSession[] = [
     title: "Parse invoice PDFs",
     cwd: "/Users/you/code/pdf-review",
     projectRoot: "/Users/you/code/pdf-review",
+    checkout: "/Users/you/code/pdf-review",
+    projectId: null,
     updatedAt: now - 26 * hour,
   }),
   session({
@@ -52,9 +57,31 @@ const sessions: SidebarSession[] = [
     title: "Try a new tokenizer",
     cwd: "/Users/you/scratch",
     projectRoot: "/Users/you/scratch",
+    checkout: null,
+    projectId: null,
     updatedAt: now - 9 * 24 * hour,
   }),
 ];
+
+let projects: Project[] = [
+  {
+    id: 1,
+    repo: "/Users/you/code/panoptes",
+    name: "panoptes",
+    baseBranch: "main",
+    copyFiles: [".env"],
+    setup: "pnpm install",
+  },
+  {
+    id: 2,
+    repo: "/Users/you/code/design-system",
+    name: "design-system",
+    baseBranch: "main",
+    copyFiles: [".env"],
+    setup: null,
+  },
+];
+let nextProjectId = 3;
 
 type ToolCallBlock = Extract<Message["blocks"][number], { type: "toolCall" }>;
 
@@ -459,7 +486,35 @@ export function installMockBackend() {
             errors: [],
           };
         case "list_sessions":
-          return { sessions: sessions.map((s) => ({ ...s, open: open.has(s.key) })), errors: [] };
+          return {
+            sessions: sessions.map((s) => {
+              const project = projects.find((p) => p.repo === s.checkout);
+              return { ...s, projectId: project?.id ?? null, open: open.has(s.key) };
+            }),
+            projects: [...projects].sort((x, y) => x.name.localeCompare(y.name)),
+            errors: [],
+          };
+        case "add_project": {
+          if (projects.some((p) => p.repo === a.folder)) {
+            throw { kind: "other", message: `${a.folder} is already registered` };
+          }
+          const name = a.folder.split("/").filter(Boolean).pop() ?? a.folder;
+          const project = {
+            id: nextProjectId++,
+            repo: a.folder,
+            name,
+            baseBranch: "main",
+            copyFiles: [".env"],
+            setup: null,
+          };
+          projects.push(project);
+          return project;
+        }
+        case "remove_project": {
+          const id = (args as { id: number }).id;
+          projects = projects.filter((p) => p.id !== id);
+          return null;
+        }
         case "open_session":
           if (!open.has(a.key)) {
             void emit("session-event", {

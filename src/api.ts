@@ -9,6 +9,8 @@ import type {
   Message,
   ModelInfo,
   OpenedSession,
+  Project,
+  ProjectSettings,
   PromptMode,
   PromptOutcome,
   SessionEvent,
@@ -45,6 +47,10 @@ export const api = {
     invoke<void>("answer_question", { key, questionId, answer }),
   closeSession: (key: string) => invoke<void>("close_session", { key }),
   setPinned: (key: string, pinned: boolean) => invoke<void>("set_pinned", { key, pinned }),
+  addProject: (folder: string) => invoke<Project>("add_project", { folder }),
+  updateProject: (id: number, settings: ProjectSettings) =>
+    invoke<Project>("update_project", { id, settings }),
+  removeProject: (id: number) => invoke<void>("remove_project", { id }),
   onSessionEvent: (handler: (event: SessionEvent) => void) =>
     listen<SessionEvent>("session-event", (e) => handler(e.payload)),
 };
