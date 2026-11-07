@@ -144,8 +144,9 @@ diff.
    worktrees, so multi-repo lanes (#21) need no migration, but the UI only
    ever creates one. Room without complexity.
 3. **Archiving never destroys work.** A dirty tree is never removed as it
-   is: Panoptes offers commit, stash onto the branch, or moving the tree
-   aside to a holding area. Archive leaves the branch alone.
+   is: Panoptes offers commit, stash onto the branch, or keeping it as a
+   checkpoint (see the checkpoint decision below). Archive leaves the branch
+   alone.
 4. **A fresh worktree by default, the main checkout on purpose.** A lane
    normally gets its own worktree. For big repos it can point at the main
    checkout instead, as an explicit opt-in that is clearly marked.
@@ -184,6 +185,56 @@ spine is built fast and solid rather than polished. What sets Panoptes apart
 has to come from one chosen bet, picked after two weeks of real use of the
 spine, not before. Until then no bet gets more than the work the spine needs
 anyway.
+
+## Per-turn checkpoints on plain git, not Jujutsu
+
+*Decided 2026-11-07.*
+
+A lane keeps a checkpoint of its worktree at every turn, so each prompt has
+its own diff, any turn can be undone and nothing an agent writes is lost.
+The repository stays plain git and Panoptes does not use Jujutsu (jj).
+
+**How a checkpoint is taken.** When the write-lock holder's run settles,
+the core copies the worktree's index to a private index file, runs
+`git add -A` against that copy, then `write-tree` and `commit-tree` with the
+previous checkpoint as parent, and points
+`refs/panoptes/lanes/<lane id>/turns/<n>` at the result. One is also taken
+before a turn starts, so edits you make between turns are not credited to
+the agent.
+
+- **Nothing the user or agent sees changes.** The real index, `HEAD`, the
+  branch and the stash are untouched, so `git status`, staging and commits
+  in the worktree behave as before. The refs are not branches, so a normal
+  push never sends them.
+- **`.gitignore` is respected.** Ignored files (`.env`, `target/`,
+  `node_modules/`) are never captured. Files larger than a set limit are
+  skipped and the checkpoint says which.
+- **The write lock (#22) is what makes it sound.** A turn is one
+  lock-holder's run, so a checkpoint never mixes two agents, and an undo
+  needs the lock and an idle lane. Starting from a copy of the real index
+  keeps git's stat cache, so a checkpoint costs about as much as
+  `git status`.
+- **The main checkout is the weak case.** You may be editing the same tree,
+  so diffs per turn are approximate there and undo asks first.
+- **Finishing needs no squash.** Checkpoints sit beside the branch, not on
+  it, so the branch holds only the commits that were meant. The refs are
+  removed when a lane is deleted, never when it is archived.
+
+**Why not jj.** jj's operation log gives the same undo for free, but in a
+colocated repo git sees a detached `HEAD`, the agents (trained on git) run
+git commands that jj only picks up on its next command, extra jj workspaces
+are not git worktrees so git tooling inside them fails, bookmarks must be
+moved by hand before `lane/<slug>` can be pushed, git hooks don't run, and
+the jj binary (or the unstable `jj-lib` crate) becomes a dependency. All of
+that buys what a few git plumbing calls already give. The two don't
+compose: with jj the checkpoints would be redundant.
+
+**What it changes in #20.** Archiving a dirty lane offers commit, stash, or
+**keep as checkpoint**: the tree is saved to a final checkpoint ref and the
+worktree is removed, and restoring creates a fresh worktree from it. That
+replaces moving the tree aside to a holding area, which answers where the
+holding area lives. #20 reserves the `refs/panoptes/lanes/` namespace;
+taking checkpoints each turn is built with #22.
 
 ## The design system lives in the repo as a package
 
