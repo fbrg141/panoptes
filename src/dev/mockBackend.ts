@@ -6,6 +6,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   Answer,
+  Lane,
   Message,
   ModelInfo,
   Project,
@@ -82,6 +83,26 @@ let projects: Project[] = [
   },
 ];
 let nextProjectId = 3;
+let lanes: Lane[] = [
+  {
+    id: 1,
+    projectId: 1,
+    name: "reviewable-work",
+    task: "Make lane work reviewable",
+    branch: "panoptes/reviewable-work",
+    state: "active",
+    worktrees: [
+      {
+        projectId: 1,
+        path: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
+        mainCheckout: false,
+        checkpointRef: null,
+      },
+    ],
+    writeLock: { holder: null, queue: [] },
+  },
+];
+let nextLaneId = 2;
 
 type ToolCallBlock = Extract<Message["blocks"][number], { type: "toolCall" }>;
 
@@ -492,6 +513,7 @@ export function installMockBackend() {
               return { ...s, projectId: project?.id ?? null, open: open.has(s.key) };
             }),
             projects: [...projects].sort((x, y) => x.name.localeCompare(y.name)),
+            lanes,
             errors: [],
           };
         case "add_project": {
@@ -514,6 +536,56 @@ export function installMockBackend() {
           const id = (args as { id: number }).id;
           projects = projects.filter((p) => p.id !== id);
           return null;
+        }
+        case "create_lane": {
+          const request = args as unknown as {
+            projectId: number;
+            task: string;
+            mainCheckout: boolean;
+          };
+          const name = request.task.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+          const project = projects.find((p) => p.id === request.projectId);
+          const lane: Lane = {
+            id: nextLaneId++,
+            projectId: request.projectId,
+            name,
+            task: request.task,
+            branch: request.mainCheckout ? project?.baseBranch || "main" : `panoptes/${name}`,
+            state: "active",
+            worktrees: [
+              {
+                projectId: request.projectId,
+                path: request.mainCheckout
+                  ? project?.repo || ""
+                  : `/Users/you/Panoptes/lanes/${name}/${project?.name || "repo"}`,
+                mainCheckout: request.mainCheckout,
+                checkpointRef: null,
+              },
+            ],
+            writeLock: { holder: null, queue: [] },
+          };
+          lanes.push(lane);
+          return lane;
+        }
+        case "archive_lane": {
+          const request = args as unknown as { id: number; strategy: string | null };
+          const lane = lanes.find((item) => item.id === request.id);
+          if (!lane) throw { kind: "other", message: "That lane no longer exists" };
+          if (!request.strategy && !lane.worktrees[0].mainCheckout) {
+            return { type: "dirty", lane };
+          }
+          lanes = lanes.map((item) =>
+            item.id === request.id ? { ...item, state: "archived" as const } : item,
+          );
+          return { type: "archived" };
+        }
+        case "restore_lane": {
+          const id = (args as { id: number }).id;
+          const lane = lanes.find((item) => item.id === id);
+          lanes = lanes.map((item) =>
+            item.id === id ? { ...item, state: "active" as const } : item,
+          );
+          return lane;
         }
         case "open_session":
           if (!open.has(a.key)) {

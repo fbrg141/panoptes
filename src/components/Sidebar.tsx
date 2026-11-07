@@ -1,9 +1,9 @@
-import { AgentRow, Button, Input, LoopMark } from "@panoptes/design-system";
+import { AgentRow, Button, Checkbox, Dialog, Input, LoopMark } from "@panoptes/design-system";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
 import { groupSessions, relativeTime, type SessionGroup } from "../grouping";
 import { useStore } from "../store";
-import type { SidebarSession } from "../types";
+import type { ArchiveStrategy, Lane, Project, SidebarSession } from "../types";
 
 /** Sessions shown per project before "more". */
 const COLLAPSED_PROJECT_LIMIT = 5;
@@ -20,8 +20,12 @@ export function Sidebar() {
   const drafts = useStore((s) => s.drafts);
   const listErrors = useStore((s) => s.listErrors);
   const projects = useStore((s) => s.projects);
+  const lanes = useStore((s) => s.lanes);
   const create = useStore((s) => s.create);
   const addProject = useStore((s) => s.addProject);
+  const archiveLane = useStore((s) => s.archiveLane);
+  const [newLaneProject, setNewLaneProject] = useState<Project | null>(null);
+  const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
   const [query, setQuery] = useState("");
   const groups = useMemo(
     () => groupSessions([...drafts, ...sessions], projects, query),
@@ -36,6 +40,11 @@ export function Sidebar() {
   const register = async () => {
     const folder = await pickFolder("Add a git repository as a project");
     if (folder) await addProject(folder);
+  };
+
+  const requestArchive = async (lane: Lane) => {
+    const outcome = await archiveLane(lane.id, null);
+    if (outcome?.type === "dirty") setDirtyLane(outcome.lane);
   };
 
   return (
@@ -79,7 +88,14 @@ export function Sidebar() {
           <Group
             key={group.id}
             group={group}
+            lanes={lanes.filter(
+              (lane) => lane.projectId === group.project?.id && lane.state === "active",
+            )}
             onNew={group.cwd ? () => void startIn(group.cwd, group.project?.id) : undefined}
+            onNewLane={
+              group.project ? () => setNewLaneProject(group.project as Project) : undefined
+            }
+            onArchive={(lane) => void requestArchive(lane)}
           />
         ))}
         {groups.length === 0 && (
@@ -88,11 +104,33 @@ export function Sidebar() {
           </p>
         )}
       </nav>
+      {newLaneProject && (
+        <NewLaneDialog project={newLaneProject} onClose={() => setNewLaneProject(null)} />
+      )}
+      {dirtyLane && (
+        <ArchiveLaneDialog
+          lane={dirtyLane}
+          onClose={() => setDirtyLane(null)}
+          onArchived={() => setDirtyLane(null)}
+        />
+      )}
     </aside>
   );
 }
 
-function Group({ group, onNew }: { group: SessionGroup; onNew?: () => void }) {
+function Group({
+  group,
+  lanes,
+  onNew,
+  onNewLane,
+  onArchive,
+}: {
+  group: SessionGroup;
+  lanes: Lane[];
+  onNew?: () => void;
+  onNewLane?: () => void;
+  onArchive: (lane: Lane) => void;
+}) {
   const addProject = useStore((s) => s.addProject);
   const removeProject = useStore((s) => s.removeProject);
   const [expanded, setExpanded] = useState(false);
@@ -129,6 +167,16 @@ function Group({ group, onNew }: { group: SessionGroup; onNew?: () => void }) {
               onClick={() => void addProject(group.checkout as string)}
             />
           )}
+          {onNewLane && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="git-branch"
+              aria-label={`New lane in ${group.label}`}
+              title={`New lane in ${group.label}`}
+              onClick={onNewLane}
+            />
+          )}
           {onNew && (
             <Button
               variant="ghost"
@@ -145,6 +193,11 @@ function Group({ group, onNew }: { group: SessionGroup; onNew?: () => void }) {
         <p className="px-3 pb-1 text-ink-muted">No sessions yet.</p>
       )}
       <ul>
+        {lanes.map((lane) => (
+          <LaneItem key={lane.id} lane={lane} onArchive={() => onArchive(lane)} />
+        ))}
+      </ul>
+      <ul>
         {shown.map((session) => (
           <SessionItem key={session.key} session={session} />
         ))}
@@ -155,6 +208,149 @@ function Group({ group, onNew }: { group: SessionGroup; onNew?: () => void }) {
         </Button>
       )}
     </section>
+  );
+}
+
+function LaneItem({ lane, onArchive }: { lane: Lane; onArchive: () => void }) {
+  const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
+  return (
+    <li className="group/lane relative px-3 py-2">
+      <div className="pr-7">
+        <p className="truncate" title={lane.task}>
+          {lane.task}
+        </p>
+        <p
+          className={`truncate text-caption ${main ? "text-waiting" : "text-ink-muted"}`}
+          title={lane.worktrees[0]?.path}
+        >
+          {main ? "Main checkout" : lane.branch}
+        </p>
+      </div>
+      <span className="absolute top-2 right-2 hidden group-hover/lane:block">
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="x"
+          aria-label={`Archive lane ${lane.name}`}
+          title="Archive lane"
+          onClick={onArchive}
+        />
+      </span>
+    </li>
+  );
+}
+
+function NewLaneDialog({ project, onClose }: { project: Project; onClose: () => void }) {
+  const createLane = useStore((s) => s.createLane);
+  const cancelLaneCreation = useStore((s) => s.cancelLaneCreation);
+  const [task, setTask] = useState("");
+  const [mainCheckout, setMainCheckout] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!task.trim() || busy) return;
+    setBusy(true);
+    const lane = await createLane(project.id, task, mainCheckout);
+    setBusy(false);
+    if (lane) onClose();
+  };
+
+  const close = () => {
+    if (busy) void cancelLaneCreation(project.id);
+    onClose();
+  };
+
+  return (
+    <Dialog
+      title={`New lane in ${project.name}`}
+      onClose={close}
+      actions={
+        <>
+          <Button variant="secondary" onClick={close}>
+            Cancel
+          </Button>
+          <Button type="submit" form="new-lane" disabled={busy || !task.trim()}>
+            {busy ? "Creating…" : "Create lane"}
+          </Button>
+        </>
+      }
+    >
+      <form
+        id="new-lane"
+        className="flex flex-col gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <Input
+          label="Task"
+          hint="A worktree, branch and write lock for this line of work."
+          placeholder="Fix login redirects"
+          aria-label="Lane task"
+          value={task}
+          onChange={(event) => setTask(event.target.value)}
+          autoFocus
+        />
+        <Checkbox
+          label="Use the main checkout"
+          hint="Explicit opt-in: share the project's checkout. No worktree, copied files or setup command; archiving never removes it."
+          checked={mainCheckout}
+          onChange={(event) => setMainCheckout(event.target.checked)}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+function ArchiveLaneDialog({
+  lane,
+  onClose,
+  onArchived,
+}: {
+  lane: Lane;
+  onClose: () => void;
+  onArchived: () => void;
+}) {
+  const archiveLane = useStore((s) => s.archiveLane);
+  const [busy, setBusy] = useState(false);
+
+  const archive = async (strategy: ArchiveStrategy) => {
+    if (busy) return;
+    setBusy(true);
+    const outcome = await archiveLane(lane.id, strategy);
+    setBusy(false);
+    if (outcome?.type === "archived") onArchived();
+  };
+
+  return (
+    <Dialog
+      title={`Preserve ${lane.name} before archiving`}
+      width={540}
+      onClose={busy ? undefined : onClose}
+      actions={
+        <>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="secondary" disabled={busy} onClick={() => void archive("commit")}>
+            Commit
+          </Button>
+          <Button variant="secondary" disabled={busy} onClick={() => void archive("stash")}>
+            Stash
+          </Button>
+          <Button disabled={busy} onClick={() => void archive("checkpoint")}>
+            Keep as checkpoint
+          </Button>
+        </>
+      }
+    >
+      <p>
+        This lane has uncommitted changes. Nothing has been changed or removed yet. Commit them on{" "}
+        <code>{lane.branch}</code>, stash them on that branch, or save a private Panoptes checkpoint
+        that can be restored later.
+      </p>
+    </Dialog>
   );
 }
 

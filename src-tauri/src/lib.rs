@@ -2,6 +2,7 @@
 //! UI as commands, with session events emitted as `session-event`.
 
 mod files;
+mod lanes;
 mod projects;
 mod service;
 mod store;
@@ -19,8 +20,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-use service::{Listing, OpenedSession, Service, ServiceResult};
-use store::{Project, ProjectSettings, Store};
+use service::{ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult};
+use store::{Lane, Project, ProjectSettings, Store};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,6 +182,38 @@ async fn remove_project(state: State<'_, AppState>, id: i64) -> ServiceResult<()
     state.service.remove_project(id).await
 }
 
+#[tauri::command]
+async fn create_lane(
+    state: State<'_, AppState>,
+    project_id: i64,
+    task: String,
+    main_checkout: bool,
+) -> ServiceResult<Lane> {
+    state
+        .service
+        .create_lane(project_id, task, main_checkout)
+        .await
+}
+
+#[tauri::command]
+fn cancel_lane_creation(state: State<'_, AppState>, project_id: i64) {
+    state.service.cancel_lane_creation(project_id);
+}
+
+#[tauri::command]
+async fn archive_lane(
+    state: State<'_, AppState>,
+    id: i64,
+    strategy: Option<lanes::ArchiveStrategy>,
+) -> ServiceResult<ArchiveLaneOutcome> {
+    state.service.archive_lane(id, strategy).await
+}
+
+#[tauri::command]
+async fn restore_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<Lane> {
+    state.service.restore_lane(id).await
+}
+
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app
         .path()
@@ -194,6 +227,12 @@ fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
         data_dir
     };
     let store = Store::open(&data_dir)?;
+    let lanes_root = app
+        .path()
+        .home_dir()
+        .context("Could not find the home folder for lanes")?
+        .join("Panoptes")
+        .join("lanes");
 
     let mut harnesses: Vec<Arc<dyn Harness>> = Vec::new();
     let mut info = AppInfo {
@@ -224,6 +263,7 @@ fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
     let service = Service::new(
         harnesses,
         store,
+        lanes_root,
         Arc::new(move |event| {
             let _ = emitter.emit("session-event", event);
         }),
@@ -281,6 +321,10 @@ pub fn run() {
             add_project,
             update_project,
             remove_project,
+            create_lane,
+            cancel_lane_creation,
+            archive_lane,
+            restore_lane,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

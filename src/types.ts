@@ -127,7 +127,14 @@ export interface SessionEvent {
 }
 
 /** What went wrong, so the UI can pick a recovery without reading the text. */
-export type ErrorKind = "notOpen" | "unavailable" | "rejected" | "exited" | "timedOut" | "other";
+export type ErrorKind =
+  | "notOpen"
+  | "unavailable"
+  | "rejected"
+  | "exited"
+  | "timedOut"
+  | "cancelled"
+  | "other";
 
 /** How every failed command rejects (`ServiceError` in src-tauri/src/service.rs). */
 export interface ServiceError {
@@ -173,11 +180,43 @@ export interface Project extends ProjectSettings {
   repo: string;
 }
 
+export type LaneState = "active" | "archived";
+
+export interface LaneWorktree {
+  projectId: number;
+  path: string;
+  /** Explicit opt-in: the project's own checkout, never removed by archiving. */
+  mainCheckout: boolean;
+  checkpointRef: string | null;
+}
+
+export interface WriteLock {
+  holder: string | null;
+  queue: string[];
+}
+
+/** Durable work owned by Panoptes; it exists with or without a session. */
+export interface Lane {
+  id: number;
+  projectId: number;
+  name: string;
+  task: string;
+  branch: string;
+  state: LaneState;
+  worktrees: LaneWorktree[];
+  writeLock: WriteLock;
+}
+
+export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
+export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
+
 export interface Listing {
   sessions: SidebarSession[];
   /** Every registered project, by name. */
   projects: Project[];
-  /** One line per harness whose sessions could not be listed, and one each if the pins or projects could not be read. */
+  /** Every lane, including archived ones. */
+  lanes: Lane[];
+  /** One line per harness or store collection that could not be read. */
   errors: string[];
 }
 

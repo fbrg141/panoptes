@@ -15,6 +15,10 @@ by a design system.
 - Opens or resumes any session, and starts new ones in a folder you pick.
   Sessions are Pi's own files, so the CLI (`pi --continue`, `/resume`) sees
   the same history.
+- Creates durable lanes with their own Git worktree and branch, including
+  project file copying and setup. Lanes exist without sessions; clean lanes
+  can be archived, and dirty work can be committed, stashed or saved as a
+  restorable private checkpoint. The main checkout is a marked opt-in.
 - Streams replies (rendered as markdown), thinking and tool calls. While the
   agent is working, Enter steers it and Esc stops it.
 - Questions from Pi extensions (confirm, select, input, editor) appear above

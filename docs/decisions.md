@@ -148,8 +148,10 @@ diff.
    checkpoint (see the checkpoint decision below). Archive leaves the branch
    alone.
 4. **A fresh worktree by default, the main checkout on purpose.** A lane
-   normally gets its own worktree. For big repos it can point at the main
-   checkout instead, as an explicit opt-in that is clearly marked.
+   normally gets its own worktree at `~/Panoptes/lanes/<lane>/<repo>`, on a
+   `panoptes/<lane>` branch; the central folder stays fixed until Settings
+   exists. For big repos it can point at the main checkout instead, as an
+   explicit opt-in that is clearly marked.
 5. **Subsessions** get their own transcript, share the lane's worktree, and
    hand their result back to the parent. There is no shared history.
 6. **The word is "lane".** "Workspace" was the working name, but it already

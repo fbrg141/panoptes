@@ -1,6 +1,6 @@
 //! Panoptes' own data, in a SQLite database in the app data folder. Harnesses
-//! keep their conversations; this holds what Panoptes adds on top (pins and
-//! projects now, then groups, workspaces, sessions and tags, see
+//! keep their conversations; this holds what Panoptes adds on top (pins,
+//! projects and lanes now, then groups, sessions and tags, see
 //! `docs/domain-model.md`).
 //!
 //! The schema version is SQLite's `user_version`. Opening the store runs
@@ -55,6 +55,10 @@ const MIGRATIONS: &[Migration] = &[
         apply: v2_projects,
         committed: |_| {},
     },
+    Migration {
+        apply: v3_lanes,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -73,7 +77,7 @@ fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
 }
 
 /// Registered git repositories. `AUTOINCREMENT` so a removed project's id is
-/// never given to another one: workspaces and sessions will point at it.
+/// never given to another one: lanes and sessions will point at it.
 /// The files to copy are their own rows, in order, rather than a JSON list,
 /// so SQLite keeps them unique and drops them with their project.
 fn v2_projects(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
@@ -93,6 +97,36 @@ fn v2_projects(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
             PRIMARY KEY (project_id, position),
             UNIQUE (project_id, path)
         ) STRICT;",
+    )?;
+    Ok(())
+}
+
+/// Durable units of work. A lane can eventually have one worktree per
+/// project in a multi-repo group; #20 deliberately creates only one.
+/// Worktree rows survive archiving so a checkpoint can be restored later.
+fn v3_lanes(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE lanes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+            name TEXT NOT NULL CHECK (name <> ''),
+            task TEXT NOT NULL CHECK (task <> ''),
+            branch TEXT NOT NULL CHECK (branch <> ''),
+            state TEXT NOT NULL CHECK (state IN ('active', 'archived')),
+            created_at INTEGER NOT NULL,
+            UNIQUE (project_id, name)
+        ) STRICT;
+        CREATE TABLE lane_worktrees (
+            lane_id INTEGER NOT NULL REFERENCES lanes (id) ON DELETE CASCADE,
+            project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+            position INTEGER NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            main_checkout INTEGER NOT NULL CHECK (main_checkout IN (0, 1)),
+            checkpoint_ref TEXT CHECK (checkpoint_ref IS NULL OR checkpoint_ref <> ''),
+            PRIMARY KEY (lane_id, project_id),
+            UNIQUE (lane_id, position)
+        ) STRICT;
+        CREATE INDEX lanes_by_project ON lanes (project_id, state, created_at);",
     )?;
     Ok(())
 }
@@ -157,6 +191,71 @@ pub struct ProjectSettings {
     pub copy_files: Vec<String>,
     /// Run in a new worktree once it is made, such as `pnpm install`.
     pub setup: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaneState {
+    Active,
+    Archived,
+}
+
+impl LaneState {
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "active" => Ok(Self::Active),
+            "archived" => Ok(Self::Archived),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+/// The write lock belongs to the lane, not to any one process. Sessions and
+/// its queue arrive in #22; until then there are no sessions that can hold it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteLock {
+    pub holder: Option<String>,
+    pub queue: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneWorktree {
+    pub project_id: i64,
+    pub path: String,
+    pub main_checkout: bool,
+    /// Private ref holding the final dirty tree, when archived as a checkpoint.
+    pub checkpoint_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewLaneWorktree {
+    pub project_id: i64,
+    pub path: String,
+    pub main_checkout: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Lane {
+    pub id: i64,
+    pub project_id: i64,
+    pub name: String,
+    pub task: String,
+    pub branch: String,
+    pub state: LaneState,
+    pub worktrees: Vec<LaneWorktree>,
+    pub write_lock: WriteLock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewLane {
+    pub project_id: i64,
+    pub name: String,
+    pub task: String,
+    pub branch: String,
+    pub worktrees: Vec<NewLaneWorktree>,
 }
 
 pub struct Store {
@@ -287,13 +386,148 @@ impl Store {
         })
     }
 
-    /// Forgets a project. Its repository and worktrees on disk are not
-    /// touched.
+    pub fn project(&self, id: i64) -> anyhow::Result<Project> {
+        self.projects()?
+            .into_iter()
+            .find(|project| project.id == id)
+            .context("That project is no longer registered")
+    }
+
+    pub fn lanes(&self) -> anyhow::Result<Vec<Lane>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT id, project_id, name, task, branch, state
+             FROM lanes ORDER BY created_at, id",
+        )?;
+        let lanes = statement
+            .query_map([], lane_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        lanes
+            .into_iter()
+            .map(|mut lane| {
+                lane.worktrees = self.lane_worktrees(lane.id)?;
+                Ok(lane)
+            })
+            .collect()
+    }
+
+    pub fn lane(&self, id: i64) -> anyhow::Result<Lane> {
+        let mut lane = self
+            .conn
+            .query_row(
+                "SELECT id, project_id, name, task, branch, state FROM lanes WHERE id = ?1",
+                [id],
+                lane_from_row,
+            )
+            .optional()?
+            .context("That lane no longer exists")?;
+        lane.worktrees = self.lane_worktrees(id)?;
+        Ok(lane)
+    }
+
+    fn lane_worktrees(&self, lane_id: i64) -> anyhow::Result<Vec<LaneWorktree>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT project_id, path, main_checkout, checkpoint_ref
+             FROM lane_worktrees WHERE lane_id = ?1 ORDER BY position",
+        )?;
+        let rows = statement.query_map([lane_id], |row| {
+            Ok(LaneWorktree {
+                project_id: row.get(0)?,
+                path: row.get(1)?,
+                main_checkout: row.get(2)?,
+                checkpoint_ref: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Saves a lane only after its worktree and setup have succeeded. The
+    /// schema accepts several worktrees; the service currently supplies one.
+    pub fn add_lane(&self, new: &NewLane) -> anyhow::Result<Lane> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO lanes (project_id, name, task, branch, state, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            rusqlite::params![new.project_id, new.name, new.task, new.branch, now_ms()],
+        )?;
+        let id = tx.last_insert_rowid();
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO lane_worktrees
+                 (lane_id, project_id, position, path, main_checkout)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (position, worktree) in new.worktrees.iter().enumerate() {
+                insert.execute(rusqlite::params![
+                    id,
+                    worktree.project_id,
+                    position as i64,
+                    worktree.path,
+                    worktree.main_checkout,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        self.lane(id)
+    }
+
+    pub fn archive_lane(&self, id: i64, checkpoint_ref: Option<&str>) -> anyhow::Result<Lane> {
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE lanes SET state = 'archived' WHERE id = ?1 AND state = 'active'",
+            [id],
+        )?;
+        if changed == 0 {
+            bail!("That lane is not active");
+        }
+        tx.execute(
+            "UPDATE lane_worktrees SET checkpoint_ref = ?2 WHERE lane_id = ?1",
+            rusqlite::params![id, checkpoint_ref],
+        )?;
+        tx.commit()?;
+        self.lane(id)
+    }
+
+    pub fn restore_lane(&self, id: i64) -> anyhow::Result<Lane> {
+        let changed = self.conn.execute(
+            "UPDATE lanes SET state = 'active' WHERE id = ?1 AND state = 'archived'",
+            [id],
+        )?;
+        if changed == 0 {
+            bail!("That lane is not archived");
+        }
+        self.lane(id)
+    }
+
+    /// Forgets a project with no lanes. Its repository and worktrees on disk
+    /// are not touched. A project with lanes stays registered so their records
+    /// and recovery refs cannot silently lose the repository they refer to.
     pub fn remove_project(&self, id: i64) -> anyhow::Result<()> {
+        let lanes: i64 = self.conn.query_row(
+            "SELECT count(*) FROM lanes WHERE project_id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        if lanes > 0 {
+            bail!("That project still has lanes and cannot be removed");
+        }
         self.conn
             .execute("DELETE FROM projects WHERE id = ?1", [id])?;
         Ok(())
     }
+}
+
+fn lane_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Lane> {
+    let state: String = row.get(5)?;
+    Ok(Lane {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        name: row.get(2)?,
+        task: row.get(3)?,
+        branch: row.get(4)?,
+        state: LaneState::parse(&state)?,
+        worktrees: Vec::new(),
+        write_lock: WriteLock::default(),
+    })
 }
 
 fn now_ms() -> i64 {
@@ -773,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn a_v1_store_migrates_to_projects_and_keeps_its_pins() {
+    fn a_v1_store_migrates_to_projects_and_lanes_and_keeps_its_pins() {
         let dir = tempfile::tempdir().unwrap();
         Store::open_with(dir.path(), &[v1()])
             .unwrap()
@@ -781,9 +1015,10 @@ mod tests {
             .unwrap();
 
         let store = Store::open(dir.path()).unwrap();
-        assert_eq!(version(dir.path()), 2);
+        assert_eq!(version(dir.path()), MIGRATIONS.len() as u32);
         assert_eq!(store.pinned().unwrap(), BTreeSet::from(["pi:a".into()]));
         assert!(store.projects().unwrap().is_empty());
+        assert!(store.lanes().unwrap().is_empty());
         assert!(dir.path().join("panoptes.db.v1.bak").exists());
     }
 
@@ -871,6 +1106,86 @@ mod tests {
     }
 
     #[test]
+    fn lanes_and_multiple_worktrees_survive_reopening_and_archiving() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let project = store
+            .add_project("/code/web", &settings("web", &[]))
+            .unwrap();
+        let api = store
+            .add_project("/code/api", &settings("api", &[]))
+            .unwrap();
+        let new = NewLane {
+            project_id: project.id,
+            name: "fix-login".into(),
+            task: "Fix login".into(),
+            branch: "panoptes/fix-login".into(),
+            worktrees: vec![
+                NewLaneWorktree {
+                    project_id: project.id,
+                    path: "/lanes/fix-login/web".into(),
+                    main_checkout: false,
+                },
+                NewLaneWorktree {
+                    project_id: api.id,
+                    path: "/lanes/fix-login/api".into(),
+                    main_checkout: true,
+                },
+            ],
+        };
+        let added = store.add_lane(&new).unwrap();
+        assert_eq!(added.state, LaneState::Active);
+        assert_eq!(added.worktrees.len(), 2);
+        assert_eq!(added.write_lock.holder, None);
+        assert!(added.write_lock.queue.is_empty());
+        drop(store);
+
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.lanes().unwrap(), std::slice::from_ref(&added));
+        let archived = store
+            .archive_lane(added.id, Some("refs/panoptes/lanes/1/archive"))
+            .unwrap();
+        assert_eq!(archived.state, LaneState::Archived);
+        assert_eq!(
+            archived.worktrees[0].checkpoint_ref.as_deref(),
+            Some("refs/panoptes/lanes/1/archive")
+        );
+        assert_eq!(
+            store.restore_lane(added.id).unwrap().state,
+            LaneState::Active
+        );
+
+        let error = store.remove_project(project.id).unwrap_err().to_string();
+        assert!(error.contains("still has lanes"), "{error}");
+    }
+
+    #[test]
+    fn lane_names_and_worktree_paths_are_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let project = store
+            .add_project("/code/web", &settings("web", &[]))
+            .unwrap();
+        let new = NewLane {
+            project_id: project.id,
+            name: "fix-login".into(),
+            task: "Fix login".into(),
+            branch: "panoptes/fix-login".into(),
+            worktrees: vec![NewLaneWorktree {
+                project_id: project.id,
+                path: "/lanes/fix-login/web".into(),
+                main_checkout: false,
+            }],
+        };
+        store.add_lane(&new).unwrap();
+        assert!(store.add_lane(&new).is_err());
+        let mut other = new.clone();
+        other.name = "other".into();
+        other.branch = "panoptes/other".into();
+        assert!(store.add_lane(&other).is_err());
+    }
+
+    #[test]
     fn the_schema_refuses_rows_that_break_its_rules() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -878,6 +1193,8 @@ mod tests {
             "INSERT INTO projects (name, repo, base_branch, created_at) VALUES ('', '/a', 'main', 0)",
             "INSERT INTO projects (name, repo, base_branch, setup, created_at) VALUES ('a', '/a', 'main', '', 0)",
             "INSERT INTO project_copy_files (project_id, position, path) VALUES (99, 0, '.env')",
+            "INSERT INTO lanes (project_id, name, task, branch, state, created_at) VALUES (99, 'a', 'A', 'b', 'active', 0)",
+            "INSERT INTO lanes (project_id, name, task, branch, state, created_at) VALUES (1, '', 'A', 'b', 'active', 0)",
         ];
         for sql in bad {
             assert!(store.conn.execute(sql, []).is_err(), "{sql}");

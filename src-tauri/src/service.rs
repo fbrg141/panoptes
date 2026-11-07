@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::Context;
 use panoptes_harness::{
@@ -16,8 +16,9 @@ use panoptes_harness::{
 use serde::Serialize;
 use tokio::sync::{Mutex, oneshot};
 
+use crate::lanes::{self, ArchiveResult, ArchiveStrategy};
 use crate::projects::{self, Location};
-use crate::store::{Project, ProjectSettings, Store};
+use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -43,6 +44,8 @@ pub enum ErrorKind {
     Exited,
     /// The harness did not answer in time.
     TimedOut,
+    /// A lane creation was cancelled; its partial worktree was rolled back.
+    Cancelled,
     /// Anything else (I/O, a harness error with no kind).
     Other,
 }
@@ -234,9 +237,18 @@ pub struct Listing {
     pub sessions: Vec<SidebarSession>,
     /// Every registered project, by name, with or without sessions.
     pub projects: Vec<Project>,
+    /// Every lane, including archived ones; navigation decides which to show.
+    pub lanes: Vec<Lane>,
     /// One line per harness whose sessions could not be listed, and one
-    /// each if the pins or projects could not be read.
+    /// each if the pins, projects or lanes could not be read.
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ArchiveLaneOutcome {
+    Archived,
+    Dirty { lane: Lane },
 }
 
 #[derive(Debug, Serialize)]
@@ -265,13 +277,22 @@ pub struct Service {
     generations: AtomicU64,
     /// Shared with the blocking threads that run every store call.
     store: Arc<std::sync::Mutex<Store>>,
+    /// Central folder for lane worktrees, normally `~/Panoptes/lanes`.
+    lanes_root: PathBuf,
+    /// Cancellation flags for setup commands, keyed by their project.
+    lane_cancellations: Arc<std::sync::Mutex<HashMap<i64, Arc<AtomicBool>>>>,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
 }
 
 impl Service {
-    pub fn new(harnesses: Vec<Arc<dyn Harness>>, store: Store, emit: Emit) -> Self {
+    pub fn new(
+        harnesses: Vec<Arc<dyn Harness>>,
+        store: Store,
+        lanes_root: PathBuf,
+        emit: Emit,
+    ) -> Self {
         Self {
             harnesses: harnesses
                 .into_iter()
@@ -281,6 +302,8 @@ impl Service {
             opening: Mutex::default(),
             generations: AtomicU64::new(1),
             store: Arc::new(std::sync::Mutex::new(store)),
+            lanes_root,
+            lane_cancellations: Arc::default(),
             locations: std::sync::Mutex::default(),
             emit,
         }
@@ -331,6 +354,13 @@ impl Service {
                 errors.push(format!("Could not read projects: {}", err(error)));
                 Vec::new()
             });
+        let lanes = self
+            .with_store(|store| store.lanes())
+            .await
+            .unwrap_or_else(|error| {
+                errors.push(format!("Could not read lanes: {}", err(error)));
+                Vec::new()
+            });
         let by_checkout: HashMap<&Path, i64> = projects
             .iter()
             .map(|project| (Path::new(&project.repo), project.id))
@@ -363,6 +393,7 @@ impl Service {
         Listing {
             sessions,
             projects,
+            lanes,
             errors,
         }
     }
@@ -644,6 +675,120 @@ impl Service {
             .map_err(err)
     }
 
+    /// Creates a durable lane before any session exists. The store mutex
+    /// serialises name allocation and the one-active-main-checkout rule.
+    pub async fn create_lane(
+        &self,
+        project_id: i64,
+        task: String,
+        main_checkout: bool,
+    ) -> ServiceResult<Lane> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut active = self.lane_cancellations.lock().unwrap();
+            if active.contains_key(&project_id) {
+                return Err(ServiceError::new(
+                    ErrorKind::Rejected,
+                    "A lane is already being created for this project",
+                ));
+            }
+            active.insert(project_id, cancelled.clone());
+        }
+        let root = self.lanes_root.clone();
+        let in_setup = cancelled.clone();
+        let result = self
+            .with_store(move |store| {
+                let task = task.trim().to_string();
+                if task.is_empty() {
+                    anyhow::bail!("A lane needs a task");
+                }
+                let project = store.project(project_id)?;
+                let existing = store.lanes()?;
+                if main_checkout
+                    && existing.iter().any(|lane| {
+                        lane.project_id == project_id
+                            && lane.state == LaneState::Active
+                            && lane.worktrees.iter().any(|tree| tree.main_checkout)
+                    })
+                {
+                    anyhow::bail!("This project already has an active main-checkout lane");
+                }
+                let base = lanes::slug(&task);
+                let mut name = base.clone();
+                let mut suffix = 2;
+                while existing
+                    .iter()
+                    .any(|lane| lane.project_id == project_id && lane.name == name)
+                {
+                    name = format!("{base}-{suffix}");
+                    suffix += 1;
+                }
+                let new = lanes::create(&root, &project, &name, &task, main_checkout, &in_setup)?;
+                match store.add_lane(&new) {
+                    Ok(lane) => Ok(lane),
+                    Err(error) => {
+                        lanes::discard_created(&project, &new);
+                        Err(error)
+                    }
+                }
+            })
+            .await;
+        self.lane_cancellations.lock().unwrap().remove(&project_id);
+        match result {
+            Ok(lane) => Ok(lane),
+            Err(_) if cancelled.load(Ordering::Relaxed) => Err(ServiceError::new(
+                ErrorKind::Cancelled,
+                "Lane creation cancelled",
+            )),
+            Err(error) => Err(err(error)),
+        }
+    }
+
+    pub fn cancel_lane_creation(&self, project_id: i64) {
+        if let Some(cancelled) = self.lane_cancellations.lock().unwrap().get(&project_id) {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Archives a clean lane immediately. A dirty one is returned unchanged
+    /// until the caller picks how its work should be preserved.
+    pub async fn archive_lane(
+        &self,
+        id: i64,
+        strategy: Option<ArchiveStrategy>,
+    ) -> ServiceResult<ArchiveLaneOutcome> {
+        self.with_store(move |store| {
+            let lane = store.lane(id)?;
+            if lane.state != LaneState::Active {
+                anyhow::bail!("That lane is already archived");
+            }
+            let project = store.project(lane.project_id)?;
+            match lanes::archive(&project, &lane, strategy)? {
+                ArchiveResult::Dirty => Ok(ArchiveLaneOutcome::Dirty { lane }),
+                ArchiveResult::Archived { checkpoint_ref } => {
+                    store.archive_lane(id, checkpoint_ref.as_deref())?;
+                    Ok(ArchiveLaneOutcome::Archived)
+                }
+            }
+        })
+        .await
+        .map_err(err)
+    }
+
+    pub async fn restore_lane(&self, id: i64) -> ServiceResult<Lane> {
+        self.with_store(move |store| {
+            let lane = store.lane(id)?;
+            if lane.state != LaneState::Archived {
+                anyhow::bail!("That lane is not archived");
+            }
+            let project = store.project(lane.project_id)?;
+            lanes::restore(&project, &lane)?;
+            store.restore_lane(id)
+        })
+        .await
+        .map_err(err)
+    }
+
     /// Runs `call` on a blocking thread: SQLite calls block, for up to the
     /// busy timeout when another process holds the database, and must not
     /// stall the async runtime or the main thread.
@@ -791,6 +936,7 @@ mod tests {
         let service = Service::new(
             vec![harness.clone()],
             Store::open(dir.path()).unwrap(),
+            dir.path().join("lanes"),
             Arc::new(move |event| sink.lock().unwrap().push(event)),
         );
         Fixture {
@@ -1190,6 +1336,205 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.message.contains("not in a git repository"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn lanes_exist_without_sessions_and_dirty_archives_wait_for_a_choice() {
+        let code = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(code.path()).unwrap().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        std::fs::write(repo.join("tracked.txt"), "start\n").unwrap();
+        std::fs::write(repo.join(".env"), "secret\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        git(&repo, &["commit", "--quiet", "-m", "start"]);
+        let f = fixture(FakeHarness::default());
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let mut settings = project.settings.clone();
+        settings.setup = Some("printf ready > setup.txt".into());
+        f.service
+            .update_project(project.id, settings)
+            .await
+            .unwrap();
+
+        let lane = f
+            .service
+            .create_lane(project.id, " Fix login! ".into(), false)
+            .await
+            .unwrap();
+        assert_eq!(lane.name, "fix-login");
+        assert_eq!(lane.task, "Fix login!");
+        let path = PathBuf::from(&lane.worktrees[0].path);
+        assert_eq!(
+            std::fs::read_to_string(path.join(".env")).unwrap(),
+            "secret\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("setup.txt")).unwrap(),
+            "ready"
+        );
+        assert_eq!(f.service.list().await.lanes, std::slice::from_ref(&lane));
+
+        let second = f
+            .service
+            .create_lane(project.id, "Fix login".into(), false)
+            .await
+            .unwrap();
+        assert_eq!(second.name, "fix-login-2");
+        std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
+        let outcome = f.service.archive_lane(lane.id, None).await.unwrap();
+        assert!(matches!(outcome, ArchiveLaneOutcome::Dirty { .. }));
+        assert!(path.exists());
+        assert_eq!(f.service.list().await.lanes[0].state, LaneState::Active);
+
+        let outcome = f
+            .service
+            .archive_lane(lane.id, Some(ArchiveStrategy::Checkpoint))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ArchiveLaneOutcome::Archived));
+        assert!(!path.exists());
+        let archived = &f.service.list().await.lanes[0];
+        assert_eq!(archived.state, LaneState::Archived);
+        assert!(archived.worktrees[0].checkpoint_ref.is_some());
+
+        let restored = f.service.restore_lane(lane.id).await.unwrap();
+        assert_eq!(restored.state, LaneState::Active);
+        assert_eq!(
+            std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
+            "work\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_lane_setup_leaves_no_worktree_or_lane_record() {
+        let code = tempfile::tempdir().unwrap();
+        let repo = code.path().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let f = fixture(FakeHarness::default());
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let mut settings = project.settings.clone();
+        settings.setup = Some("exit 9".into());
+        f.service
+            .update_project(project.id, settings)
+            .await
+            .unwrap();
+
+        let error = f
+            .service
+            .create_lane(project.id, "Broken setup".into(), false)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("project setup failed"), "{error}");
+        assert!(f.service.list().await.lanes.is_empty());
+        assert!(!f._dir.path().join("lanes/broken-setup").exists());
+    }
+
+    #[tokio::test]
+    async fn cancelling_lane_setup_rolls_back_the_partial_worktree() {
+        let code = tempfile::tempdir().unwrap();
+        let repo = code.path().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let f = fixture(FakeHarness::default());
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let mut settings = project.settings.clone();
+        settings.setup = Some("touch started; exec sleep 30".into());
+        f.service
+            .update_project(project.id, settings)
+            .await
+            .unwrap();
+        let lane_path = f._dir.path().join("lanes/slow-setup/web");
+        let started = lane_path.join("started");
+
+        let creating = tokio::spawn({
+            let service = f.service.clone();
+            async move {
+                service
+                    .create_lane(project.id, "Slow setup".into(), false)
+                    .await
+            }
+        });
+        for _ in 0..200 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(started.exists(), "setup did not start");
+        f.service.cancel_lane_creation(project.id);
+        let error = tokio::time::timeout(Duration::from_secs(5), creating)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert!(f.service.list().await.lanes.is_empty());
+        assert!(!lane_path.exists());
+    }
+
+    #[tokio::test]
+    async fn main_checkout_lanes_are_marked_and_never_remove_the_checkout() {
+        let code = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(code.path()).unwrap().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let f = fixture(FakeHarness::default());
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let lane = f
+            .service
+            .create_lane(project.id, "Quick question".into(), true)
+            .await
+            .unwrap();
+        assert!(lane.worktrees[0].main_checkout);
+        assert_eq!(lane.worktrees[0].path, project.repo);
+        let error = f
+            .service
+            .create_lane(project.id, "Another main".into(), true)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("already has an active main-checkout")
+        );
+
+        std::fs::write(repo.join("uncommitted.txt"), "keep me").unwrap();
+        let outcome = f.service.archive_lane(lane.id, None).await.unwrap();
+        assert!(matches!(outcome, ArchiveLaneOutcome::Archived));
+        assert!(repo.join("uncommitted.txt").exists());
+        assert_eq!(f.service.list().await.lanes[0].state, LaneState::Archived);
     }
 
     #[tokio::test]
