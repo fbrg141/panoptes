@@ -166,8 +166,10 @@ The sidebar splits in two (#57):
    - A clean tree: the worktree is removed.
    - A dirty tree never loses work. Panoptes offers three ways out and does
      nothing until you pick one: **commit** the changes on the lane's branch,
-     **stash** them onto the branch, or **move the tree aside** to a holding
-     area so it can be restored later.
+     **stash** them onto the branch, or **keep it as a checkpoint**: the tree
+     is saved to a checkpoint ref and the worktree is removed, and restoring
+     creates a fresh worktree from it (see
+     [decisions.md](decisions.md#per-turn-checkpoints-on-plain-git-not-jujutsu)).
    - A main-checkout lane: only the lane record is archived; the checkout is
      left as it is.
 
@@ -269,14 +271,12 @@ The contract fixes (#23 to #27) can go in any order alongside.
 1. **Group context** (#8): instructions a group gives the agents in its
    lanes.
 2. **Branch names** for new lanes, for example `panoptes/<lane>`.
-3. **The holding area** for trees moved aside on archive: where it lives and
-   how a held tree is restored.
-4. **Enforcing the write lock:** gate edit tools through the approvals
+3. **Enforcing the write lock:** gate edit tools through the approvals
    extension, or start sessions without the lock with read-only tools.
-5. **Multi-repo context files.** An agent running in a multi-repo lane folder
+4. **Multi-repo context files.** An agent running in a multi-repo lane folder
    does not pick up each repo's `AGENTS.md` on its own. Panoptes may need to
    pass them in.
-6. **Sessions outside any project:** a History entry from a folder that isn't
+5. **Sessions outside any project:** a History entry from a folder that isn't
    a registered project. Offer to register it, or adopt it only into a lane
    you pick.
-7. **The central folder:** fixed at `~/Panoptes/lanes` or set in Settings.
+6. **The central folder:** fixed at `~/Panoptes/lanes` or set in Settings.
