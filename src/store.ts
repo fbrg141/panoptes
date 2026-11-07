@@ -4,8 +4,11 @@ import { applyEvent, type Conversation, emptyConversation, removeQuestion } from
 import type {
   Answer,
   AppInfo,
+  ArchiveLaneOutcome,
+  ArchiveStrategy,
   ErrorKind,
   ImageAttachment,
+  Lane,
   ModelInfo,
   OpenedSession,
   Project,
@@ -27,6 +30,8 @@ export interface State {
   sessions: SidebarSession[];
   /** Registered projects, as the backend lists them. */
   projects: Project[];
+  /** Durable lanes, including archived ones. */
+  lanes: Lane[];
   /** Sessions started here that the harness has not written to disk yet. */
   drafts: SidebarSession[];
   conversations: Record<string, Conversation>;
@@ -59,6 +64,10 @@ export interface State {
   /** Registers the git repository `folder` is in. */
   addProject: (folder: string) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
+  createLane: (projectId: number, task: string, mainCheckout: boolean) => Promise<Lane | null>;
+  cancelLaneCreation: (projectId: number) => Promise<void>;
+  archiveLane: (id: number, strategy: ArchiveStrategy | null) => Promise<ArchiveLaneOutcome | null>;
+  restoreLane: (id: number) => Promise<void>;
   dismissError: () => void;
 }
 
@@ -160,6 +169,7 @@ export function createAppStore(backend: typeof api) {
       info: null,
       sessions: [],
       projects: [],
+      lanes: [],
       drafts: [],
       conversations: {},
       statuses: {},
@@ -187,11 +197,12 @@ export function createAppStore(backend: typeof api) {
 
       refresh: async () => {
         try {
-          const { sessions, projects, errors } = await backend.listSessions();
+          const { sessions, projects, lanes, errors } = await backend.listSessions();
           const known = new Set(sessions.map((s) => s.key));
           set((s) => ({
             sessions,
             projects,
+            lanes,
             listErrors: errors,
             drafts: s.drafts.filter((d) => !known.has(d.key)),
           }));
@@ -335,6 +346,41 @@ export function createAppStore(backend: typeof api) {
       removeProject: async (id) => {
         try {
           await backend.removeProject(id);
+          await get().refresh();
+        } catch (e) {
+          fail(e);
+        }
+      },
+
+      createLane: async (projectId, task, mainCheckout) => {
+        try {
+          const lane = await backend.createLane(projectId, task, mainCheckout);
+          await get().refresh();
+          return lane;
+        } catch (e) {
+          if (errorKind(e) !== "cancelled") fail(e);
+          return null;
+        }
+      },
+
+      cancelLaneCreation: async (projectId) => {
+        await backend.cancelLaneCreation(projectId).catch(fail);
+      },
+
+      archiveLane: async (id, strategy) => {
+        try {
+          const outcome = await backend.archiveLane(id, strategy);
+          if (outcome.type === "archived") await get().refresh();
+          return outcome;
+        } catch (e) {
+          fail(e);
+          return null;
+        }
+      },
+
+      restoreLane: async (id) => {
+        try {
+          await backend.restoreLane(id);
           await get().refresh();
         } catch (e) {
           fail(e);

@@ -12,7 +12,8 @@ this way.
 | `crates/panoptes-harness` | The neutral interface: `Harness` and `AgentSession` traits, `HarnessEvent`, `Message`, `Block`, `Question` |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
 | `src-tauri/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
-| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins and projects |
+| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects and lanes |
+| `src-tauri/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
 | `src-tauri/src/projects.rs` | Which git repository a folder belongs to (worktrees included), a new project's defaults, and the rules its settings follow |
 | `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |
 | `src-tauri/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
@@ -47,7 +48,7 @@ this way.
   kind survives. Keep `src/types.ts` in step with the Rust types.
 - **Sessions belong to the harness.** Pi keeps its sessions in its own files
   (`~/.pi/agent/sessions` by default), shared with the CLI. Panoptes never
-  copies or rewrites them. What Panoptes adds (pins and projects for now) lives in its own
+  copies or rewrites them. What Panoptes adds (pins, projects and lanes for now) lives in its own
   store, `panoptes.db` in the app data folder, keyed by
   `<harness>:<session id>`.
 - **Schema changes are migrations.** Append a step to `MIGRATIONS` in

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { api } from "./api";
 import { createAppStore } from "./store";
 import type {
+  ArchiveLaneOutcome,
+  Lane,
   Listing,
   OpenedSession,
   Project,
@@ -38,6 +40,24 @@ const project: Project = {
   setup: null,
 };
 
+const lane: Lane = {
+  id: 1,
+  projectId: 1,
+  name: "fix-login",
+  task: "Fix login",
+  branch: "panoptes/fix-login",
+  state: "active",
+  worktrees: [
+    {
+      projectId: 1,
+      path: "/lanes/fix-login/code",
+      mainCheckout: false,
+      checkpointRef: null,
+    },
+  ],
+  writeLock: { holder: null, queue: [] },
+};
+
 const opened: OpenedSession = {
   key: "pi:s1",
   session: { harness: "pi", id: "s1", locator: "/s1.jsonl", cwd: "/code" },
@@ -56,7 +76,12 @@ function fakeBackend() {
   const backend = {
     appInfo: vi.fn(async () => ({ harnesses: [], errors: [] })),
     listSessions: vi.fn(
-      async (): Promise<Listing> => ({ sessions: [session], projects: [], errors: [] }),
+      async (): Promise<Listing> => ({
+        sessions: [session],
+        projects: [],
+        lanes: [],
+        errors: [],
+      }),
     ),
     openSession: vi.fn(async () => opened),
     newSession: vi.fn(async () => opened),
@@ -78,6 +103,10 @@ function fakeBackend() {
     addProject: vi.fn(async (): Promise<Project> => project),
     updateProject: vi.fn(async (): Promise<Project> => project),
     removeProject: vi.fn(async () => {}),
+    createLane: vi.fn(async (): Promise<Lane> => lane),
+    cancelLaneCreation: vi.fn(async () => {}),
+    archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
+    restoreLane: vi.fn(async (): Promise<Lane> => lane),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
       return () => {};
@@ -229,6 +258,7 @@ describe("store", () => {
     fake.backend.listSessions.mockResolvedValueOnce({
       sessions: [{ ...session, projectId: 1 }],
       projects: [project],
+      lanes: [],
       errors: [],
     });
     await store.getState().addProject("/code/src");
@@ -248,6 +278,53 @@ describe("store", () => {
     });
     await store.getState().addProject("/tmp");
     expect(store.getState().error).toBe("/tmp is not in a git repository");
+  });
+
+  it("creates a durable lane and lists it without a session", async () => {
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [session],
+      projects: [project],
+      lanes: [lane],
+      errors: [],
+    });
+    const created = await store.getState().createLane(1, "Fix login", false);
+    expect(fake.backend.createLane).toHaveBeenCalledWith(1, "Fix login", false);
+    expect(created).toEqual(lane);
+    expect(store.getState().lanes).toEqual([lane]);
+  });
+
+  it("treats lane creation cancellation as a choice, not an error", async () => {
+    fake.backend.createLane.mockRejectedValueOnce({ kind: "cancelled", message: "Cancelled" });
+    const created = await store.getState().createLane(1, "Slow setup", false);
+    expect(created).toBeNull();
+    expect(store.getState().error).toBeNull();
+    await store.getState().cancelLaneCreation(1);
+    expect(fake.backend.cancelLaneCreation).toHaveBeenCalledWith(1);
+  });
+
+  it("waits for a dirty lane's archive choice and refreshes once archived", async () => {
+    fake.backend.archiveLane.mockResolvedValueOnce({ type: "dirty", lane });
+    const dirty = await store.getState().archiveLane(1, null);
+    expect(dirty).toEqual({ type: "dirty", lane });
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, null);
+
+    fake.backend.archiveLane.mockResolvedValueOnce({ type: "archived" });
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [session],
+      projects: [project],
+      lanes: [{ ...lane, state: "archived" }],
+      errors: [],
+    });
+    const archived = await store.getState().archiveLane(1, "checkpoint");
+    expect(archived).toEqual({ type: "archived" });
+    expect(store.getState().lanes[0].state).toBe("archived");
+  });
+
+  it("starts a session directly in a lane's worktree", async () => {
+    await store.getState().create(lane.worktrees[0].path, lane.projectId);
+    expect(fake.backend.newSession).toHaveBeenCalledWith("pi", "/lanes/fix-login/code");
+    expect(store.getState().activeKey).toBe("pi:s1");
+    expect(store.getState().drafts[0].projectId).toBe(1);
   });
 
   it("lists a new session under the project it was started from", async () => {

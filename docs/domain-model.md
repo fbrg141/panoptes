@@ -1,7 +1,7 @@
 # Domain model
 
-*Proposed 2026-11-06, revised for lanes 2026-11-07. Projects are built
-(#19); the rest is not built yet.*
+*Proposed 2026-11-06, revised for lanes 2026-11-07. Projects (#19) and
+lanes (#20) are built; sessions and groups are not built yet.*
 
 What Panoptes works with, how the pieces relate, and how they live and die.
 It answers the "domain model" parts of #8 and #9 and sets up the tool-call
@@ -76,8 +76,9 @@ Zed and Cargo.
   worktrees (one-to-many), so multi-repo lanes (#21) need no migration. The
   service and UI only ever create one for now.
 - **A fresh worktree by default.** All lane worktrees live under one central
-  folder, `~/Panoptes/lanes/<lane>/<repo>`. Files listed in `copyFiles` are
-  **copied**, not linked, from the main checkout, because git never puts
+  folder, `~/Panoptes/lanes/<lane>/<repo>`, on a new
+  `panoptes/<lane>` branch. Files listed in `copyFiles` are **copied**, not
+  linked, from the main checkout, because git never puts
   untracked files into a new worktree and each worktree may need its own
   values (ports, database names).
 - **The main checkout, on purpose.** For big repos where a fresh worktree is
@@ -258,7 +259,7 @@ Build the spine fast and solid, not polished; the reason is in
 |---|---|---|
 | done | #18 | Versioned Panoptes store |
 | done | #19 | Projects and their settings |
-| 1 | #20 | Lanes: create a worktree, archive without losing work, main-checkout opt-in |
+| done | #20 | Lanes: create a worktree, archive without losing work, main-checkout opt-in |
 | 2 | #22 | Sessions inside a lane: Panoptes identity, write lock and queue, replace |
 | 3 | #57 | Split sidebar: projects and lanes, and a History view to adopt from |
 | 4 | #58 | Subsessions that hand their result back |
@@ -270,13 +271,11 @@ The contract fixes (#23 to #27) can go in any order alongside.
 
 1. **Group context** (#8): instructions a group gives the agents in its
    lanes.
-2. **Branch names** for new lanes, for example `panoptes/<lane>`.
-3. **Enforcing the write lock:** gate edit tools through the approvals
+2. **Enforcing the write lock:** gate edit tools through the approvals
    extension, or start sessions without the lock with read-only tools.
-4. **Multi-repo context files.** An agent running in a multi-repo lane folder
+3. **Multi-repo context files.** An agent running in a multi-repo lane folder
    does not pick up each repo's `AGENTS.md` on its own. Panoptes may need to
    pass them in.
-5. **Sessions outside any project:** a History entry from a folder that isn't
+4. **Sessions outside any project:** a History entry from a folder that isn't
    a registered project. Offer to register it, or adopt it only into a lane
    you pick.
-6. **The central folder:** fixed at `~/Panoptes/lanes` or set in Settings.

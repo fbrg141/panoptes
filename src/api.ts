@@ -3,8 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   Answer,
   AppInfo,
+  ArchiveLaneOutcome,
+  ArchiveStrategy,
   FileAttachment,
   ImageAttachment,
+  Lane,
   Listing,
   Message,
   ModelInfo,
@@ -51,6 +54,12 @@ export const api = {
   updateProject: (id: number, settings: ProjectSettings) =>
     invoke<Project>("update_project", { id, settings }),
   removeProject: (id: number) => invoke<void>("remove_project", { id }),
+  createLane: (projectId: number, task: string, mainCheckout: boolean) =>
+    invoke<Lane>("create_lane", { projectId, task, mainCheckout }),
+  cancelLaneCreation: (projectId: number) => invoke<void>("cancel_lane_creation", { projectId }),
+  archiveLane: (id: number, strategy: ArchiveStrategy | null) =>
+    invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy }),
+  restoreLane: (id: number) => invoke<Lane>("restore_lane", { id }),
   onSessionEvent: (handler: (event: SessionEvent) => void) =>
     listen<SessionEvent>("session-event", (e) => handler(e.payload)),
 };
