@@ -8,6 +8,7 @@ import type {
   Answer,
   Message,
   ModelInfo,
+  QueuedPrompt,
   SessionSettings,
   SessionUpdate,
   SidebarSession,
@@ -117,8 +118,21 @@ const RETRY_NEW = `      {message.error && (
         </div>
       )}`;
 
+/** A small diagram, as a pasted screenshot would be. */
+const SKETCH = btoa(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#efe7da"/><rect x="12" y="14" width="40" height="62" rx="4" fill="#d8ccb8"/><rect x="62" y="14" width="86" height="12" rx="3" fill="#c9bba4"/><rect x="62" y="34" width="70" height="8" rx="3" fill="#d8ccb8"/><rect x="62" y="50" width="78" height="8" rx="3" fill="#d8ccb8"/></svg>',
+);
+
 const history: Message[] = [
-  msg("m1", "user", [{ type: "text", text: "What files are in src?" }], 20 * 60_000),
+  msg(
+    "m1",
+    "user",
+    [
+      { type: "text", text: "What files are in src?" },
+      { type: "image", mimeType: "image/svg+xml", data: SKETCH },
+    ],
+    20 * 60_000,
+  ),
   msg(
     "m2",
     "assistant",
@@ -283,6 +297,9 @@ const files = [
   "crates/panoptes-pi/src/rpc.rs",
   "docs/decisions.md",
 ];
+
+/** Prompts sent while a reply streams; the run settling drops them. */
+const queue: QueuedPrompt[] = [];
 
 /** Resolves the approval the mock is waiting on, if any. */
 let decide: ((allow: boolean) => void) | null = null;
@@ -461,10 +478,22 @@ export function installMockBackend() {
         case "send_prompt":
           // While a reply streams, further prompts wait their turn; the
           // run settling clears them.
-          if (streaming) return "queued";
+          if (streaming) {
+            queue.push({
+              id: `q${Date.now()}`,
+              text: a.text,
+              mode: a.mode === "steer" ? "steer" : "followUp",
+            });
+            void emit("session-event", {
+              key: a.key,
+              event: { type: "queueChanged", queued: [...queue] },
+            });
+            return "queued";
+          }
           streaming = true;
           void stream(a.key, a.text).finally(() => {
             streaming = false;
+            queue.length = 0;
           });
           return "started";
         // Copies, as the real backend sends fresh JSON every time.

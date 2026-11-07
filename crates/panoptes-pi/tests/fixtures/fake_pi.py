@@ -5,6 +5,7 @@ for the adapter's tests. Prompts select behaviour:
   "ask"    asks a confirm question and replies with the answer
   "crash"  exits with code 7 straight away
   "tool"   runs a `bash` call that fails with exit code 3, then replies
+  "queue"  lists two steering prompts, then one, then none, before replying
   "gate"   starts a `bash` call, asks Yes/No before running it (as a
            permission extension would) and replies with the answer
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
@@ -16,6 +17,7 @@ import sys
 
 entries = []
 counter = 0
+clock = 0
 models = [
     {"id": "small", "name": "Small", "provider": "fake", "contextWindow": 32000, "input": ["text"]},
     {"id": "vendor/large", "name": "Large", "provider": "fake", "contextWindow": 200000, "input": ["text", "image"]},
@@ -56,7 +58,7 @@ def append(message):
 
 def tool_run():
     call = {"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {"command": "make"}}
-    assistant = {"role": "assistant", "content": [call], "stopReason": "toolUse", "timestamp": 2}
+    assistant = {"role": "assistant", "content": [call], "stopReason": "toolUse", "timestamp": tick()}
     send({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending"}})
     send({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_start", "contentIndex": 0, "id": "call-1", "toolName": "bash"}})
     send({"type": "message_end", "message": assistant})
@@ -68,14 +70,26 @@ def tool_run():
     send({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "bash",
           "result": {"content": content}, "isError": True})
     result = {"role": "toolResult", "toolCallId": "call-1", "toolName": "bash", "content": content,
-              "isError": True, "timestamp": 3}
+              "isError": True, "timestamp": tick()}
     send({"type": "message_start", "message": result})
     send({"type": "message_end", "message": result})
     append(result)
 
 
+def tick():
+    # Pi stamps every message; history is matched to live messages by it.
+    global clock
+    clock += 1
+    return clock
+
+
 def run(text, images):
-    user = {"role": "user", "content": text, "timestamp": 1}
+    content = text
+    if images:
+        content = [{"type": "text", "text": text}] + [
+            {"type": "image", "data": image["data"], "mimeType": image["mimeType"]} for image in images
+        ]
+    user = {"role": "user", "content": content, "timestamp": tick()}
     send({"type": "agent_start"})
     send({"type": "message_start", "message": user})
     send({"type": "message_end", "message": user})
@@ -86,6 +100,10 @@ def run(text, images):
     if text == "tool":
         tool_run()
         reply = "ran it"
+    if text == "queue":
+        send({"type": "queue_update", "steering": ["a", "b"], "followUp": []})
+        send({"type": "queue_update", "steering": ["b"], "followUp": ["c"]})
+        send({"type": "queue_update", "steering": [], "followUp": []})
     if text == "gate":
         send({"type": "tool_execution_start", "toolCallId": "call-g", "toolName": "bash", "args": {"command": "rm -rf build"}})
         send({"type": "extension_ui_request", "id": "g1", "method": "select",
@@ -96,7 +114,7 @@ def run(text, images):
         send({"type": "extension_ui_request", "id": "q1", "method": "confirm", "title": "Proceed?"})
         answer = json.loads(sys.stdin.readline())
         reply = f"confirmed={answer.get('confirmed')}"
-    assistant = {"role": "assistant", "content": [{"type": "text", "text": reply}], "stopReason": "stop", "timestamp": 2}
+    assistant = {"role": "assistant", "content": [{"type": "text", "text": reply}], "stopReason": "stop", "timestamp": tick()}
     send({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending"}})
     send({"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 0}})
     send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": reply}})

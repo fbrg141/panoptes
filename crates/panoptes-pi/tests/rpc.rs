@@ -90,37 +90,65 @@ async fn a_prompt_streams_and_settles() {
 }
 
 #[tokio::test]
-async fn history_is_fetched_incrementally() {
+async fn history_keeps_the_ids_messages_streamed_under() {
     let (session, mut rx) = start().await;
     assert!(session.history().await.unwrap().is_empty());
 
-    session
-        .prompt("one".into(), Vec::new(), PromptMode::Start)
-        .await
-        .unwrap();
-    until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
-    let ids: Vec<_> = session
-        .history()
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|m| m.id)
-        .collect();
-    assert_eq!(ids, ["e1", "e2"]);
+    let mut streamed = Vec::new();
+    for prompt in ["one", "two"] {
+        session
+            .prompt(prompt.into(), Vec::new(), PromptMode::Start)
+            .await
+            .unwrap();
+        let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+        streamed.extend(events.into_iter().filter_map(|event| match event {
+            HarnessEvent::MessageCompleted { message } => Some(message.id),
+            _ => None,
+        }));
+        // Fetched incrementally: each reload adds only the new entries.
+        let ids: Vec<_> = session
+            .history()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, streamed);
+    }
+    assert_eq!(streamed.len(), 4);
+    session.shutdown().await;
+}
 
+#[tokio::test]
+async fn queued_prompts_keep_their_ids() {
+    let (session, mut rx) = start().await;
     session
-        .prompt("two".into(), Vec::new(), PromptMode::Start)
+        .prompt("queue".into(), Vec::new(), PromptMode::Start)
         .await
         .unwrap();
-    until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
-    let ids: Vec<_> = session
-        .history()
-        .await
-        .unwrap()
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    let queues: Vec<Vec<(String, String, PromptMode)>> = events
         .into_iter()
-        .map(|m| m.id)
+        .filter_map(|event| match event {
+            HarnessEvent::QueueChanged { queued } => {
+                Some(queued.into_iter().map(|q| (q.id, q.text, q.mode)).collect())
+            }
+            _ => None,
+        })
         .collect();
-    assert_eq!(ids, ["e1", "e2", "e3", "e4"]);
+    let [first, second, third] = queues.as_slice() else {
+        panic!("expected three queue changes, got {queues:?}");
+    };
+    assert_eq!(first.len(), 2);
+    assert_ne!(first[0].0, first[1].0);
+    // "b" is still waiting under the same id; "c" is new.
+    assert_eq!(second[0], first[1]);
+    assert_eq!(
+        (second[1].1.as_str(), second[1].2),
+        ("c", PromptMode::FollowUp)
+    );
+    assert!(!first.iter().any(|q| q.0 == second[1].0));
+    assert!(third.is_empty());
     session.shutdown().await;
 }
 
@@ -286,6 +314,15 @@ async fn images_travel_with_the_prompt() {
         .unwrap();
     let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
     assert_eq!(text_of(&events), "echo: look\u{2028}done [1 image/png]");
+    // History keeps the image itself, so it can be shown again.
+    let history = session.history().await.unwrap();
+    assert_eq!(
+        history[0].blocks[1],
+        Block::Image {
+            mime_type: "image/png".into(),
+            data: Some("iVBORw0K".into())
+        }
+    );
     session.shutdown().await;
 }
 

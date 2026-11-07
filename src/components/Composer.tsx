@@ -11,9 +11,8 @@ import {
   nextLevel,
   segments,
 } from "../composer";
-import type { QueuedPrompt } from "../conversation";
 import { useStore } from "../store";
-import type { FileAttachment, ModelInfo, SessionSettings } from "../types";
+import type { FileAttachment, ModelInfo, QueuedPrompt, SessionSettings } from "../types";
 
 /** Mentions offered at once; typing narrows them. */
 const MENTION_ROWS = 8;
@@ -260,11 +259,9 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
 
       {(queued.length > 0 || attachments.length > 0) && (
         <div className="flex flex-wrap gap-1 px-2 pt-2">
-          {queued.map((q, i) => (
+          {queued.map((q) => (
             <Chip
-              // Queued prompts have no id and may repeat; order is stable.
-              // biome-ignore lint/suspicious/noArrayIndexKey: see above
-              key={`q${i}`}
+              key={q.id}
               icon="history"
               label={q.text}
               mono={false}

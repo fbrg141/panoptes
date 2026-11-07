@@ -61,6 +61,8 @@ pub enum Block {
     #[serde(rename_all = "camelCase")]
     Image {
         mime_type: String,
+        /// The image bytes, base64-encoded, when the harness keeps them.
+        data: Option<String>,
     },
 }
 
@@ -144,8 +146,9 @@ pub struct FileEdit {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
-    /// Stable id from the harness's history when known; a live id
-    /// (see [`HarnessEvent::MessageStarted`]) while a message streams.
+    /// Set by the first event that mentions the message and kept for as
+    /// long as the session is open: history reuses the id a message
+    /// streamed under. A session opened later gets the harness's own ids.
     pub id: String,
     pub role: Role,
     pub blocks: Vec<Block>,
@@ -266,6 +269,11 @@ pub enum HarnessEvent {
     ToolCallUpdated {
         call: Box<ToolCall>,
     },
+    /// The prompts waiting for the agent changed. Lists them all, in the
+    /// order they will be delivered.
+    QueueChanged {
+        queued: Vec<QueuedPrompt>,
+    },
     /// The agent will do no more work until the next prompt.
     RunSettled {
         aborted: bool,
@@ -379,7 +387,7 @@ pub enum StartSession {
     Resume { locator: String, cwd: PathBuf },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PromptMode {
     /// Start a run. Fails if the agent is busy.
@@ -388,6 +396,18 @@ pub enum PromptMode {
     Steer,
     /// Deliver once the agent has finished.
     FollowUp,
+}
+
+/// A prompt the harness holds until the agent can take it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedPrompt {
+    /// Stays the same while the prompt waits.
+    pub id: String,
+    /// The text as the agent will read it (expanded, for a template).
+    pub text: String,
+    /// [`PromptMode::Steer`] or [`PromptMode::FollowUp`].
+    pub mode: PromptMode,
 }
 
 /// An image sent with a prompt.

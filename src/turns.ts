@@ -25,7 +25,7 @@ export type Step =
   | ToolStep
   | ToolGroup
   | { type: "note"; key: string; text: string }
-  | { type: "image"; key: string; mimeType: string }
+  | { type: "image"; key: string; mimeType: string; data: string | null }
   | { type: "error"; key: string; text: string };
 
 /** One prompt and everything the agent did in reply. */
@@ -97,7 +97,7 @@ export function buildTurns(conversation: Source): Turn[] {
             });
             break;
           case "image":
-            steps.push({ type: "image", key, mimeType: block.mimeType });
+            steps.push({ type: "image", key, mimeType: block.mimeType, data: block.data });
             break;
         }
       });
