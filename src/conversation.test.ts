@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyEvent, emptyConversation, removeQuestion } from "./conversation";
 import { groupSessions, relativeTime } from "./grouping";
-import type { Approval, HarnessEvent, SidebarSession, ToolCall } from "./types";
+import type { Approval, HarnessEvent, Session, ToolCall } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
 
@@ -142,13 +142,15 @@ describe("applyEvent", () => {
   });
 });
 
-const session = (over: Partial<SidebarSession>): SidebarSession => ({
+const session = (over: Partial<Session>): Session => ({
   key: "pi:x",
+  id: null,
+  laneId: null,
   harness: "pi",
-  id: "x",
-  locator: "",
+  harnessRef: { harness: "pi", id: "x", locator: "", cwd: "/r" },
   cwd: "/r",
   title: "t",
+  tags: [],
   createdAt: 0,
   updatedAt: 0,
   messageCount: 0,
@@ -157,6 +159,7 @@ const session = (over: Partial<SidebarSession>): SidebarSession => ({
   checkout: null,
   projectId: null,
   pinned: false,
+  archived: false,
   open: false,
   ...over,
 });
@@ -174,6 +177,11 @@ describe("groupSessions", () => {
       ["Pinned", ["b"]],
       ["panoptes", ["d", "c"]],
     ]);
+  });
+
+  it("leaves archived sessions out", () => {
+    const groups = groupSessions([session({ key: "a" }), session({ key: "b", archived: true })]);
+    expect(groups.flatMap((g) => g.sessions.map((s) => s.key))).toEqual(["a"]);
   });
 
   it("groups sessions under their registered project, then lists empty projects", () => {

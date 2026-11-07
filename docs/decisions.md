@@ -240,6 +240,33 @@ keyed by lane name (`refs/panoptes/lanes/<lane>/archive`) rather than store
 id, because debug and release builds keep separate stores that can reuse an
 id in the same repository; taking checkpoints each turn is built with #22.
 
+## The write lock is enforced by starting non-holders read-only
+
+*Decided 2026-11-07 (#22).* Only the lane session holding the write lock is
+started with every tool. Every other session in the lane is started with
+the harness's reading tools only (for Pi, `--tools read,grep,find,ls`; `bash`
+can write, so it is left out). The harness enforces it, not Panoptes catching
+tool calls, and the flag is neutral: `StartSession::read_only`.
+
+- **Opening a session** in a lane with no holder makes it the holder.
+  Opening never queues.
+- **Starting a run** claims the lock. It passes straight to a session whose
+  holder is idle, since that holder has finished its run. While the holder
+  runs, the new run goes ahead read-only and the session joins the queue,
+  showing Waiting when it is not running.
+- **The lock passes** to the first queued session when the holder's run
+  settles, or when the holder closes or crashes.
+- **Tools change by restart.** A session whose process has the wrong tools
+  for its next run is closed and resumed with the right ones before the
+  prompt is sent. Runs start only from prompts, so no process with every
+  tool runs without the lock.
+- The lock lives in memory: only an open session can hold it, and nothing
+  is open when Panoptes starts. Reading does not need it.
+
+Gating edit tools through the approvals extension would have kept processes
+running across a handoff, but it relies on catching every tool that can
+write, including `bash`, inside one harness's extension.
+
 ## The design system lives in the repo as a package
 
 *Decided 2026-11-05.*

@@ -118,8 +118,19 @@ export type HarnessEvent =
 /** Where an open session stands; worked out by the backend. */
 export type SessionStatus = "idle" | "running" | "waiting" | "failed" | "done";
 
-/** A harness event, or a status change the service adds. */
-export type SessionUpdate = HarnessEvent | { type: "statusChanged"; status: SessionStatus };
+/** How an open lane session stands with its lane's write lock. */
+export interface LockState {
+  /** It may edit files. */
+  holder: boolean;
+  /** It tried to run while another session held the lock: it runs read-only until it gets it. */
+  queued: boolean;
+}
+
+/** A harness event, or a status or lock change the service adds. */
+export type SessionUpdate =
+  | HarnessEvent
+  | { type: "statusChanged"; status: SessionStatus }
+  | ({ type: "lockChanged" } & LockState);
 
 export interface SessionEvent {
   key: string;
@@ -142,13 +153,32 @@ export interface ServiceError {
   message: string;
 }
 
-export interface SidebarSession {
-  key: string;
+/** The harness conversation a session wraps (`HarnessRef` in crates/panoptes-harness). */
+export interface HarnessRef {
   harness: string;
   id: string;
+  /** Opaque handle the harness resumes it by. */
   locator: string;
   cwd: string;
+}
+
+/**
+ * The one session type (`Session` in src-tauri/src/service.rs): a Panoptes session
+ * in a lane (`key` is `panoptes:<id>`), or a harness conversation found on disk
+ * that no lane has adopted (`key` is `<harness>:<id>`).
+ */
+export interface Session {
+  key: string;
+  /** Panoptes' own id; null for a conversation no lane has adopted. */
+  id: number | null;
+  laneId: number | null;
+  harness: string;
+  /** Null until the harness has reported the conversation. */
+  harnessRef: HarnessRef | null;
+  /** Its lane's worktree, or the harness's folder. */
+  cwd: string;
   title: string;
+  tags: string[];
   createdAt: number;
   updatedAt: number;
   messageCount: number;
@@ -156,9 +186,10 @@ export interface SidebarSession {
   projectRoot: string;
   /** Main checkout of the git repository the session runs in, shared by its worktrees; null outside git. */
   checkout: string | null;
-  /** The registered project whose repository (or one of its worktrees) the session runs in. */
+  /** Its lane's project, or the registered project whose repository (or one of its worktrees) the folder is in. */
   projectId: number | null;
   pinned: boolean;
+  archived: boolean;
   open: boolean;
 }
 
@@ -211,7 +242,8 @@ export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
 export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
 
 export interface Listing {
-  sessions: SidebarSession[];
+  /** Panoptes sessions (archived ones too), then every conversation no lane has adopted. */
+  sessions: Session[];
   /** Every registered project, by name. */
   projects: Project[];
   /** Every lane, including archived ones. */
@@ -220,16 +252,9 @@ export interface Listing {
   errors: string[];
 }
 
-export interface SessionRef {
-  harness: string;
-  id: string;
-  locator: string;
-  cwd: string;
-}
-
 export interface OpenedSession {
+  /** Opening an adopted conversation by its harness key answers with its Panoptes key. */
   key: string;
-  session: SessionRef;
   history: Message[];
 }
 

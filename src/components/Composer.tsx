@@ -57,7 +57,7 @@ declare global {
 
 export function Composer({ busy, sending }: { busy: boolean; sending: boolean }) {
   const activeKey = useStore((s) => s.activeKey);
-  const cwd = useStore((s) => [...s.drafts, ...s.sessions].find((x) => x.key === s.activeKey)?.cwd);
+  const cwd = useStore((s) => s.sessions.find((x) => x.key === s.activeKey)?.cwd);
   const settings = useStore((s) => (s.activeKey ? s.settings[s.activeKey] : undefined));
   const queued = useStore((s) =>
     s.activeKey ? (s.conversations[s.activeKey]?.queued ?? NO_QUEUE) : NO_QUEUE,

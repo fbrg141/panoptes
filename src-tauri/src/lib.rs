@@ -69,10 +69,42 @@ async fn open_session(
 #[tauri::command]
 async fn new_session(
     state: State<'_, AppState>,
+    lane_id: i64,
     harness: String,
-    cwd: String,
 ) -> ServiceResult<OpenedSession> {
-    state.service.create(&harness, cwd).await
+    state.service.create(lane_id, &harness).await
+}
+
+#[tauri::command]
+async fn replace_session(state: State<'_, AppState>, key: String) -> ServiceResult<OpenedSession> {
+    state.service.replace(&key).await
+}
+
+#[tauri::command]
+async fn archive_session(
+    state: State<'_, AppState>,
+    key: String,
+    archived: bool,
+) -> ServiceResult<()> {
+    state.service.set_archived(&key, archived).await
+}
+
+#[tauri::command]
+async fn rename_session(
+    state: State<'_, AppState>,
+    key: String,
+    title: Option<String>,
+) -> ServiceResult<()> {
+    state.service.rename(&key, title).await
+}
+
+#[tauri::command]
+async fn set_session_tags(
+    state: State<'_, AppState>,
+    key: String,
+    tags: Vec<String>,
+) -> ServiceResult<()> {
+    state.service.set_tags(&key, tags).await
 }
 
 #[tauri::command]
@@ -306,6 +338,10 @@ pub fn run() {
             list_sessions,
             open_session,
             new_session,
+            replace_session,
+            archive_session,
+            rename_session,
+            set_session_tags,
             session_history,
             send_prompt,
             session_settings,

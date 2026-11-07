@@ -23,10 +23,13 @@ fn fake_harness() -> PiHarness {
 }
 
 async fn start() -> (Box<dyn AgentSession>, UnboundedReceiver<HarnessEvent>) {
+    start_with(StartSession::new(std::env::temp_dir())).await
+}
+
+async fn start_with(
+    request: StartSession,
+) -> (Box<dyn AgentSession>, UnboundedReceiver<HarnessEvent>) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let request = StartSession::New {
-        cwd: std::env::temp_dir(),
-    };
     let session = fake_harness().start_session(request, tx).await.unwrap();
     (session, rx)
 }
@@ -67,9 +70,25 @@ fn text_of(events: &[HarnessEvent]) -> String {
 }
 
 #[tokio::test]
+async fn a_read_only_session_gets_only_reading_tools() {
+    for (read_only, expected) in [(false, "tools=all"), (true, "tools=read,grep,find,ls")] {
+        let mut request = StartSession::new(std::env::temp_dir());
+        request.read_only = read_only;
+        let (session, mut rx) = start_with(request).await;
+        session
+            .prompt("tools".into(), Vec::new(), PromptMode::Start)
+            .await
+            .unwrap();
+        let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+        assert_eq!(text_of(&events), expected);
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn a_prompt_streams_and_settles() {
     let (session, mut rx) = start().await;
-    assert_eq!(session.session_ref().id, "fake-session");
+    assert_eq!(session.harness_ref().id, "fake-session");
 
     let outcome = session
         .prompt("hi".into(), Vec::new(), PromptMode::Start)

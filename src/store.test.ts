@@ -8,18 +8,20 @@ import type {
   OpenedSession,
   Project,
   PromptOutcome,
+  Session,
   SessionEvent,
   SessionSettings,
-  SidebarSession,
 } from "./types";
 
-const session: SidebarSession = {
+const session: Session = {
   key: "pi:s1",
+  id: null,
+  laneId: null,
   harness: "pi",
-  id: "s1",
-  locator: "/s1.jsonl",
+  harnessRef: { harness: "pi", id: "s1", locator: "/s1.jsonl", cwd: "/code" },
   cwd: "/code",
   title: "One",
+  tags: [],
   createdAt: 0,
   updatedAt: 0,
   messageCount: 0,
@@ -28,6 +30,7 @@ const session: SidebarSession = {
   checkout: null,
   projectId: null,
   pinned: false,
+  archived: false,
   open: false,
 };
 
@@ -58,10 +61,19 @@ const lane: Lane = {
   writeLock: { holder: null, queue: [] },
 };
 
-const opened: OpenedSession = {
-  key: "pi:s1",
-  session: { harness: "pi", id: "s1", locator: "/s1.jsonl", cwd: "/code" },
-  history: [],
+const opened: OpenedSession = { key: "pi:s1", history: [] };
+
+/** A session recorded in `lane`, as the backend lists it. */
+const laneSession: Session = {
+  ...session,
+  key: "panoptes:7",
+  id: 7,
+  laneId: 1,
+  harnessRef: null,
+  cwd: "/lanes/fix-login/code",
+  title: "New session",
+  projectId: 1,
+  open: true,
 };
 
 const settings: SessionSettings = {
@@ -84,7 +96,9 @@ function fakeBackend() {
       }),
     ),
     openSession: vi.fn(async () => opened),
-    newSession: vi.fn(async () => opened),
+    newSession: vi.fn(async (): Promise<OpenedSession> => opened),
+    replaceSession: vi.fn(async (): Promise<OpenedSession> => opened),
+    archiveSession: vi.fn(async () => {}),
     history: vi.fn(async () => []),
     sendPrompt: vi.fn(async (): Promise<PromptOutcome> => "started"),
     settings: vi.fn(async () => settings),
@@ -320,15 +334,46 @@ describe("store", () => {
     expect(store.getState().lanes[0].state).toBe("archived");
   });
 
-  it("starts a session directly in a lane's worktree", async () => {
-    await store.getState().create(lane.worktrees[0].path, lane.projectId);
-    expect(fake.backend.newSession).toHaveBeenCalledWith("pi", "/lanes/fix-login/code");
-    expect(store.getState().activeKey).toBe("pi:s1");
-    expect(store.getState().drafts[0].projectId).toBe(1);
+  it("starts a session in a lane and lists it at once, from its record", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [laneSession, session],
+      projects: [project],
+      lanes: [lane],
+      errors: [],
+    });
+    await store.getState().create(lane.id);
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(store.getState().activeKey).toBe("panoptes:7");
+    expect(store.getState().sessions[0]).toEqual(laneSession);
   });
 
-  it("lists a new session under the project it was started from", async () => {
-    await store.getState().create("/code", 1);
-    expect(store.getState().drafts[0].projectId).toBe(1);
+  it("follows an adopted conversation to its Panoptes key", async () => {
+    fake.backend.openSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    await store.getState().open(session);
+    expect(store.getState().activeKey).toBe("panoptes:7");
+  });
+
+  it("replaces a session with a fresh one and forgets the old one", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    await store.getState().create(lane.id);
+    fake.backend.replaceSession.mockResolvedValueOnce({ key: "panoptes:8", history: [] });
+    await store.getState().replace("panoptes:7");
+    expect(fake.backend.replaceSession).toHaveBeenCalledWith("panoptes:7");
+    expect(store.getState().activeKey).toBe("panoptes:8");
+    expect(store.getState().conversations["panoptes:7"]).toBeUndefined();
+  });
+
+  it("archives a session, closing it here", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    await store.getState().create(lane.id);
+    await store.getState().setArchived("panoptes:7", true);
+    expect(fake.backend.archiveSession).toHaveBeenCalledWith("panoptes:7", true);
+    expect(store.getState().activeKey).toBeNull();
+  });
+
+  it("keeps each session's standing with its lane's write lock", () => {
+    fake.emit({ key: "panoptes:7", event: { type: "lockChanged", holder: false, queued: true } });
+    expect(store.getState().locks["panoptes:7"]).toEqual({ holder: false, queued: true });
   });
 });

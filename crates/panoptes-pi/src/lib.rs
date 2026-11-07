@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use panoptes_harness::{
-    AgentSession, Answer, EventSink, Harness, HarnessError, ImageAttachment, Message, ModelInfo,
-    PromptMode, PromptOutcome, SessionRef, SessionSettings, SessionSummary, StartSession,
+    AgentSession, Answer, DiscoveredSession, EventSink, Harness, HarnessError, HarnessRef,
+    ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, SessionSettings, StartSession,
 };
 use serde_json::{Value, json};
 
@@ -49,7 +49,7 @@ impl Harness for PiHarness {
         "pi"
     }
 
-    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
+    async fn list_sessions(&self) -> anyhow::Result<Vec<DiscoveredSession>> {
         let cache = self.cache.clone();
         let root = self.sessions_dir.clone();
         Ok(tokio::task::spawn_blocking(move || cache.lock().unwrap().scan(&root)).await?)
@@ -60,16 +60,15 @@ impl Harness for PiHarness {
         request: StartSession,
         events: EventSink,
     ) -> anyhow::Result<Box<dyn AgentSession>> {
-        let (cwd, file) = match &request {
-            StartSession::New { cwd } => (cwd.as_path(), None),
-            StartSession::Resume { locator, cwd } => (cwd.as_path(), Some(locator.as_str())),
-        };
+        let cwd = request.cwd.as_path();
+        let file = request.resume.as_deref();
         // A session whose folder has since been deleted still opens, from
         // the root, so its history stays readable.
         let cwd = if cwd.is_dir() { cwd } else { Path::new("/") };
         let shared = map::Shared::default();
         let mapper = map::EventMapper::new(shared.clone());
-        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, events, mapper)?;
+        let process =
+            rpc::RpcProcess::spawn(&self.install, cwd, file, request.read_only, events, mapper)?;
 
         let state = match process.call(json!({"type": "get_state"})).await {
             Ok(state) => state,
@@ -78,7 +77,7 @@ impl Harness for PiHarness {
                 return Err(error.context("Pi started but did not report its session"));
             }
         };
-        let session_ref = SessionRef {
+        let harness_ref = HarnessRef {
             harness: "pi".to_string(),
             id: state["sessionId"]
                 .as_str()
@@ -92,7 +91,7 @@ impl Harness for PiHarness {
         };
         Ok(Box::new(PiSession {
             process,
-            session_ref,
+            harness_ref,
             entries: tokio::sync::Mutex::default(),
             shared,
         }))
@@ -114,15 +113,15 @@ impl EntryCache {
 
 struct PiSession {
     process: rpc::RpcProcess,
-    session_ref: SessionRef,
+    harness_ref: HarnessRef,
     entries: tokio::sync::Mutex<EntryCache>,
     shared: map::Shared,
 }
 
 #[async_trait]
 impl AgentSession for PiSession {
-    fn session_ref(&self) -> SessionRef {
-        self.session_ref.clone()
+    fn harness_ref(&self) -> HarnessRef {
+        self.harness_ref.clone()
     }
 
     async fn history(&self) -> anyhow::Result<Vec<Message>> {
