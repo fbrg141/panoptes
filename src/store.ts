@@ -8,6 +8,7 @@ import type {
   ImageAttachment,
   ModelInfo,
   OpenedSession,
+  Project,
   PromptMode,
   SessionEvent,
   SessionSettings,
@@ -24,6 +25,8 @@ export interface SendOptions {
 export interface State {
   info: AppInfo | null;
   sessions: SidebarSession[];
+  /** Registered projects, as the backend lists them. */
+  projects: Project[];
   /** Sessions started here that the harness has not written to disk yet. */
   drafts: SidebarSession[];
   conversations: Record<string, Conversation>;
@@ -43,7 +46,8 @@ export interface State {
   init: () => Promise<void>;
   refresh: () => Promise<void>;
   open: (session: SidebarSession) => Promise<void>;
-  create: (cwd: string) => Promise<void>;
+  /** Starts a session in `cwd`, listed under `projectId` until the backend lists it. */
+  create: (cwd: string, projectId?: number | null) => Promise<void>;
   send: (text: string, options?: SendOptions) => Promise<void>;
   loadModels: () => Promise<void>;
   setModel: (modelId: string) => Promise<void>;
@@ -52,6 +56,9 @@ export interface State {
   answer: (questionId: string, answer: Answer) => Promise<void>;
   close: (key: string) => Promise<void>;
   togglePin: (session: SidebarSession) => Promise<void>;
+  /** Registers the git repository `folder` is in. */
+  addProject: (folder: string) => Promise<void>;
+  removeProject: (id: number) => Promise<void>;
   dismissError: () => void;
 }
 
@@ -71,7 +78,7 @@ export function errorKind(error: unknown): ErrorKind {
 /** The session's process is gone; opening it again starts a new one. */
 const needsReopen = (error: unknown) => ["notOpen", "exited"].includes(errorKind(error));
 
-function draftFrom(opened: OpenedSession): SidebarSession {
+function draftFrom(opened: OpenedSession, projectId: number | null): SidebarSession {
   const now = Date.now();
   return {
     key: opened.key,
@@ -85,6 +92,8 @@ function draftFrom(opened: OpenedSession): SidebarSession {
     messageCount: 0,
     parentLocator: null,
     projectRoot: opened.session.cwd,
+    checkout: null,
+    projectId,
     pinned: false,
     open: true,
   };
@@ -150,6 +159,7 @@ export function createAppStore(backend: typeof api) {
     return {
       info: null,
       sessions: [],
+      projects: [],
       drafts: [],
       conversations: {},
       statuses: {},
@@ -177,10 +187,11 @@ export function createAppStore(backend: typeof api) {
 
       refresh: async () => {
         try {
-          const { sessions, errors } = await backend.listSessions();
+          const { sessions, projects, errors } = await backend.listSessions();
           const known = new Set(sessions.map((s) => s.key));
           set((s) => ({
             sessions,
+            projects,
             listErrors: errors,
             drafts: s.drafts.filter((d) => !known.has(d.key)),
           }));
@@ -199,10 +210,10 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      create: async (cwd) => {
+      create: async (cwd, projectId = null) => {
         try {
           const opened = await backend.newSession("pi", cwd);
-          set((s) => ({ drafts: [...s.drafts, draftFrom(opened)] }));
+          set((s) => ({ drafts: [...s.drafts, draftFrom(opened, projectId)] }));
           adopt(opened);
         } catch (e) {
           fail(e);
@@ -306,6 +317,24 @@ export function createAppStore(backend: typeof api) {
       togglePin: async (session) => {
         try {
           await backend.setPinned(session.key, !session.pinned);
+          await get().refresh();
+        } catch (e) {
+          fail(e);
+        }
+      },
+
+      addProject: async (folder) => {
+        try {
+          await backend.addProject(folder);
+          await get().refresh();
+        } catch (e) {
+          fail(e);
+        }
+      },
+
+      removeProject: async (id) => {
+        try {
+          await backend.removeProject(id);
           await get().refresh();
         } catch (e) {
           fail(e);

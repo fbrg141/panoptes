@@ -154,6 +154,8 @@ const session = (over: Partial<SidebarSession>): SidebarSession => ({
   messageCount: 0,
   parentLocator: null,
   projectRoot: "/r",
+  checkout: null,
+  projectId: null,
   pinned: false,
   open: false,
   ...over,
@@ -172,6 +174,40 @@ describe("groupSessions", () => {
       ["Pinned", ["b"]],
       ["panoptes", ["d", "c"]],
     ]);
+  });
+
+  it("groups sessions under their registered project, then lists empty projects", () => {
+    const project = (id: number, name: string, repo: string) => ({
+      id,
+      repo,
+      name,
+      baseBranch: "main",
+      copyFiles: [".env"],
+      setup: null,
+    });
+    const web = project(1, "Web app", "/code/web");
+    const api = project(2, "api", "/code/api");
+    const sessions = [
+      session({ key: "a", projectRoot: "/code/web", projectId: 1, updatedAt: 1 }),
+      session({ key: "b", projectRoot: "/ws/fix/web", projectId: 1, updatedAt: 3 }),
+      session({ key: "c", projectRoot: "/code/other", checkout: "/code/other", updatedAt: 2 }),
+      session({ key: "d", projectRoot: "/scratch", updatedAt: 0 }),
+    ];
+    const groups = groupSessions(sessions, [api, web]);
+    expect(groups.map((g) => [g.label, g.sessions.map((s) => s.key)])).toEqual([
+      ["Web app", ["b", "a"]],
+      ["other", ["c"]],
+      ["scratch", ["d"]],
+      ["api", []],
+    ]);
+    expect(groups[0]).toMatchObject({ cwd: "/code/web", project: web });
+    expect(groups[1].project).toBeUndefined();
+    expect(groups[1].checkout).toBe("/code/other");
+    expect(groups[2].checkout).toBeUndefined();
+
+    // A filter matches the project's name and hides empty projects.
+    const filtered = groupSessions(sessions, [api, web], "web app");
+    expect(filtered.map((g) => g.label)).toEqual(["Web app"]);
   });
 });
 

@@ -2,6 +2,7 @@
 //! UI as commands, with session events emitted as `session-event`.
 
 mod files;
+mod projects;
 mod service;
 mod store;
 
@@ -19,7 +20,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use service::{Listing, OpenedSession, Service, ServiceResult};
-use store::Store;
+use store::{Project, ProjectSettings, Store};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +162,25 @@ async fn set_pinned(state: State<'_, AppState>, key: String, pinned: bool) -> Se
     state.service.set_pinned(key, pinned).await
 }
 
+#[tauri::command]
+async fn add_project(state: State<'_, AppState>, folder: String) -> ServiceResult<Project> {
+    state.service.add_project(folder).await
+}
+
+#[tauri::command]
+async fn update_project(
+    state: State<'_, AppState>,
+    id: i64,
+    settings: ProjectSettings,
+) -> ServiceResult<Project> {
+    state.service.update_project(id, settings).await
+}
+
+#[tauri::command]
+async fn remove_project(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
+    state.service.remove_project(id).await
+}
+
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app
         .path()
@@ -258,6 +278,9 @@ pub fn run() {
             answer_question,
             close_session,
             set_pinned,
+            add_project,
+            update_project,
+            remove_project,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

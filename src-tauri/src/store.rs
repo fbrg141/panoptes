@@ -1,6 +1,6 @@
 //! Panoptes' own data, in a SQLite database in the app data folder. Harnesses
-//! keep their conversations; this holds what Panoptes adds on top (pins now,
-//! then projects, groups, workspaces, sessions and tags, see
+//! keep their conversations; this holds what Panoptes adds on top (pins and
+//! projects now, then groups, workspaces, sessions and tags, see
 //! `docs/domain-model.md`).
 //!
 //! The schema version is SQLite's `user_version`. Opening the store runs
@@ -14,8 +14,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, TransactionBehavior};
-use serde::Deserialize;
+use rusqlite::{
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
+use serde::{Deserialize, Serialize};
 
 const DATABASE: &str = "panoptes.db";
 /// The JSON file that held pins before the store existed.
@@ -44,10 +46,16 @@ struct Migration {
 
 /// Schema version `n` is reached by running `MIGRATIONS[n - 1]`. Append new
 /// steps; never edit or reorder one that has shipped.
-const MIGRATIONS: &[Migration] = &[Migration {
-    apply: v1_pins,
-    committed: retire_legacy_index,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        apply: v1_pins,
+        committed: retire_legacy_index,
+    },
+    Migration {
+        apply: v2_projects,
+        committed: |_| {},
+    },
+];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
     tx.execute_batch(
@@ -61,6 +69,31 @@ fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
             [key],
         )?;
     }
+    Ok(())
+}
+
+/// Registered git repositories. `AUTOINCREMENT` so a removed project's id is
+/// never given to another one: workspaces and sessions will point at it.
+/// The files to copy are their own rows, in order, rather than a JSON list,
+/// so SQLite keeps them unique and drops them with their project.
+fn v2_projects(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL CHECK (name <> ''),
+            repo TEXT NOT NULL UNIQUE,
+            base_branch TEXT NOT NULL CHECK (base_branch <> ''),
+            setup TEXT CHECK (setup <> ''),
+            created_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE project_copy_files (
+            project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            path TEXT NOT NULL CHECK (path <> ''),
+            PRIMARY KEY (project_id, position),
+            UNIQUE (project_id, path)
+        ) STRICT;",
+    )?;
     Ok(())
 }
 
@@ -98,6 +131,32 @@ fn retire_legacy_index(dir: &Path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => eprintln!("Could not rename {}: {error}", legacy.display()),
     }
+}
+
+/// A registered git repository and the settings every new worktree of it
+/// is made with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Project {
+    pub id: i64,
+    /// Path of the main checkout.
+    pub repo: String,
+    #[serde(flatten)]
+    pub settings: ProjectSettings,
+}
+
+/// What can be changed about a project after it is registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSettings {
+    pub name: String,
+    /// What new worktrees branch from.
+    pub base_branch: String,
+    /// Untracked files copied from the main checkout into new worktrees,
+    /// relative to it.
+    pub copy_files: Vec<String>,
+    /// Run in a new worktree once it is made, such as `pnpm install`.
+    pub setup: Option<String>,
 }
 
 pub struct Store {
@@ -139,6 +198,119 @@ impl Store {
         self.conn.execute(sql, [key])?;
         Ok(())
     }
+
+    /// Every project, by name.
+    pub fn projects(&self) -> anyhow::Result<Vec<Project>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT id, repo, name, base_branch, setup FROM projects ORDER BY name COLLATE NOCASE, id",
+        )?;
+        let mut projects = statement
+            .query_map([], |row| {
+                Ok(Project {
+                    id: row.get(0)?,
+                    repo: row.get(1)?,
+                    settings: ProjectSettings {
+                        name: row.get(2)?,
+                        base_branch: row.get(3)?,
+                        setup: row.get(4)?,
+                        copy_files: Vec::new(),
+                    },
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut files = self.conn.prepare_cached(
+            "SELECT project_id, path FROM project_copy_files ORDER BY project_id, position",
+        )?;
+        let files = files.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?;
+        for file in files {
+            let (id, path) = file?;
+            if let Some(project) = projects.iter_mut().find(|p| p.id == id) {
+                project.settings.copy_files.push(path);
+            }
+        }
+        Ok(projects)
+    }
+
+    /// Registers the repository whose main checkout is `repo`. Fails if it is
+    /// already registered.
+    pub fn add_project(&self, repo: &str, settings: &ProjectSettings) -> anyhow::Result<Project> {
+        let tx = self.conn.unchecked_transaction()?;
+        let existing: Option<String> = tx
+            .query_row("SELECT name FROM projects WHERE repo = ?1", [repo], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(name) = existing {
+            bail!("{repo} is already registered as {name}");
+        }
+        tx.execute(
+            "INSERT INTO projects (name, repo, base_branch, setup, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                settings.name,
+                repo,
+                settings.base_branch,
+                settings.setup,
+                now_ms()
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        write_copy_files(&tx, id, &settings.copy_files)?;
+        tx.commit()?;
+        Ok(Project {
+            id,
+            repo: repo.to_string(),
+            settings: settings.clone(),
+        })
+    }
+
+    pub fn update_project(&self, id: i64, settings: &ProjectSettings) -> anyhow::Result<Project> {
+        let tx = self.conn.unchecked_transaction()?;
+        let repo: Option<String> = tx
+            .query_row(
+                "UPDATE projects SET name = ?2, base_branch = ?3, setup = ?4 WHERE id = ?1
+                 RETURNING repo",
+                rusqlite::params![id, settings.name, settings.base_branch, settings.setup],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(repo) = repo else {
+            bail!("That project is no longer registered");
+        };
+        tx.execute("DELETE FROM project_copy_files WHERE project_id = ?1", [id])?;
+        write_copy_files(&tx, id, &settings.copy_files)?;
+        tx.commit()?;
+        Ok(Project {
+            id,
+            repo,
+            settings: settings.clone(),
+        })
+    }
+
+    /// Forgets a project. Its repository and worktrees on disk are not
+    /// touched.
+    pub fn remove_project(&self, id: i64) -> anyhow::Result<()> {
+        self.conn
+            .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        Ok(())
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn write_copy_files(tx: &Transaction, id: i64, files: &[String]) -> anyhow::Result<()> {
+    let mut insert = tx.prepare_cached(
+        "INSERT INTO project_copy_files (project_id, position, path) VALUES (?1, ?2, ?3)",
+    )?;
+    for (position, path) in files.iter().enumerate() {
+        insert.execute(rusqlite::params![id, position as i64, path])?;
+    }
+    Ok(())
 }
 
 /// The database's schema version, after making sure it is a sound database
@@ -324,8 +496,28 @@ mod tests {
         Ok(())
     }
 
+    /// The tests of the migration machinery build on a store at schema 1,
+    /// so they keep their meaning as real steps are added.
     fn v1() -> Migration {
         MIGRATIONS[0]
+    }
+
+    fn settings(name: &str, copy_files: &[&str]) -> ProjectSettings {
+        ProjectSettings {
+            name: name.into(),
+            base_branch: "main".into(),
+            copy_files: copy_files.iter().map(|f| f.to_string()).collect(),
+            setup: None,
+        }
+    }
+
+    fn count(store: &Store, table: &str) -> u32 {
+        store
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
     }
 
     #[test]
@@ -387,7 +579,7 @@ mod tests {
     #[test]
     fn a_failed_migration_stops_and_keeps_the_data() {
         let dir = tempfile::tempdir().unwrap();
-        Store::open(dir.path())
+        Store::open_with(dir.path(), &[v1()])
             .unwrap()
             .set_pinned("pi:a", true)
             .unwrap();
@@ -409,7 +601,7 @@ mod tests {
     #[test]
     fn migrating_backs_up_the_database_first() {
         let dir = tempfile::tempdir().unwrap();
-        Store::open(dir.path())
+        Store::open_with(dir.path(), &[v1()])
             .unwrap()
             .set_pinned("pi:a", true)
             .unwrap();
@@ -438,7 +630,7 @@ mod tests {
     fn a_store_from_a_newer_panoptes_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         Store::open_with(dir.path(), &[v1(), step(v2_notes)]).unwrap();
-        let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
+        let error = format!("{:#}", Store::open_with(dir.path(), &[v1()]).err().unwrap());
         assert!(error.contains("newer version of Panoptes"), "{error}");
         assert_eq!(version(dir.path()), 2);
     }
@@ -471,7 +663,7 @@ mod tests {
     #[test]
     fn a_backup_is_kept_only_if_it_holds_the_version_it_is_named_after() {
         let dir = tempfile::tempdir().unwrap();
-        Store::open(dir.path())
+        Store::open_with(dir.path(), &[v1()])
             .unwrap()
             .set_pinned("pi:a", true)
             .unwrap();
@@ -488,7 +680,7 @@ mod tests {
     #[test]
     fn a_failed_backup_keeps_the_previous_one() {
         let dir = tempfile::tempdir().unwrap();
-        Store::open(dir.path()).unwrap();
+        Store::open_with(dir.path(), &[v1()]).unwrap();
         let backup = dir.path().join("panoptes.db.v1.bak");
         std::fs::write(&backup, "an earlier backup").unwrap();
         // A folder in the way makes the copy fail.
@@ -578,5 +770,117 @@ mod tests {
         let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
         assert!(error.contains(IN_USE), "{error}");
         assert!(!error.contains("not a readable database"), "{error}");
+    }
+
+    #[test]
+    fn a_v1_store_migrates_to_projects_and_keeps_its_pins() {
+        let dir = tempfile::tempdir().unwrap();
+        Store::open_with(dir.path(), &[v1()])
+            .unwrap()
+            .set_pinned("pi:a", true)
+            .unwrap();
+
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(version(dir.path()), 2);
+        assert_eq!(store.pinned().unwrap(), BTreeSet::from(["pi:a".into()]));
+        assert!(store.projects().unwrap().is_empty());
+        assert!(dir.path().join("panoptes.db.v1.bak").exists());
+    }
+
+    #[test]
+    fn projects_survive_reopening_with_their_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut web = settings("web", &[".env", "config/local.toml"]);
+        web.setup = Some("pnpm install".into());
+        let added = store.add_project("/code/web", &web).unwrap();
+        store
+            .add_project("/code/api", &settings("api", &[]))
+            .unwrap();
+        drop(store);
+
+        let store = Store::open(dir.path()).unwrap();
+        let projects = store.projects().unwrap();
+        assert_eq!(
+            projects
+                .iter()
+                .map(|p| p.settings.name.as_str())
+                .collect::<Vec<_>>(),
+            ["api", "web"]
+        );
+        assert_eq!(projects[1], added);
+        assert_eq!(projects[1].repo, "/code/web");
+        assert_eq!(
+            projects[1].settings.copy_files,
+            [".env", "config/local.toml"]
+        );
+        assert_eq!(projects[1].settings.setup.as_deref(), Some("pnpm install"));
+        assert!(projects[0].settings.copy_files.is_empty());
+    }
+
+    #[test]
+    fn a_repository_is_registered_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store
+            .add_project("/code/web", &settings("web", &[]))
+            .unwrap();
+        let error = store
+            .add_project("/code/web", &settings("again", &[]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("already registered as web"), "{error}");
+        assert_eq!(store.projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updating_a_project_replaces_its_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let id = store
+            .add_project("/code/web", &settings("web", &[".env", "a"]))
+            .unwrap()
+            .id;
+        let mut changed = settings("Web app", &["b", ".env"]);
+        changed.base_branch = "develop".into();
+        changed.setup = Some("make".into());
+        let updated = store.update_project(id, &changed).unwrap();
+        assert_eq!(updated.repo, "/code/web");
+        assert_eq!(store.projects().unwrap(), [updated]);
+
+        store.remove_project(id).unwrap();
+        let error = store.update_project(id, &changed).unwrap_err().to_string();
+        assert!(error.contains("no longer registered"), "{error}");
+    }
+
+    #[test]
+    fn removing_a_project_drops_its_files_and_never_reuses_its_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let first = store
+            .add_project("/code/web", &settings("web", &[".env"]))
+            .unwrap();
+        store.remove_project(first.id).unwrap();
+        assert!(store.projects().unwrap().is_empty());
+        assert_eq!(count(&store, "project_copy_files"), 0);
+
+        let second = store
+            .add_project("/code/web", &settings("web", &[".env"]))
+            .unwrap();
+        assert!(second.id > first.id);
+    }
+
+    #[test]
+    fn the_schema_refuses_rows_that_break_its_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let bad = [
+            "INSERT INTO projects (name, repo, base_branch, created_at) VALUES ('', '/a', 'main', 0)",
+            "INSERT INTO projects (name, repo, base_branch, setup, created_at) VALUES ('a', '/a', 'main', '', 0)",
+            "INSERT INTO project_copy_files (project_id, position, path) VALUES (99, 0, '.env')",
+        ];
+        for sql in bad {
+            assert!(store.conn.execute(sql, []).is_err(), "{sql}");
+        }
     }
 }
