@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { emptyConversation } from "./conversation";
-import { buildTurns, formatDuration, groupLabel, summarizeWork, toolSteps } from "./turns";
+import {
+  buildTurns,
+  formatDuration,
+  groupLabel,
+  looseApprovals,
+  summarizeWork,
+  toolSteps,
+} from "./turns";
 import type { Block, Message, ToolCall, ToolKind } from "./types";
 
 const message = (
@@ -82,6 +89,31 @@ describe("buildTurns", () => {
     expect(group.type === "group" && groupLabel(group.steps)).toBe(
       "Read 1 file, searched 1 pattern",
     );
+  });
+
+  it("puts an approval on the call it is about, outside any group", () => {
+    const approval = {
+      id: "a1",
+      toolCallId: "c2",
+      title: "Allow?",
+      message: null,
+      expiresAt: null,
+    };
+    const loose = { ...approval, id: "a2", toolCallId: "gone" };
+    const conversation = {
+      ...emptyConversation([
+        message("u1", "user", [text("look")]),
+        message("a1", "assistant", [
+          call("c1", "read", "a.ts"),
+          call("c2", "read", "b.ts", { status: "running" }),
+        ]),
+      ]),
+      approvals: [approval, loose],
+    };
+    const [turn] = buildTurns(conversation);
+    expect(turn.work.map((s) => s.type)).toEqual(["tool", "tool"]);
+    expect(toolSteps(turn.work).map((s) => s.approval)).toEqual([null, approval]);
+    expect(looseApprovals(conversation)).toEqual([loose]);
   });
 
   it("marks only the last turn live while the agent works", () => {

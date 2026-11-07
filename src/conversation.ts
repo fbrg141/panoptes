@@ -1,4 +1,5 @@
 import type {
+  Approval,
   Block,
   HarnessEvent,
   Message,
@@ -25,6 +26,8 @@ export interface Conversation {
   notices: Notice[];
   /** Questions from the harness still waiting for an answer. */
   questions: Question[];
+  /** Tool calls waiting for the user to allow or reject them. */
+  approvals: Approval[];
   /** Set once the harness process has ended. */
   exited: string | null;
   /** Steers and follow-ups sent during a run that the agent has not read yet. */
@@ -46,6 +49,7 @@ export const emptyConversation = (messages: Message[] = []): Conversation => ({
   busy: false,
   notices: [],
   questions: [],
+  approvals: [],
   exited: null,
   queued: [],
   thoughtFor: {},
@@ -163,11 +167,14 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
       };
     case "question":
       return { ...conversation, questions: [...conversation.questions, event.question] };
+    case "approval":
+      return { ...conversation, approvals: [...conversation.approvals, event.approval] };
     case "exited":
       return {
         ...conversation,
         busy: false,
         questions: [],
+        approvals: [],
         queued: [],
         exited:
           event.stderrTail.trim() || `The agent process ended (code ${event.code ?? "none"}).`,
@@ -211,9 +218,11 @@ export function enqueue(conversation: Conversation, prompt: QueuedPrompt): Conve
   return { ...conversation, queued: [...conversation.queued, prompt] };
 }
 
+/** Drops an answered question or approval. */
 export function removeQuestion(conversation: Conversation, questionId: string): Conversation {
   return {
     ...conversation,
     questions: conversation.questions.filter((q) => q.id !== questionId),
+    approvals: conversation.approvals.filter((a) => a.id !== questionId),
   };
 }
