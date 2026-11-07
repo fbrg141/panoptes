@@ -93,6 +93,10 @@ export function Sidebar() {
             onNewLane={
               group.project ? () => setNewLaneProject(group.project as Project) : undefined
             }
+            onWork={(lane) => {
+              const cwd = lane.worktrees[0]?.path;
+              if (cwd) void startIn(cwd, lane.projectId);
+            }}
             onArchive={(lane) => void requestArchive(lane)}
           />
         ))}
@@ -121,12 +125,14 @@ function Group({
   lanes,
   onNew,
   onNewLane,
+  onWork,
   onArchive,
 }: {
   group: SessionGroup;
   lanes: Lane[];
   onNew?: () => void;
   onNewLane?: () => void;
+  onWork: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
 }) {
   const addProject = useStore((s) => s.addProject);
@@ -196,7 +202,12 @@ function Group({
       )}
       <ul>
         {active.map((lane) => (
-          <LaneItem key={lane.id} lane={lane} onAction={() => onArchive(lane)} />
+          <LaneItem
+            key={lane.id}
+            lane={lane}
+            onWork={() => onWork(lane)}
+            onAction={() => onArchive(lane)}
+          />
         ))}
         {showArchived &&
           archived.map((lane) => (
@@ -227,14 +238,22 @@ function Group({
   );
 }
 
-/** An active lane offers Archive; an archived one offers Restore. */
-function LaneItem({ lane, onAction }: { lane: Lane; onAction: () => void }) {
+/** An active lane offers New session and Archive; an archived one offers Restore. */
+function LaneItem({
+  lane,
+  onWork,
+  onAction,
+}: {
+  lane: Lane;
+  onWork?: () => void;
+  onAction: () => void;
+}) {
   const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
   const archived = lane.state === "archived";
   const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
   return (
     <li className={`group/lane relative px-3 py-2 ${archived ? "text-ink-muted" : ""}`}>
-      <div className="pr-7">
+      <div className="pr-14">
         <p className="truncate" title={lane.task}>
           {lane.task}
         </p>
@@ -246,7 +265,17 @@ function LaneItem({ lane, onAction }: { lane: Lane; onAction: () => void }) {
           {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
         </p>
       </div>
-      <span className="absolute top-2 right-2 hidden group-hover/lane:block">
+      <span className="absolute top-2 right-2 hidden gap-1 group-hover/lane:flex">
+        {onWork && (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="plus"
+            aria-label={`New session in lane ${lane.name}`}
+            title={`New session in ${lane.worktrees[0]?.path ?? lane.name}`}
+            onClick={onWork}
+          />
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -268,9 +297,11 @@ function LaneItem({ lane, onAction }: { lane: Lane; onAction: () => void }) {
 
 function NewLaneDialog({ project, onClose }: { project: Project; onClose: () => void }) {
   const createLane = useStore((s) => s.createLane);
+  const createSession = useStore((s) => s.create);
   const cancelLaneCreation = useStore((s) => s.cancelLaneCreation);
   const [task, setTask] = useState("");
   const [mainCheckout, setMainCheckout] = useState(false);
+  const [startSession, setStartSession] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -278,7 +309,13 @@ function NewLaneDialog({ project, onClose }: { project: Project; onClose: () => 
     setBusy(true);
     const lane = await createLane(project.id, task, mainCheckout);
     setBusy(false);
-    if (lane) onClose();
+    if (lane) {
+      onClose();
+      if (startSession) {
+        const cwd = lane.worktrees[0]?.path;
+        if (cwd) await createSession(cwd, project.id);
+      }
+    }
   };
 
   const close = () => {
@@ -316,6 +353,7 @@ function NewLaneDialog({ project, onClose }: { project: Project; onClose: () => 
           aria-label="Lane task"
           value={task}
           onChange={(event) => setTask(event.target.value)}
+          disabled={busy}
           autoFocus
         />
         <Checkbox
@@ -323,6 +361,14 @@ function NewLaneDialog({ project, onClose }: { project: Project; onClose: () => 
           hint="Explicit opt-in: share the project's checkout. No worktree, copied files or setup command; archiving never removes it."
           checked={mainCheckout}
           onChange={(event) => setMainCheckout(event.target.checked)}
+          disabled={busy}
+        />
+        <Checkbox
+          label="Start a session in this lane"
+          hint="Open a new chat in its worktree as soon as the lane is ready."
+          checked={startSession}
+          onChange={(event) => setStartSession(event.target.checked)}
+          disabled={busy}
         />
       </form>
     </Dialog>

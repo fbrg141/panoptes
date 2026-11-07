@@ -320,6 +320,13 @@ describe("store", () => {
     expect(store.getState().lanes[0].state).toBe("archived");
   });
 
+  it("starts a session directly in a lane's worktree", async () => {
+    await store.getState().create(lane.worktrees[0].path, lane.projectId);
+    expect(fake.backend.newSession).toHaveBeenCalledWith("pi", "/lanes/fix-login/code");
+    expect(store.getState().activeKey).toBe("pi:s1");
+    expect(store.getState().drafts[0].projectId).toBe(1);
+  });
+
   it("lists a new session under the project it was started from", async () => {
     await store.getState().create("/code", 1);
     expect(store.getState().drafts[0].projectId).toBe(1);

@@ -19,6 +19,8 @@ by a design system.
   project file copying and setup. Lanes exist without sessions; clean lanes
   can be archived, and dirty work can be committed, stashed or saved as a
   restorable private checkpoint. The main checkout is a marked opt-in.
+  Start a chat in a lane when creating it, or later with the lane's +
+  action; no folder picker is needed.
 - Streams replies (rendered as markdown), thinking and tool calls. While the
   agent is working, Enter steers it and Esc stops it.
 - Questions from Pi extensions (confirm, select, input, editor) appear above
