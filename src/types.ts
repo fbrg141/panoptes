@@ -6,7 +6,8 @@ export type Block =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
   | ({ type: "toolCall"; argsText?: string } & ToolCall)
-  | { type: "image"; mimeType: string };
+  /** `data` is the image base64-encoded, when the harness keeps it. */
+  | { type: "image"; mimeType: string; data: string | null };
 
 /**
  * One tool call with its status and output. History and live events give
@@ -104,6 +105,8 @@ export type HarnessEvent =
   | { type: "messageCompleted"; message: Message }
   /** Replaces the tool-call block with the same id. */
   | { type: "toolCallUpdated"; call: ToolCall }
+  /** Every prompt still waiting for the agent, in delivery order. */
+  | { type: "queueChanged"; queued: QueuedPrompt[] }
   | { type: "runSettled"; aborted: boolean }
   | { type: "titleChanged"; title: string | null }
   | { type: "notice"; level: NoticeLevel; text: string }
@@ -180,6 +183,15 @@ export interface AppInfo {
 }
 
 export type PromptMode = "start" | "steer" | "followUp";
+
+/** A prompt the harness holds until the agent can take it. */
+export interface QueuedPrompt {
+  /** Stays the same while the prompt waits. */
+  id: string;
+  /** As the agent will read it (expanded, for a template). */
+  text: string;
+  mode: Exclude<PromptMode, "start">;
+}
 
 export type PromptOutcome = "started" | "queued" | "handled";
 

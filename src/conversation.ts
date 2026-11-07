@@ -4,20 +4,14 @@ import type {
   HarnessEvent,
   Message,
   NoticeLevel,
-  PromptMode,
   Question,
+  QueuedPrompt,
   ToolCall,
 } from "./types";
 
 export interface Notice {
   level: NoticeLevel;
   text: string;
-}
-
-/** A prompt the harness holds until the agent can take it. */
-export interface QueuedPrompt {
-  text: string;
-  mode: Exclude<PromptMode, "start">;
 }
 
 export interface Conversation {
@@ -146,16 +140,16 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
     case "messageCompleted": {
       conversation = endThinking(conversation, event.message.id);
       const exists = conversation.messages.some((m) => m.id === event.message.id);
-      const next = exists
+      return exists
         ? updateMessage(conversation, event.message.id, () => event.message)
         : { ...conversation, messages: [...conversation.messages, event.message] };
-      return event.message.role === "user" ? delivered(next, event.message) : next;
     }
     case "toolCallUpdated":
       return updateToolCall(conversation, event.call);
+    case "queueChanged":
+      return { ...conversation, queued: event.queued };
     case "runSettled":
-      // Anything still queued was delivered under a different text
-      // (expanded by the harness) or dropped by an abort.
+      // Nothing waits once the agent stops.
       return { ...conversation, busy: false, queued: [], thinking: null };
     case "notice":
       return {
@@ -201,21 +195,6 @@ function updateToolCall(conversation: Conversation, call: ToolCall): Conversatio
     };
   });
   return found ? { ...conversation, messages } : conversation;
-}
-
-/** The agent read a queued prompt: drop the first one with the same text. */
-function delivered(conversation: Conversation, message: Message): Conversation {
-  const text = message.blocks
-    .map((b) => (b.type === "text" ? b.text : ""))
-    .join("")
-    .trim();
-  const index = conversation.queued.findIndex((q) => q.text.trim() === text);
-  if (index < 0) return conversation;
-  return { ...conversation, queued: conversation.queued.filter((_, i) => i !== index) };
-}
-
-export function enqueue(conversation: Conversation, prompt: QueuedPrompt): Conversation {
-  return { ...conversation, queued: [...conversation.queued, prompt] };
 }
 
 /** Drops an answered question or approval. */

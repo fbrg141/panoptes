@@ -178,9 +178,10 @@ Smaller fixes from the backend review, needed by the model above:
    the call started and before it runs. The Pi adapter treats a confirm, or a
    select between one allow and one reject option, that arrives in that gap
    as the call's approval, and leaves every other dialog a question.
-5. **Stable message ids and images.** Streamed messages use temporary ids that
-   are swapped after the run, and queued prompts are matched to messages by
-   their text. Image blocks keep only their type, so history can't show them.
+5. **Stable message ids and images.** Done in #26: a message keeps the id it
+   streamed under while the session is open (the Pi adapter finds each
+   history entry's live id by the message's role and timestamp), the harness
+   reports its queue with an id per prompt, and image blocks carry their data.
 6. **Typed errors.** Errors cross into the UI as plain strings, so it can't
    tell "not open" from "the harness rejected it".
 

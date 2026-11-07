@@ -94,30 +94,19 @@ describe("store", () => {
     expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "second", [], "steer");
   });
 
-  it("queues a follow-up and drops it once the agent reads it", async () => {
+  it("sends a follow-up and shows the queue the harness reports", async () => {
     await store.getState().open(session);
     fake.emit({ key: "pi:s1", event: { type: "runStarted" } });
     fake.backend.sendPrompt.mockResolvedValueOnce("queued");
     await store.getState().send("then this", { queue: true });
     expect(fake.backend.sendPrompt).toHaveBeenLastCalledWith("pi:s1", "then this", [], "followUp");
-    expect(store.getState().conversations["pi:s1"].queued).toEqual([
-      { text: "then this", mode: "followUp" },
-    ]);
+    // Nothing is guessed from the reply; the harness's queue is the record.
+    expect(store.getState().conversations["pi:s1"].queued).toEqual([]);
 
-    fake.emit({
-      key: "pi:s1",
-      event: {
-        type: "messageCompleted",
-        message: {
-          id: "u2",
-          role: "user",
-          blocks: [{ type: "text", text: "then this" }],
-          timestamp: null,
-          error: null,
-          stopped: false,
-        },
-      },
-    });
+    const queued = [{ id: "q1", text: "then this", mode: "followUp" }] as const;
+    fake.emit({ key: "pi:s1", event: { type: "queueChanged", queued: [...queued] } });
+    expect(store.getState().conversations["pi:s1"].queued).toEqual(queued);
+    fake.emit({ key: "pi:s1", event: { type: "queueChanged", queued: [] } });
     expect(store.getState().conversations["pi:s1"].queued).toEqual([]);
   });
 

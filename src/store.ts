@@ -1,12 +1,6 @@
 import { create } from "zustand";
 import { api } from "./api";
-import {
-  applyEvent,
-  type Conversation,
-  emptyConversation,
-  enqueue,
-  removeQuestion,
-} from "./conversation";
+import { applyEvent, type Conversation, emptyConversation, removeQuestion } from "./conversation";
 import type {
   Answer,
   AppInfo,
@@ -144,7 +138,7 @@ export function createAppStore(backend: typeof api) {
       }
       patch(key, (c) => applyEvent(c, event));
       if (event.type === "runSettled") {
-        // Swap live message ids for the stable ones in the session history.
+        // The history is authoritative; it keeps the ids the run streamed under.
         void reloadHistory(key);
         // The run moved the context use.
         void loadSettings(key);
@@ -227,18 +221,17 @@ export function createAppStore(backend: typeof api) {
         const prompt = () => {
           const busy = get().conversations[key]?.busy ?? false;
           const mode: PromptMode = !busy ? "start" : queue ? "followUp" : "steer";
-          return backend.sendPrompt(key, text, images, mode).then((outcome) => ({ outcome, mode }));
+          return backend.sendPrompt(key, text, images, mode);
         };
         try {
           // A session whose process has gone is resumed and prompted again, once.
-          const { outcome, mode } = await prompt().catch(async (e) => {
+          // A queued prompt shows once the harness reports its queue.
+          const outcome = await prompt().catch(async (e) => {
             if (!needsReopen(e)) throw e;
             await reopen();
             return prompt();
           });
           if (outcome === "started") patch(key, (c) => ({ ...c, busy: true }));
-          if (outcome === "queued" && mode !== "start")
-            patch(key, (c) => enqueue(c, { text, mode }));
           if (outcome === "handled") void reloadHistory(key);
         } catch (e) {
           fail(e);

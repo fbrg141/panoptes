@@ -1,15 +1,33 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyEvent, emptyConversation, enqueue, removeQuestion } from "./conversation";
+import { applyEvent, emptyConversation, removeQuestion } from "./conversation";
 import { groupSessions, relativeTime } from "./grouping";
 import type { Approval, HarnessEvent, SidebarSession, ToolCall } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
 
 describe("applyEvent", () => {
-  it("clears queued prompts once the run settles", () => {
-    let c = enqueue(emptyConversation(), { text: "a", mode: "steer" });
-    c = enqueue(c, { text: "b", mode: "followUp" });
+  it("shows the harness's queue, and clears it once the run settles", () => {
+    const queued = [
+      { id: "q1", text: "a", mode: "steer" },
+      { id: "q2", text: "a", mode: "followUp" },
+    ] as const;
+    let c = fold([{ type: "runStarted" }, { type: "queueChanged", queued: [...queued] }]);
+    expect(c.queued).toEqual(queued);
+    // Delivering a prompt does not touch the queue; the harness says when it shrinks.
+    c = applyEvent(c, {
+      type: "messageCompleted",
+      message: {
+        id: "u1",
+        role: "user",
+        blocks: [{ type: "text", text: "a" }],
+        timestamp: null,
+        error: null,
+        stopped: false,
+      },
+    });
     expect(c.queued).toHaveLength(2);
+    c = applyEvent(c, { type: "queueChanged", queued: [queued[1]] });
+    expect(c.queued.map((q) => q.id)).toEqual(["q2"]);
     expect(applyEvent(c, { type: "runSettled", aborted: true }).queued).toEqual([]);
   });
 

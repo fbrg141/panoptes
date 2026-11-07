@@ -5,18 +5,30 @@ use std::sync::{Arc, Mutex};
 
 use panoptes_harness::{
     Approval, Block, ContextUsage, DeltaKind, FileEdit, HarnessEvent, Message, ModelInfo,
-    NoticeLevel, Question, QuestionKind, Role, ToolCall, ToolKind, ToolOutput, ToolStatus,
+    NoticeLevel, PromptMode, Question, QuestionKind, QueuedPrompt, Role, ToolCall, ToolKind,
+    ToolOutput, ToolStatus,
 };
 use serde_json::Value;
 
-/// When each tool call of a session started and ended, as seen live. Pi's
-/// history has no such times, so history reloads borrow them from here and
-/// give the same values the live events did.
-pub type ToolTimes = Arc<Mutex<HashMap<String, (i64, Option<i64>)>>>;
+/// What the live event stream learns that a session's history needs too,
+/// shared between the [`EventMapper`] and the session.
+#[derive(Default)]
+pub struct SessionState {
+    /// When each tool call started and ended, as seen live. Pi's history has
+    /// no such times, so history reloads borrow them from here and give the
+    /// same values the live events did.
+    pub tool_times: Mutex<HashMap<String, (i64, Option<i64>)>>,
+    /// How to answer each open approval: `None` for a confirm dialog, or the
+    /// select options that mean allow and reject.
+    pub approvals: Mutex<HashMap<String, Option<(String, String)>>>,
+    /// The id each message streamed under, by role and Pi timestamp. Pi
+    /// writes the message object it streamed to the session file unchanged,
+    /// so history finds its entries here and keeps the ids the UI already
+    /// has.
+    pub live_ids: Mutex<HashMap<(String, i64), String>>,
+}
 
-/// How to answer each open approval: `None` for a confirm dialog, or the
-/// select options that mean allow and reject.
-pub type ApprovalReplies = Arc<Mutex<HashMap<String, Option<(String, String)>>>>;
+pub type Shared = Arc<SessionState>;
 
 /// Select options read as "allow" and "reject" when a dialog offers exactly
 /// one of each, compared without case.
@@ -94,6 +106,7 @@ fn content_blocks(content: &Value) -> Vec<Block> {
             )))),
             "image" => Some(Block::Image {
                 mime_type: block["mimeType"].as_str().unwrap_or_default().to_string(),
+                data: block["data"].as_str().map(str::to_string),
             }),
             _ => None,
         })
@@ -220,6 +233,14 @@ fn edit_changes(args: &Value) -> Vec<FileEdit> {
         .collect()
 }
 
+/// What identifies a Pi message both live and in its session file.
+fn message_key(message: &Value) -> Option<(String, i64)> {
+    Some((
+        message["role"].as_str()?.to_string(),
+        message["timestamp"].as_i64()?,
+    ))
+}
+
 /// Converts one Pi `AgentMessage`. System messages (prompt and tool
 /// loadout) are not part of the visible conversation, and tool results
 /// belong to their calls; both return `None`.
@@ -285,18 +306,18 @@ pub struct EventMapper {
     counter: u64,
     current: Option<String>,
     calls: HashMap<String, ToolCall>,
-    times: ToolTimes,
-    approvals: ApprovalReplies,
+    shared: Shared,
+    /// Prompts waiting in Pi's queue, in delivery order.
+    queued: Vec<QueuedPrompt>,
     /// The call Pi has started but not yet run: extension `tool_call`
     /// hooks, which is where permission dialogs come from, run in between.
     preparing: Option<String>,
 }
 
 impl EventMapper {
-    pub fn new(times: ToolTimes, approvals: ApprovalReplies) -> Self {
+    pub fn new(shared: Shared) -> Self {
         Self {
-            times,
-            approvals,
+            shared,
             ..Self::default()
         }
     }
@@ -316,7 +337,8 @@ impl EventMapper {
                 _ => None,
             };
             if let Some(reply) = reply {
-                self.approvals
+                self.shared
+                    .approvals
                     .lock()
                     .unwrap()
                     .insert(question.id.clone(), reply);
@@ -362,6 +384,9 @@ impl EventMapper {
                     self.counter += 1;
                     format!("live-{}", self.counter)
                 });
+                if let Some(key) = message_key(&event["message"]) {
+                    self.shared.live_ids.lock().unwrap().insert(key, id.clone());
+                }
                 message(&event["message"], id)
                     .map(|mut message| {
                         // A call that already started keeps what is known of it.
@@ -379,6 +404,7 @@ impl EventMapper {
             "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
                 self.tool(kind, &event, now)
             }
+            "queue_update" => self.queue(&event),
             "session_info_changed" => vec![HarnessEvent::TitleChanged {
                 title: event["name"].as_str().map(str::to_string),
             }],
@@ -423,6 +449,37 @@ impl EventMapper {
         }
     }
 
+    /// Pi lists its queue by text alone. Each prompt keeps the id it was
+    /// first listed under until it leaves the queue, so the UI tracks
+    /// prompts by id.
+    fn queue(&mut self, event: &Value) -> Vec<HarnessEvent> {
+        let mut previous = std::mem::take(&mut self.queued);
+        for (key, mode) in [
+            ("steering", PromptMode::Steer),
+            ("followUp", PromptMode::FollowUp),
+        ] {
+            for text in event[key].as_array().into_iter().flatten() {
+                let Some(text) = text.as_str() else { continue };
+                let kept = previous
+                    .iter()
+                    .position(|q| q.mode == mode && q.text == text)
+                    .map(|i| previous.remove(i));
+                let prompt = kept.unwrap_or_else(|| {
+                    self.counter += 1;
+                    QueuedPrompt {
+                        id: format!("queued-{}", self.counter),
+                        text: text.to_string(),
+                        mode,
+                    }
+                });
+                self.queued.push(prompt);
+            }
+        }
+        vec![HarnessEvent::QueueChanged {
+            queued: self.queued.clone(),
+        }]
+    }
+
     fn tool(&mut self, kind: &str, event: &Value, now: i64) -> Vec<HarnessEvent> {
         let Some(id) = event["toolCallId"].as_str() else {
             return Vec::new();
@@ -446,7 +503,8 @@ impl EventMapper {
             }
         }
         if let Some(started) = call.started_at {
-            self.times
+            self.shared
+                .tool_times
                 .lock()
                 .unwrap()
                 .insert(call.id.clone(), (started, call.ended_at));
@@ -565,7 +623,7 @@ pub fn extension_ui(request: &Value, now_ms: i64) -> Vec<HarnessEvent> {
 
 /// The active branch of a session, oldest first, from `get_entries` data.
 /// Tool results are folded into their calls, with the times from `times`.
-pub fn history(entries: &[Value], leaf_id: Option<&str>, times: &ToolTimes) -> Vec<Message> {
+pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) -> Vec<Message> {
     let by_id: std::collections::HashMap<&str, &Value> = entries
         .iter()
         .filter_map(|entry| Some((entry["id"].as_str()?, entry)))
@@ -587,7 +645,8 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, times: &ToolTimes) -> V
         .filter(|message| message["role"] == "toolResult")
         .filter_map(|message| Some((message["toolCallId"].as_str()?, message)))
         .collect();
-    let times = times.lock().unwrap();
+    let times = shared.tool_times.lock().unwrap();
+    let live_ids = shared.live_ids.lock().unwrap();
     let finish = |call: &mut ToolCall| {
         let seen = times.get(&call.id).copied();
         if let Some(result) = results.get(call.id.as_str()) {
@@ -606,7 +665,14 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, times: &ToolTimes) -> V
         .filter_map(|entry| {
             let id = entry["id"].as_str()?.to_string();
             match entry["type"].as_str()? {
-                "message" => message(&entry["message"], id).map(|mut message| {
+                "message" => {
+                    // Keep the id the message streamed under, if it did.
+                    let id = message_key(&entry["message"])
+                        .and_then(|key| live_ids.get(&key).cloned())
+                        .unwrap_or(id);
+                    message(&entry["message"], id)
+                }
+                .map(|mut message| {
                     for block in &mut message.blocks {
                         if let Block::ToolCall(call) = block {
                             finish(call);
@@ -691,7 +757,7 @@ mod tests {
             json!({"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"abandoned"}]}}),
             json!({"type":"session_info","id":"d","parentId":"b","name":"x"}),
         ];
-        let ids: Vec<_> = history(&entries, Some("d"), &ToolTimes::default())
+        let ids: Vec<_> = history(&entries, Some("d"), &SessionState::default())
             .into_iter()
             .map(|m| m.id)
             .collect();
@@ -875,8 +941,8 @@ mod tests {
 
     #[test]
     fn history_gives_the_same_call_as_the_live_events() {
-        let times = ToolTimes::default();
-        let mut mapper = EventMapper::new(times.clone(), ApprovalReplies::default());
+        let shared = Shared::default();
+        let mut mapper = EventMapper::new(shared.clone());
         let events = live_call(&mut mapper);
         let Some(HarnessEvent::ToolCallUpdated { call: live }) = events
             .iter()
@@ -888,13 +954,13 @@ mod tests {
             json!({"type":"message","id":"a","parentId":null,"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"false"}}],"stopReason":"toolUse"}}),
             json!({"type":"message","id":"b","parentId":"a","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"out\n\nCommand exited with code 1"}],"isError":true,"timestamp":9_999}}),
         ];
-        let messages = history(&entries, Some("b"), &times);
+        let messages = history(&entries, Some("b"), &shared);
         assert_eq!(messages.len(), 1, "the result is not a message of its own");
         assert_eq!(messages[0].blocks, vec![Block::ToolCall(live.clone())]);
 
         // Without live times (a session opened later), the result's own
         // timestamp is the end.
-        let cold = history(&entries, Some("b"), &ToolTimes::default());
+        let cold = history(&entries, Some("b"), &SessionState::default());
         let Block::ToolCall(call) = &cold[0].blocks[0] else {
             unreachable!()
         };
@@ -957,19 +1023,19 @@ mod tests {
     }
 
     /// A mapper with call `c1` started and its approvals map.
-    fn preparing() -> (EventMapper, ApprovalReplies) {
-        let approvals = ApprovalReplies::default();
-        let mut mapper = EventMapper::new(ToolTimes::default(), approvals.clone());
+    fn preparing() -> (EventMapper, Shared) {
+        let shared = Shared::default();
+        let mut mapper = EventMapper::new(shared.clone());
         mapper.map(
             json!({"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"rm -rf x"}}),
             0,
         );
-        (mapper, approvals)
+        (mapper, shared)
     }
 
     #[test]
     fn permission_dialogs_while_a_call_prepares_are_approvals() {
-        let (mut mapper, approvals) = preparing();
+        let (mut mapper, shared) = preparing();
         let events = mapper.ui_request(
             &json!({"id":"q1","method":"select","title":"Dangerous command:\n\n  rm -rf x\n\nAllow?","options":["No","Yes"],"timeout":1000}),
             5,
@@ -986,7 +1052,7 @@ mod tests {
             ("q1", "c1", Some(1_005))
         );
         assert_eq!(
-            approvals.lock().unwrap()["q1"],
+            shared.approvals.lock().unwrap()["q1"],
             Some(("Yes".to_string(), "No".to_string()))
         );
 
@@ -994,7 +1060,7 @@ mod tests {
         assert!(
             matches!(&events[..], [HarnessEvent::Approval { approval }] if approval.id == "q2")
         );
-        assert_eq!(approvals.lock().unwrap()["q2"], None);
+        assert_eq!(shared.approvals.lock().unwrap()["q2"], None);
     }
 
     #[test]
