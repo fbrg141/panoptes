@@ -61,6 +61,8 @@ pub enum Block {
     #[serde(rename_all = "camelCase")]
     Image {
         mime_type: String,
+        /// The image bytes, base64-encoded, when the harness keeps them.
+        data: Option<String>,
     },
 }
 
@@ -144,8 +146,9 @@ pub struct FileEdit {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
-    /// Stable id from the harness's history when known; a live id
-    /// (see [`HarnessEvent::MessageStarted`]) while a message streams.
+    /// Set by the first event that mentions the message and kept for as
+    /// long as the session is open: history reuses the id a message
+    /// streamed under. A session opened later gets the harness's own ids.
     pub id: String,
     pub role: Role,
     pub blocks: Vec<Block>,
@@ -200,11 +203,34 @@ pub enum QuestionKind {
     Editor { prefill: Option<String> },
 }
 
+/// A request to let one tool call go ahead, answered with
+/// [`Answer::Decision`] (or [`Answer::Cancelled`], which rejects it).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Approval {
+    pub id: String,
+    /// The [`ToolCall::id`] the decision is about.
+    pub tool_call_id: String,
+    pub title: String,
+    pub message: Option<String>,
+    /// When the harness gives up waiting and picks a default, Unix
+    /// milliseconds.
+    pub expires_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Answer {
-    Value { value: String },
-    Confirmed { confirmed: bool },
+    Value {
+        value: String,
+    },
+    Confirmed {
+        confirmed: bool,
+    },
+    /// Allow or reject an [`Approval`].
+    Decision {
+        allow: bool,
+    },
     Cancelled,
 }
 
@@ -243,6 +269,11 @@ pub enum HarnessEvent {
     ToolCallUpdated {
         call: Box<ToolCall>,
     },
+    /// The prompts waiting for the agent changed. Lists them all, in the
+    /// order they will be delivered.
+    QueueChanged {
+        queued: Vec<QueuedPrompt>,
+    },
     /// The agent will do no more work until the next prompt.
     RunSettled {
         aborted: bool,
@@ -257,6 +288,11 @@ pub enum HarnessEvent {
     /// Answer with [`AgentSession::answer`].
     Question {
         question: Question,
+    },
+    /// A tool call needs the user's go-ahead. Answer with
+    /// [`AgentSession::answer`].
+    Approval {
+        approval: Approval,
     },
     /// The harness process ended. The session can be reopened.
     #[serde(rename_all = "camelCase")]
@@ -281,7 +317,7 @@ pub enum SessionStatus {
     Idle,
     /// The agent is working.
     Running,
-    /// The agent needs an answer from the user.
+    /// The agent needs an answer or an approval from the user.
     Waiting,
     /// The last run errored, or the harness process ended unexpectedly.
     Failed,
@@ -351,7 +387,7 @@ pub enum StartSession {
     Resume { locator: String, cwd: PathBuf },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PromptMode {
     /// Start a run. Fails if the agent is busy.
@@ -360,6 +396,18 @@ pub enum PromptMode {
     Steer,
     /// Deliver once the agent has finished.
     FollowUp,
+}
+
+/// A prompt the harness holds until the agent can take it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedPrompt {
+    /// Stays the same while the prompt waits.
+    pub id: String,
+    /// The text as the agent will read it (expanded, for a template).
+    pub text: String,
+    /// [`PromptMode::Steer`] or [`PromptMode::FollowUp`].
+    pub mode: PromptMode,
 }
 
 /// An image sent with a prompt.
@@ -466,7 +514,7 @@ pub trait AgentSession: Send + Sync {
 
     async fn abort(&self) -> anyhow::Result<()>;
 
-    /// Answers a [`HarnessEvent::Question`].
+    /// Answers a [`HarnessEvent::Question`] or [`HarnessEvent::Approval`].
     async fn answer(&self, question_id: String, answer: Answer) -> anyhow::Result<()>;
 
     /// The session's model, thinking level and context use. A harness

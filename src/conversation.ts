@@ -1,10 +1,11 @@
 import type {
+  Approval,
   Block,
   HarnessEvent,
   Message,
   NoticeLevel,
-  PromptMode,
   Question,
+  QueuedPrompt,
   ToolCall,
 } from "./types";
 
@@ -13,18 +14,14 @@ export interface Notice {
   text: string;
 }
 
-/** A prompt the harness holds until the agent can take it. */
-export interface QueuedPrompt {
-  text: string;
-  mode: Exclude<PromptMode, "start">;
-}
-
 export interface Conversation {
   messages: Message[];
   busy: boolean;
   notices: Notice[];
   /** Questions from the harness still waiting for an answer. */
   questions: Question[];
+  /** Tool calls waiting for the user to allow or reject them. */
+  approvals: Approval[];
   /** Set once the harness process has ended. */
   exited: string | null;
   /** Steers and follow-ups sent during a run that the agent has not read yet. */
@@ -46,6 +43,7 @@ export const emptyConversation = (messages: Message[] = []): Conversation => ({
   busy: false,
   notices: [],
   questions: [],
+  approvals: [],
   exited: null,
   queued: [],
   thoughtFor: {},
@@ -142,16 +140,16 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
     case "messageCompleted": {
       conversation = endThinking(conversation, event.message.id);
       const exists = conversation.messages.some((m) => m.id === event.message.id);
-      const next = exists
+      return exists
         ? updateMessage(conversation, event.message.id, () => event.message)
         : { ...conversation, messages: [...conversation.messages, event.message] };
-      return event.message.role === "user" ? delivered(next, event.message) : next;
     }
     case "toolCallUpdated":
       return updateToolCall(conversation, event.call);
+    case "queueChanged":
+      return { ...conversation, queued: event.queued };
     case "runSettled":
-      // Anything still queued was delivered under a different text
-      // (expanded by the harness) or dropped by an abort.
+      // Nothing waits once the agent stops.
       return { ...conversation, busy: false, queued: [], thinking: null };
     case "notice":
       return {
@@ -163,11 +161,14 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
       };
     case "question":
       return { ...conversation, questions: [...conversation.questions, event.question] };
+    case "approval":
+      return { ...conversation, approvals: [...conversation.approvals, event.approval] };
     case "exited":
       return {
         ...conversation,
         busy: false,
         questions: [],
+        approvals: [],
         queued: [],
         exited:
           event.stderrTail.trim() || `The agent process ended (code ${event.code ?? "none"}).`,
@@ -196,24 +197,11 @@ function updateToolCall(conversation: Conversation, call: ToolCall): Conversatio
   return found ? { ...conversation, messages } : conversation;
 }
 
-/** The agent read a queued prompt: drop the first one with the same text. */
-function delivered(conversation: Conversation, message: Message): Conversation {
-  const text = message.blocks
-    .map((b) => (b.type === "text" ? b.text : ""))
-    .join("")
-    .trim();
-  const index = conversation.queued.findIndex((q) => q.text.trim() === text);
-  if (index < 0) return conversation;
-  return { ...conversation, queued: conversation.queued.filter((_, i) => i !== index) };
-}
-
-export function enqueue(conversation: Conversation, prompt: QueuedPrompt): Conversation {
-  return { ...conversation, queued: [...conversation.queued, prompt] };
-}
-
+/** Drops an answered question or approval. */
 export function removeQuestion(conversation: Conversation, questionId: string): Conversation {
   return {
     ...conversation,
     questions: conversation.questions.filter((q) => q.id !== questionId),
+    approvals: conversation.approvals.filter((a) => a.id !== questionId),
   };
 }

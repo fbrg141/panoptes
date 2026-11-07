@@ -118,7 +118,8 @@ pub struct StatusChanged {
 struct StatusTracker {
     status: SessionStatus,
     running: bool,
-    /// Open questions, with when the harness stops waiting (Unix ms).
+    /// Open questions and approvals, with when the harness stops waiting
+    /// (Unix ms).
     questions: HashMap<String, Option<i64>>,
     /// The latest assistant message in this run reported an error.
     errored: bool,
@@ -153,6 +154,10 @@ impl StatusTracker {
             HarnessEvent::Question { question } => {
                 self.questions
                     .insert(question.id.clone(), question.expires_at);
+            }
+            HarnessEvent::Approval { approval } => {
+                self.questions
+                    .insert(approval.id.clone(), approval.expires_at);
             }
             HarnessEvent::RunSettled { .. } => {
                 self.running = false;
@@ -906,6 +911,23 @@ mod tests {
             statuses(&f)[3..],
             [SessionStatus::Running, SessionStatus::Done]
         );
+    }
+
+    #[test]
+    fn an_approval_waits_until_decided() {
+        let mut tracker = StatusTracker::default();
+        tracker.apply(&HarnessEvent::RunStarted, 0);
+        let approval = HarnessEvent::Approval {
+            approval: panoptes_harness::Approval {
+                id: "a1".into(),
+                tool_call_id: "c1".into(),
+                title: "Allow?".into(),
+                message: None,
+                expires_at: None,
+            },
+        };
+        assert_eq!(tracker.apply(&approval, 10), Some(SessionStatus::Waiting));
+        assert_eq!(tracker.answered("a1", 20), Some(SessionStatus::Running));
     }
 
     #[test]

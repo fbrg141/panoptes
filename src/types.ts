@@ -6,7 +6,8 @@ export type Block =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
   | ({ type: "toolCall"; argsText?: string } & ToolCall)
-  | { type: "image"; mimeType: string };
+  /** `data` is the image base64-encoded, when the harness keeps it. */
+  | { type: "image"; mimeType: string; data: string | null };
 
 /**
  * One tool call with its status and output. History and live events give
@@ -74,9 +75,20 @@ export interface Question {
   expiresAt: number | null;
 }
 
+/** A request to let one tool call go ahead; answered with a decision. */
+export interface Approval {
+  id: string;
+  toolCallId: string;
+  title: string;
+  message: string | null;
+  /** Unix ms after which the harness stops waiting and picks a default. */
+  expiresAt: number | null;
+}
+
 export type Answer =
   | { type: "value"; value: string }
   | { type: "confirmed"; confirmed: boolean }
+  | { type: "decision"; allow: boolean }
   | { type: "cancelled" };
 
 export type HarnessEvent =
@@ -93,10 +105,13 @@ export type HarnessEvent =
   | { type: "messageCompleted"; message: Message }
   /** Replaces the tool-call block with the same id. */
   | { type: "toolCallUpdated"; call: ToolCall }
+  /** Every prompt still waiting for the agent, in delivery order. */
+  | { type: "queueChanged"; queued: QueuedPrompt[] }
   | { type: "runSettled"; aborted: boolean }
   | { type: "titleChanged"; title: string | null }
   | { type: "notice"; level: NoticeLevel; text: string }
   | { type: "question"; question: Question }
+  | { type: "approval"; approval: Approval }
   | { type: "exited"; code: number | null; stderrTail: string }
   | { type: "raw"; payload: unknown };
 
@@ -168,6 +183,15 @@ export interface AppInfo {
 }
 
 export type PromptMode = "start" | "steer" | "followUp";
+
+/** A prompt the harness holds until the agent can take it. */
+export interface QueuedPrompt {
+  /** Stays the same while the prompt waits. */
+  id: string;
+  /** As the agent will read it (expanded, for a template). */
+  text: string;
+  mode: Exclude<PromptMode, "start">;
+}
 
 export type PromptOutcome = "started" | "queued" | "handled";
 

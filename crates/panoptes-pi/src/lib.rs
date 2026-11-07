@@ -67,8 +67,9 @@ impl Harness for PiHarness {
         // A session whose folder has since been deleted still opens, from
         // the root, so its history stays readable.
         let cwd = if cwd.is_dir() { cwd } else { Path::new("/") };
-        let tool_times = map::ToolTimes::default();
-        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, events, tool_times.clone())?;
+        let shared = map::Shared::default();
+        let mapper = map::EventMapper::new(shared.clone());
+        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, events, mapper)?;
 
         let state = match process.call(json!({"type": "get_state"})).await {
             Ok(state) => state,
@@ -93,7 +94,7 @@ impl Harness for PiHarness {
             process,
             session_ref,
             entries: tokio::sync::Mutex::default(),
-            tool_times,
+            shared,
         }))
     }
 }
@@ -115,7 +116,7 @@ struct PiSession {
     process: rpc::RpcProcess,
     session_ref: SessionRef,
     entries: tokio::sync::Mutex<EntryCache>,
-    tool_times: map::ToolTimes,
+    shared: map::Shared,
 }
 
 #[async_trait]
@@ -151,7 +152,7 @@ impl AgentSession for PiSession {
         Ok(map::history(
             &cache.entries,
             data["leafId"].as_str(),
-            &self.tool_times,
+            &self.shared,
         ))
     }
 
@@ -189,10 +190,16 @@ impl AgentSession for PiSession {
     }
 
     async fn answer(&self, question_id: String, answer: Answer) -> anyhow::Result<()> {
+        // An approval is a confirm or a select underneath; answer in kind.
+        let approval = self.shared.approvals.lock().unwrap().remove(&question_id);
         let mut response = json!({"type": "extension_ui_response", "id": question_id});
         match answer {
             Answer::Value { value } => response["value"] = json!(value),
             Answer::Confirmed { confirmed } => response["confirmed"] = json!(confirmed),
+            Answer::Decision { allow } => match approval.flatten() {
+                Some((yes, no)) => response["value"] = json!(if allow { yes } else { no }),
+                None => response["confirmed"] = json!(allow),
+            },
             Answer::Cancelled => response["cancelled"] = json!(true),
         }
         self.process.notify(response)
