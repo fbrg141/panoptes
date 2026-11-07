@@ -2,7 +2,7 @@
 //! are open, and Panoptes' own store. Independent of Tauri so it can be
 //! tested with a fake harness; `lib.rs` exposes it as commands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -281,6 +281,8 @@ pub struct Service {
     lanes_root: PathBuf,
     /// Cancellation flags for setup commands, keyed by their project.
     lane_cancellations: Arc<std::sync::Mutex<HashMap<i64, Arc<AtomicBool>>>>,
+    /// Lanes with an archive or restore in progress.
+    busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
@@ -304,6 +306,7 @@ impl Service {
             store: Arc::new(std::sync::Mutex::new(store)),
             lanes_root,
             lane_cancellations: Arc::default(),
+            busy_lanes: Arc::default(),
             locations: std::sync::Mutex::default(),
             emit,
         }
@@ -675,8 +678,9 @@ impl Service {
             .map_err(err)
     }
 
-    /// Creates a durable lane before any session exists. The store mutex
-    /// serialises name allocation and the one-active-main-checkout rule.
+    /// Creates a durable lane before any session exists. One creation per
+    /// project at a time keeps name allocation and the
+    /// one-active-main-checkout rule consistent; the store re-checks paths.
     pub async fn create_lane(
         &self,
         project_id: i64,
@@ -696,43 +700,45 @@ impl Service {
         }
         let root = self.lanes_root.clone();
         let in_setup = cancelled.clone();
-        let result = self
-            .with_store(move |store| {
-                let task = task.trim().to_string();
-                if task.is_empty() {
-                    anyhow::bail!("A lane needs a task");
-                }
+        let store = self.store.clone();
+        // The store lock is taken only for the reads and the final insert.
+        // Git and the setup command can take minutes and must not block
+        // every other store call. Creations for one project are serialised
+        // by the cancellation map above.
+        let result = tokio::task::spawn_blocking(move || {
+            let task = task.trim().to_string();
+            if task.is_empty() {
+                anyhow::bail!("A lane needs a task");
+            }
+            let (project, taken) = {
+                let store = store.lock().unwrap();
                 let project = store.project(project_id)?;
-                let existing = store.lanes()?;
-                if main_checkout
-                    && existing.iter().any(|lane| {
-                        lane.project_id == project_id
-                            && lane.state == LaneState::Active
-                            && lane.worktrees.iter().any(|tree| tree.main_checkout)
-                    })
-                {
+                let lanes = store.lanes()?;
+                if main_checkout && has_active_main_checkout(&lanes, project_id, None) {
                     anyhow::bail!("This project already has an active main-checkout lane");
                 }
-                let base = lanes::slug(&task);
-                let mut name = base.clone();
-                let mut suffix = 2;
-                while existing
-                    .iter()
-                    .any(|lane| lane.project_id == project_id && lane.name == name)
-                {
-                    name = format!("{base}-{suffix}");
-                    suffix += 1;
-                }
-                let new = lanes::create(&root, &project, &name, &task, main_checkout, &in_setup)?;
-                match store.add_lane(&new) {
-                    Ok(lane) => Ok(lane),
-                    Err(error) => {
-                        lanes::discard_created(&project, &new);
-                        Err(error)
-                    }
-                }
-            })
-            .await;
+                let taken: Vec<String> = lanes
+                    .into_iter()
+                    .filter(|lane| lane.project_id == project_id)
+                    .map(|lane| lane.name)
+                    .collect();
+                (project, taken)
+            };
+            let new = lanes::create(
+                &root,
+                &project,
+                &lanes::slug(&task),
+                &taken,
+                &task,
+                main_checkout,
+                &in_setup,
+            )?;
+            let added = store.lock().unwrap().add_lane(&new);
+            added.inspect_err(|_| lanes::discard_created(&project, &new))
+        })
+        .await
+        .context("The lane creation stopped")
+        .and_then(|result| result);
         self.lane_cancellations.lock().unwrap().remove(&project_id);
         match result {
             Ok(lane) => Ok(lane),
@@ -757,36 +763,76 @@ impl Service {
         id: i64,
         strategy: Option<ArchiveStrategy>,
     ) -> ServiceResult<ArchiveLaneOutcome> {
-        self.with_store(move |store| {
-            let lane = store.lane(id)?;
-            if lane.state != LaneState::Active {
-                anyhow::bail!("That lane is already archived");
-            }
-            let project = store.project(lane.project_id)?;
+        let _busy = self.lane_busy(id)?;
+        let store = self.store.clone();
+        // As in `create_lane`, Git (and its commit hooks) runs without the
+        // store lock; `lane_busy` keeps two changes to one lane apart.
+        tokio::task::spawn_blocking(move || {
+            let (lane, project) = {
+                let store = store.lock().unwrap();
+                let lane = store.lane(id)?;
+                if lane.state != LaneState::Active {
+                    anyhow::bail!("That lane is already archived");
+                }
+                let project = store.project(lane.project_id)?;
+                (lane, project)
+            };
             match lanes::archive(&project, &lane, strategy)? {
                 ArchiveResult::Dirty => Ok(ArchiveLaneOutcome::Dirty { lane }),
                 ArchiveResult::Archived { checkpoint_ref } => {
-                    store.archive_lane(id, checkpoint_ref.as_deref())?;
+                    store
+                        .lock()
+                        .unwrap()
+                        .archive_lane(id, checkpoint_ref.as_deref())?;
                     Ok(ArchiveLaneOutcome::Archived)
                 }
             }
         })
         .await
+        .context("The lane archive stopped")
+        .and_then(|result| result)
         .map_err(err)
     }
 
     pub async fn restore_lane(&self, id: i64) -> ServiceResult<Lane> {
-        self.with_store(move |store| {
-            let lane = store.lane(id)?;
-            if lane.state != LaneState::Archived {
-                anyhow::bail!("That lane is not archived");
-            }
-            let project = store.project(lane.project_id)?;
+        let _busy = self.lane_busy(id)?;
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || {
+            let (lane, project) = {
+                let store = store.lock().unwrap();
+                let lane = store.lane(id)?;
+                if lane.state != LaneState::Archived {
+                    anyhow::bail!("That lane is not archived");
+                }
+                let lanes = store.lanes()?;
+                let main = lane.worktrees.iter().any(|tree| tree.main_checkout);
+                if main && has_active_main_checkout(&lanes, lane.project_id, Some(id)) {
+                    anyhow::bail!("This project already has an active main-checkout lane");
+                }
+                let project = store.project(lane.project_id)?;
+                (lane, project)
+            };
             lanes::restore(&project, &lane)?;
-            store.restore_lane(id)
+            store.lock().unwrap().restore_lane(id)
         })
         .await
+        .context("The lane restore stopped")
+        .and_then(|result| result)
         .map_err(err)
+    }
+
+    /// Marks a lane as being archived or restored until the guard drops.
+    fn lane_busy(&self, id: i64) -> ServiceResult<LaneBusy> {
+        if !self.busy_lanes.lock().unwrap().insert(id) {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "That lane is already being archived or restored",
+            ));
+        }
+        Ok(LaneBusy {
+            lanes: self.busy_lanes.clone(),
+            id,
+        })
     }
 
     /// Runs `call` on a blocking thread: SQLite calls block, for up to the
@@ -801,6 +847,27 @@ impl Service {
             .await
             .context("The store call stopped")?
     }
+}
+
+struct LaneBusy {
+    lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
+    id: i64,
+}
+
+impl Drop for LaneBusy {
+    fn drop(&mut self) {
+        self.lanes.lock().unwrap().remove(&self.id);
+    }
+}
+
+/// Whether another active lane of `project_id` already uses the main checkout.
+fn has_active_main_checkout(lanes: &[Lane], project_id: i64, except: Option<i64>) -> bool {
+    lanes.iter().any(|lane| {
+        lane.project_id == project_id
+            && Some(lane.id) != except
+            && lane.state == LaneState::Active
+            && lane.worktrees.iter().any(|tree| tree.main_checkout)
+    })
 }
 
 fn cached_location(cache: &mut HashMap<String, Location>, cwd: &str) -> Location {
@@ -1535,6 +1602,20 @@ mod tests {
         assert!(matches!(outcome, ArchiveLaneOutcome::Archived));
         assert!(repo.join("uncommitted.txt").exists());
         assert_eq!(f.service.list().await.lanes[0].state, LaneState::Archived);
+
+        let again = f
+            .service
+            .create_lane(project.id, "Quick question".into(), true)
+            .await
+            .unwrap();
+        assert_eq!(again.name, "quick-question-2");
+        let error = f.service.restore_lane(lane.id).await.unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("already has an active main-checkout"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

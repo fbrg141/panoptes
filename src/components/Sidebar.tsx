@@ -88,9 +88,7 @@ export function Sidebar() {
           <Group
             key={group.id}
             group={group}
-            lanes={lanes.filter(
-              (lane) => lane.projectId === group.project?.id && lane.state === "active",
-            )}
+            lanes={lanes.filter((lane) => lane.projectId === group.project?.id)}
             onNew={group.cwd ? () => void startIn(group.cwd, group.project?.id) : undefined}
             onNewLane={
               group.project ? () => setNewLaneProject(group.project as Project) : undefined
@@ -133,7 +131,11 @@ function Group({
 }) {
   const addProject = useStore((s) => s.addProject);
   const removeProject = useStore((s) => s.removeProject);
+  const restoreLane = useStore((s) => s.restoreLane);
   const [expanded, setExpanded] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const active = lanes.filter((lane) => lane.state === "active");
+  const archived = lanes.filter((lane) => lane.state === "archived");
   const project = group.project;
   const collapsible = group.cwd !== undefined;
   const shown =
@@ -193,10 +195,24 @@ function Group({
         <p className="px-3 pb-1 text-ink-muted">No sessions yet.</p>
       )}
       <ul>
-        {lanes.map((lane) => (
-          <LaneItem key={lane.id} lane={lane} onArchive={() => onArchive(lane)} />
+        {active.map((lane) => (
+          <LaneItem key={lane.id} lane={lane} onAction={() => onArchive(lane)} />
         ))}
+        {showArchived &&
+          archived.map((lane) => (
+            <LaneItem key={lane.id} lane={lane} onAction={() => void restoreLane(lane.id)} />
+          ))}
       </ul>
+      {archived.length > 0 && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-2"
+          onClick={() => setShowArchived((shown) => !shown)}
+        >
+          {showArchived ? "Hide archived lanes" : `${archived.length} archived`}
+        </Button>
+      )}
       <ul>
         {shown.map((session) => (
           <SessionItem key={session.key} session={session} />
@@ -211,10 +227,13 @@ function Group({
   );
 }
 
-function LaneItem({ lane, onArchive }: { lane: Lane; onArchive: () => void }) {
+/** An active lane offers Archive; an archived one offers Restore. */
+function LaneItem({ lane, onAction }: { lane: Lane; onAction: () => void }) {
   const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
+  const archived = lane.state === "archived";
+  const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
   return (
-    <li className="group/lane relative px-3 py-2">
+    <li className={`group/lane relative px-3 py-2 ${archived ? "text-ink-muted" : ""}`}>
       <div className="pr-7">
         <p className="truncate" title={lane.task}>
           {lane.task}
@@ -224,16 +243,23 @@ function LaneItem({ lane, onArchive }: { lane: Lane; onArchive: () => void }) {
           title={lane.worktrees[0]?.path}
         >
           {main ? "Main checkout" : lane.branch}
+          {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
         </p>
       </div>
       <span className="absolute top-2 right-2 hidden group-hover/lane:block">
         <Button
           variant="ghost"
           size="sm"
-          icon="x"
-          aria-label={`Archive lane ${lane.name}`}
-          title="Archive lane"
-          onClick={onArchive}
+          icon={archived ? "rotate-ccw" : "x"}
+          aria-label={`${archived ? "Restore" : "Archive"} lane ${lane.name}`}
+          title={
+            archived
+              ? checkpoint
+                ? "Restore lane and its checkpoint"
+                : "Restore lane"
+              : "Archive lane"
+          }
+          onClick={onAction}
         />
       </span>
     </li>

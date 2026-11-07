@@ -41,17 +41,67 @@ pub fn slug(task: &str) -> String {
             dash = true;
         }
     }
-    let slug = slug.trim_matches('-').chars().take(48).collect::<String>();
-    if slug.is_empty() { "lane".into() } else { slug }
+    // Truncate first, then trim, so a cut never leaves a trailing dash.
+    let slug = slug.chars().take(48).collect::<String>();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "lane".into()
+    } else {
+        slug.into()
+    }
+}
+
+fn worktree_path(root: &Path, repo: &Path, name: &str) -> PathBuf {
+    root.join(name).join(
+        repo.file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("repo")),
+    )
+}
+
+/// The first of `base`, `base-2`, `base-3`, … that no stored lane of this
+/// project uses and, for a fresh worktree, whose folder and branch are free.
+/// The folder and branch checks matter because other projects (with the
+/// same repository name) and other Panoptes stores share the lanes root and
+/// the repository's branches.
+fn free_name(
+    root: &Path,
+    repo: &Path,
+    base: &str,
+    taken: &[String],
+    main_checkout: bool,
+) -> anyhow::Result<String> {
+    for suffix in 1.. {
+        let name = if suffix == 1 {
+            base.to_string()
+        } else {
+            format!("{base}-{suffix}")
+        };
+        if taken.contains(&name) {
+            continue;
+        }
+        if main_checkout {
+            return Ok(name);
+        }
+        let branch_free = !ref_exists(repo, &format!("refs/heads/panoptes/{name}"))?;
+        // `exists` follows links; a dangling one still occupies the name.
+        let folder_free = std::fs::symlink_metadata(root.join(&name)).is_err();
+        if branch_free && folder_free {
+            return Ok(name);
+        }
+    }
+    unreachable!("an unbounded range always yields a name")
 }
 
 /// Makes a worktree and its branch, copies the project's local files, and
 /// runs setup. Any failure removes everything this call created. Missing copy
 /// sources (the usual case for `.env`) are simply absent in the new lane.
+/// The lane is named after `base`, with a numeric suffix if `taken` or the
+/// disk already uses that name.
 pub fn create(
     root: &Path,
     project: &Project,
-    name: &str,
+    base: &str,
+    taken: &[String],
     task: &str,
     main_checkout: bool,
     cancelled: &AtomicBool,
@@ -59,13 +109,14 @@ pub fn create(
     if cancelled.load(Ordering::Relaxed) {
         bail!("Lane creation cancelled");
     }
+    let repo = PathBuf::from(&project.repo);
+    let name = free_name(root, &repo, base, taken, main_checkout)?;
     if main_checkout {
         return Ok(NewLane {
             project_id: project.id,
-            name: name.into(),
+            name,
             task: task.into(),
-            branch: current_branch(&PathBuf::from(&project.repo))
-                .unwrap_or_else(|| project.settings.base_branch.clone()),
+            branch: current_branch(&repo).unwrap_or_else(|| project.settings.base_branch.clone()),
             worktrees: vec![NewLaneWorktree {
                 project_id: project.id,
                 path: project.repo.clone(),
@@ -74,19 +125,8 @@ pub fn create(
         });
     }
 
-    let repo = PathBuf::from(&project.repo);
     let branch = format!("panoptes/{name}");
-    let path = root.join(name).join(
-        repo.file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("repo")),
-    );
-    if path.exists() {
-        bail!("{} already exists", path.display());
-    }
-    let full_ref = format!("refs/heads/{branch}");
-    if ref_exists(&repo, &full_ref)? {
-        bail!("The branch {branch} already exists");
-    }
+    let path = worktree_path(root, &repo, &name);
     std::fs::create_dir_all(path.parent().context("A lane needs a parent folder")?)
         .with_context(|| format!("Could not create the folder for {name}"))?;
 
@@ -94,7 +134,7 @@ pub fn create(
         repo: repo.clone(),
         path: path.clone(),
         branch: branch.clone(),
-        delete_branch: true,
+        branch_cleanup: BranchCleanup::Delete,
         armed: true,
     };
     run(
@@ -118,7 +158,7 @@ pub fn create(
 
     Ok(NewLane {
         project_id: project.id,
-        name: name.into(),
+        name,
         task: task.into(),
         branch,
         worktrees: vec![NewLaneWorktree {
@@ -163,6 +203,15 @@ pub fn archive(
         });
     }
     let path = PathBuf::from(&worktree.path);
+    let repo = Path::new(&project.repo);
+    // A folder deleted outside Panoptes holds no work to preserve. Prune
+    // Git's record of it so the branch can be checked out again later.
+    if std::fs::symlink_metadata(&path).is_err() {
+        run(repo, &["worktree", "prune"])?;
+        return Ok(ArchiveResult::Archived {
+            checkpoint_ref: None,
+        });
+    }
     let before = worktree_status(&path)?;
     let is_dirty = !before.is_empty();
     if is_dirty && strategy.is_none() {
@@ -170,6 +219,7 @@ pub fn archive(
     }
 
     let mut checkpoint_ref = None;
+    let mut checkpoint_tree = None;
     if is_dirty {
         match strategy {
             Some(ArchiveStrategy::Commit) => {
@@ -192,57 +242,93 @@ pub fn archive(
                 )?;
             }
             Some(ArchiveStrategy::Checkpoint) => {
-                let reference = checkpoint(project, lane, &path)?;
+                let (reference, tree) = checkpoint(project, lane, &path)?;
                 checkpoint_ref = Some(reference);
+                checkpoint_tree = Some(tree);
             }
             None => {}
         }
-        let after = worktree_status(&path)?;
-        match strategy {
-            Some(ArchiveStrategy::Commit | ArchiveStrategy::Stash) if !after.is_empty() => {
-                bail!("Changes remain after archiving; the worktree was left in place")
-            }
-            Some(ArchiveStrategy::Checkpoint) if after != before => {
+    }
+    match (strategy, checkpoint_tree) {
+        // Compare contents, not `git status` text: editing a file that is
+        // already modified changes nothing in the status lines. Snapshotting
+        // again right before removal keeps the unprotected window minimal.
+        (Some(ArchiveStrategy::Checkpoint), Some(tree)) if is_dirty => {
+            if snapshot_tree(&path, lane)? != tree {
                 bail!(
                     "The tree changed while its checkpoint was being taken; the worktree was left in place"
                 )
             }
-            _ => {}
+        }
+        // A clean tree can also change between the first check and removal.
+        _ if !is_dirty => {
+            if !worktree_status(&path)?.is_empty() {
+                return Ok(ArchiveResult::Dirty);
+            }
+        }
+        _ => {
+            if !worktree_status(&path)?.is_empty() {
+                bail!("Changes remain after archiving; the worktree was left in place")
+            }
         }
     }
-    // A clean tree can also change between the first check and removal.
-    if !is_dirty && !worktree_status(&path)?.is_empty() {
-        return Ok(ArchiveResult::Dirty);
-    }
-    remove_worktree(Path::new(&project.repo), &path)?;
+    remove_worktree(repo, &path)?;
     Ok(ArchiveResult::Archived { checkpoint_ref })
 }
 
-/// Restores an archived checkpoint onto its original lane branch. The final
-/// checkpoint has the old branch tip as its parent, so advancing the branch
-/// and checking it out recovers both tracked and untracked captured files.
+/// Brings an archived lane's worktree back on its branch. For a checkpoint,
+/// the checkpoint's parent is the branch tip it was taken from, so the
+/// branch is fast-forwarded onto it, which recovers both tracked and
+/// untracked captured files. If the branch has moved since, nothing is
+/// changed: forcing it would drop those newer commits. Any later failure
+/// puts the branch back where it was.
 pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
     let worktree = sole_worktree(lane)?;
     if worktree.main_checkout {
         return Ok(());
     }
-    let reference = worktree
-        .checkpoint_ref
-        .as_deref()
-        .context("Only a lane archived as a checkpoint can be restored with its changes")?;
     let path = PathBuf::from(&worktree.path);
-    if path.exists() {
+    if std::fs::symlink_metadata(&path).is_ok() {
         bail!("{} already exists", path.display());
     }
     let repo = Path::new(&project.repo);
-    run(repo, &["branch", "-f", &lane.branch, reference])?;
+    let full_ref = format!("refs/heads/{}", lane.branch);
+    let mut branch_cleanup = BranchCleanup::Keep;
+    if let Some(reference) = worktree.checkpoint_ref.as_deref() {
+        let checkpoint = run(
+            repo,
+            &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+        )
+        .context("The lane's checkpoint is missing from the repository")?;
+        let parent = run(repo, &["rev-parse", "--verify", &format!("{checkpoint}^")])?;
+        if ref_exists(repo, &full_ref)? {
+            let tip = run(repo, &["rev-parse", "--verify", &full_ref])?;
+            if tip != parent {
+                bail!(
+                    "{} has new commits since the lane was archived; restoring the checkpoint would drop them. Its changes are kept at {reference}",
+                    lane.branch
+                );
+            }
+            // The old-value argument makes this a compare-and-swap.
+            run(repo, &["update-ref", &full_ref, &checkpoint, &parent])?;
+            branch_cleanup = BranchCleanup::Reset(parent);
+        } else {
+            run(repo, &["update-ref", &full_ref, &checkpoint, ""])?;
+            branch_cleanup = BranchCleanup::Delete;
+        }
+    } else if !ref_exists(repo, &full_ref)? {
+        bail!("The branch {} no longer exists", lane.branch);
+    }
     let mut cleanup = CreationCleanup {
         repo: repo.to_path_buf(),
         path: path.clone(),
         branch: lane.branch.clone(),
-        delete_branch: false,
+        branch_cleanup,
         armed: true,
     };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     run(
         repo,
         &[
@@ -309,13 +395,24 @@ fn run_setup(project: &Project, path: &Path, cancelled: Option<&AtomicBool>) -> 
     let Some(setup) = project.settings.setup.as_deref() else {
         return Ok(());
     };
+    // Output goes to a file, not a pipe: a pipe nobody reads fills up after
+    // about 64 KB and blocks the setup forever, and a background process
+    // that inherits a pipe would keep it open after the shell exits.
+    let log_path = std::env::temp_dir().join(format!(
+        "panoptes-setup-{}-{}.log",
+        std::process::id(),
+        SETUP_LOGS.fetch_add(1, Ordering::Relaxed)
+    ));
+    let log = std::fs::File::create(&log_path).context("Could not create the setup log")?;
+    let _log = TemporaryFile(log_path.clone());
     let mut command = Command::new("sh");
     command
         .arg("-c")
         .arg(setup)
         .current_dir(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -331,15 +428,33 @@ fn run_setup(project: &Project, path: &Path, cancelled: Option<&AtomicBool>) -> 
             stop_setup(&mut child);
             bail!("Lane creation cancelled");
         }
-        if child.try_wait()?.is_some() {
-            let output = child.wait_with_output()?;
-            if output.status.success() {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
                 return Ok(());
             }
-            return Err(command_failed("project setup", &output));
+            let log = std::fs::read(&log_path).unwrap_or_default();
+            let log = String::from_utf8_lossy(&log);
+            bail!(
+                "project setup failed ({status}): {}",
+                tail(log.trim(), 4000)
+            );
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+static SETUP_LOGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The last `max` bytes of `text`, on a character boundary.
+fn tail(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
 }
 
 fn stop_setup(child: &mut std::process::Child) {
@@ -369,11 +484,19 @@ fn remove_worktree(repo: &Path, path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What a failed create or restore does with the lane branch.
+enum BranchCleanup {
+    Keep,
+    Delete,
+    /// Move it back to this commit (the tip before a restore advanced it).
+    Reset(String),
+}
+
 struct CreationCleanup {
     repo: PathBuf,
     path: PathBuf,
     branch: String,
-    delete_branch: bool,
+    branch_cleanup: BranchCleanup,
     armed: bool,
 }
 
@@ -387,22 +510,62 @@ impl Drop for CreationCleanup {
         // before registering it. This path was required not to exist before
         // the attempt, so removing whatever the attempt left is safe.
         let _ = std::fs::remove_dir_all(&self.path);
-        if self.delete_branch
-            && ref_exists(&self.repo, &format!("refs/heads/{}", self.branch)).unwrap_or(false)
-        {
-            let _ = run(&self.repo, &["branch", "-D", &self.branch]);
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        let full_ref = format!("refs/heads/{}", self.branch);
+        match &self.branch_cleanup {
+            BranchCleanup::Keep => {}
+            BranchCleanup::Delete => {
+                if ref_exists(&self.repo, &full_ref).unwrap_or(false) {
+                    let _ = run(&self.repo, &["branch", "-D", &self.branch]);
+                }
+            }
+            BranchCleanup::Reset(commit) => {
+                let _ = run(&self.repo, &["update-ref", &full_ref, commit]);
+            }
         }
     }
 }
 
-fn checkpoint(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<String> {
+/// Saves every tracked and untracked change as a commit on top of HEAD,
+/// without touching the real index, HEAD or branch. Returns its ref and the
+/// tree it captured. The ref is keyed by the lane's name, not its store id:
+/// debug and release builds keep separate stores that can hand out the same
+/// id, while a name is unique in the repository because its `panoptes/<name>`
+/// branch outlives archiving and new names skip existing branches.
+fn checkpoint(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<(String, String)> {
+    let tree = snapshot_tree(path, lane)?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["commit-tree", &tree, "-p", "HEAD", "-m"])
+        .arg(format!("Panoptes checkpoint for {}", lane.name))
+        .env("GIT_AUTHOR_NAME", "Panoptes")
+        .env("GIT_AUTHOR_EMAIL", "panoptes@localhost")
+        .env("GIT_COMMITTER_NAME", "Panoptes")
+        .env("GIT_COMMITTER_EMAIL", "panoptes@localhost")
+        .output()
+        .context("Could not write the lane checkpoint")?;
+    let commit = checked_stdout("git commit-tree", output)?;
+    let reference = format!("refs/panoptes/lanes/{}/archive", lane.name);
+    run(
+        Path::new(&project.repo),
+        &["update-ref", &reference, &commit],
+    )?;
+    Ok((reference, tree))
+}
+
+/// The tree of the worktree as it is on disk, tracked and untracked files
+/// alike, written through a private copy of the index.
+fn snapshot_tree(path: &Path, lane: &Lane) -> anyhow::Result<String> {
     let index = git_path(path, "index")?;
     let temporary = index.with_file_name(format!(
         "panoptes-archive-{}-{}",
         std::process::id(),
         lane.id
     ));
-    let _temporary = PrivateIndex(temporary.clone());
+    let _temporary = TemporaryFile(temporary.clone());
     match std::fs::copy(&index, &temporary) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -411,31 +574,12 @@ fn checkpoint(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<Str
         Err(error) => return Err(error).context("Could not copy the worktree index"),
     }
     run_index(path, &temporary, &["add", "-A"])?;
-    let tree = run_index(path, &temporary, &["write-tree"])?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["commit-tree", &tree, "-p", "HEAD", "-m"])
-        .arg(format!("Panoptes checkpoint for {}", lane.name))
-        .env("GIT_INDEX_FILE", &temporary)
-        .env("GIT_AUTHOR_NAME", "Panoptes")
-        .env("GIT_AUTHOR_EMAIL", "panoptes@localhost")
-        .env("GIT_COMMITTER_NAME", "Panoptes")
-        .env("GIT_COMMITTER_EMAIL", "panoptes@localhost")
-        .output()
-        .context("Could not write the lane checkpoint")?;
-    let commit = checked_stdout("git commit-tree", output)?;
-    let reference = format!("refs/panoptes/lanes/{}/archive", lane.id);
-    run(
-        Path::new(&project.repo),
-        &["update-ref", &reference, &commit],
-    )?;
-    Ok(reference)
+    run_index(path, &temporary, &["write-tree"])
 }
 
-struct PrivateIndex(PathBuf);
+struct TemporaryFile(PathBuf);
 
-impl Drop for PrivateIndex {
+impl Drop for TemporaryFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
@@ -591,6 +735,7 @@ mod tests {
             &f.root,
             &f.project,
             "fix-login",
+            &[],
             "Fix login",
             false,
             &AtomicBool::new(false),
@@ -602,6 +747,126 @@ mod tests {
     fn names_are_slugs() {
         assert_eq!(slug("  Fix the login, please! "), "fix-the-login-please");
         assert_eq!(slug("..."), "lane");
+        let long = format!("{} b", "a".repeat(47));
+        assert_eq!(slug(&long), "a".repeat(47));
+    }
+
+    #[test]
+    fn names_skip_folders_and_branches_already_in_use() {
+        let f = fixture(None);
+        std::fs::create_dir_all(f.root.join("fix-login")).unwrap();
+        git(&f.repo, &["branch", "panoptes/fix-login-2"]);
+        let new = create(
+            &f.root,
+            &f.project,
+            "fix-login",
+            &["fix-login-3".into()],
+            "Fix login",
+            false,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(new.name, "fix-login-4");
+        assert_eq!(new.branch, "panoptes/fix-login-4");
+    }
+
+    #[test]
+    fn setup_with_lots_of_output_finishes() {
+        // Far more than a pipe buffer holds.
+        let f = fixture(Some(
+            "head -c 1000000 /dev/zero | tr '\\0' x; printf ok > done.txt",
+        ));
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        assert!(path.join("done.txt").exists());
+    }
+
+    #[test]
+    fn a_lane_whose_folder_was_deleted_can_still_be_archived() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::remove_dir_all(&path).unwrap();
+        let result = archive(&f.project, &lane(&f, 1, &new), None).unwrap();
+        assert!(matches!(result, ArchiveResult::Archived { .. }));
+        assert!(!git(&f.repo, &["worktree", "list"]).contains("fix-login"));
+    }
+
+    #[test]
+    fn a_clean_archive_can_be_restored_on_its_branch() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let mut lane = lane(&f, 1, &new);
+        archive(&f.project, &lane, None).unwrap();
+        lane.state = LaneState::Archived;
+        restore(&f.project, &lane).unwrap();
+        let path = PathBuf::from(&new.worktrees[0].path);
+        assert_eq!(
+            git(&path, &["branch", "--show-current"]),
+            "panoptes/fix-login"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_branch_that_moved_and_leaves_it_alone() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let mut lane = lane(&f, 42, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
+        let ArchiveResult::Archived { checkpoint_ref } =
+            archive(&f.project, &lane, Some(ArchiveStrategy::Checkpoint)).unwrap()
+        else {
+            panic!("checkpoint archive should finish")
+        };
+        lane.worktrees[0].checkpoint_ref = checkpoint_ref;
+        lane.state = LaneState::Archived;
+        let elsewhere = git(
+            &f.repo,
+            &[
+                "commit-tree",
+                "-p",
+                "panoptes/fix-login",
+                "-m",
+                "later",
+                "HEAD^{tree}",
+            ],
+        );
+        git(
+            &f.repo,
+            &["update-ref", "refs/heads/panoptes/fix-login", &elsewhere],
+        );
+
+        let error = restore(&f.project, &lane).unwrap_err();
+        assert!(format!("{error:#}").contains("new commits"), "{error:#}");
+        assert_eq!(
+            git(&f.repo, &["rev-parse", "panoptes/fix-login"]),
+            elsewhere
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_failed_restore_puts_the_branch_back() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let mut lane = lane(&f, 42, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
+        let tip = git(&f.repo, &["rev-parse", "panoptes/fix-login"]);
+        let ArchiveResult::Archived { checkpoint_ref } =
+            archive(&f.project, &lane, Some(ArchiveStrategy::Checkpoint)).unwrap()
+        else {
+            panic!("checkpoint archive should finish")
+        };
+        lane.worktrees[0].checkpoint_ref = checkpoint_ref;
+        lane.state = LaneState::Archived;
+        let mut project = f.project.clone();
+        project.settings.setup = Some("exit 3".into());
+
+        assert!(restore(&project, &lane).is_err());
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), tip);
+        assert!(!path.exists());
     }
 
     #[test]
@@ -630,6 +895,7 @@ mod tests {
             &f.root,
             &f.project,
             "fix-login",
+            &[],
             "Fix login",
             false,
             &AtomicBool::new(false),
@@ -650,6 +916,7 @@ mod tests {
             &f.root,
             &f.project,
             "quick",
+            &[],
             "Quick question",
             true,
             &AtomicBool::new(false),
@@ -773,8 +1040,8 @@ mod tests {
         let status = git(&path, &["status", "--porcelain"]);
         let head = git(&path, &["rev-parse", "HEAD"]);
 
-        let reference = checkpoint(&f.project, &lane, &path).unwrap();
-        assert_eq!(reference, "refs/panoptes/lanes/42/archive");
+        let (reference, _) = checkpoint(&f.project, &lane, &path).unwrap();
+        assert_eq!(reference, "refs/panoptes/lanes/fix-login/archive");
         assert_eq!(git(&path, &["status", "--porcelain"]), status);
         assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
         assert_eq!(
@@ -789,6 +1056,21 @@ mod tests {
             git(&f.repo, &["show", &format!("{reference}:new.txt")]),
             "untracked"
         );
+    }
+
+    #[test]
+    fn snapshots_see_a_second_edit_to_an_already_modified_file() {
+        // `git status` reads ` M tracked.txt` both times; the tree does not.
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "first\n").unwrap();
+        let before = snapshot_tree(&path, &lane).unwrap();
+        let status = git(&path, &["status", "--porcelain"]);
+        std::fs::write(path.join("tracked.txt"), "second\n").unwrap();
+        assert_eq!(git(&path, &["status", "--porcelain"]), status);
+        assert_ne!(snapshot_tree(&path, &lane).unwrap(), before);
     }
 
     #[test]

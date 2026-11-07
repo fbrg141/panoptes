@@ -200,7 +200,7 @@ The repository stays plain git and Panoptes does not use Jujutsu (jj).
 the core copies the worktree's index to a private index file, runs
 `git add -A` against that copy, then `write-tree` and `commit-tree` with the
 previous checkpoint as parent, and points
-`refs/panoptes/lanes/<lane id>/turns/<n>` at the result. One is also taken
+`refs/panoptes/lanes/<lane>/turns/<n>` at the result. One is also taken
 before a turn starts, so edits you make between turns are not credited to
 the agent.
 
@@ -235,8 +235,10 @@ compose: with jj the checkpoints would be redundant.
 **keep as checkpoint**: the tree is saved to a final checkpoint ref and the
 worktree is removed, and restoring creates a fresh worktree from it. That
 replaces moving the tree aside to a holding area, which answers where the
-holding area lives. #20 reserves the `refs/panoptes/lanes/` namespace;
-taking checkpoints each turn is built with #22.
+holding area lives. #20 reserves the `refs/panoptes/lanes/` namespace,
+keyed by lane name (`refs/panoptes/lanes/<lane>/archive`) rather than store
+id, because debug and release builds keep separate stores that can reuse an
+id in the same repository; taking checkpoints each turn is built with #22.
 
 ## The design system lives in the repo as a package
 

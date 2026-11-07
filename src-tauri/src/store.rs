@@ -104,6 +104,9 @@ fn v2_projects(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
 /// Durable units of work. A lane can eventually have one worktree per
 /// project in a multi-repo group; #20 deliberately creates only one.
 /// Worktree rows survive archiving so a checkpoint can be restored later.
+/// That is also why `path` is not UNIQUE: an archived main-checkout lane
+/// keeps the repository's path. Only active lanes must not share a path,
+/// which `Store` checks when a lane is added or restored.
 fn v3_lanes(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
     tx.execute_batch(
         "CREATE TABLE lanes (
@@ -120,13 +123,14 @@ fn v3_lanes(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
             lane_id INTEGER NOT NULL REFERENCES lanes (id) ON DELETE CASCADE,
             project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
             position INTEGER NOT NULL,
-            path TEXT NOT NULL UNIQUE,
+            path TEXT NOT NULL,
             main_checkout INTEGER NOT NULL CHECK (main_checkout IN (0, 1)),
             checkpoint_ref TEXT CHECK (checkpoint_ref IS NULL OR checkpoint_ref <> ''),
             PRIMARY KEY (lane_id, project_id),
             UNIQUE (lane_id, position)
         ) STRICT;
-        CREATE INDEX lanes_by_project ON lanes (project_id, state, created_at);",
+        CREATE INDEX lanes_by_project ON lanes (project_id, state, created_at);
+        CREATE INDEX lane_worktrees_by_path ON lane_worktrees (path);",
     )?;
     Ok(())
 }
@@ -444,6 +448,9 @@ impl Store {
     /// schema accepts several worktrees; the service currently supplies one.
     pub fn add_lane(&self, new: &NewLane) -> anyhow::Result<Lane> {
         let tx = self.conn.unchecked_transaction()?;
+        for worktree in &new.worktrees {
+            ensure_path_free(&tx, &worktree.path, None)?;
+        }
         tx.execute(
             "INSERT INTO lanes (project_id, name, task, branch, state, created_at)
              VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
@@ -488,13 +495,18 @@ impl Store {
     }
 
     pub fn restore_lane(&self, id: i64) -> anyhow::Result<Lane> {
-        let changed = self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        for worktree in self.lane_worktrees(id)? {
+            ensure_path_free(&tx, &worktree.path, Some(id))?;
+        }
+        let changed = tx.execute(
             "UPDATE lanes SET state = 'active' WHERE id = ?1 AND state = 'archived'",
             [id],
         )?;
         if changed == 0 {
             bail!("That lane is not archived");
         }
+        tx.commit()?;
         self.lane(id)
     }
 
@@ -514,6 +526,22 @@ impl Store {
             .execute("DELETE FROM projects WHERE id = ?1", [id])?;
         Ok(())
     }
+}
+
+/// Refuses a worktree path that an active lane (other than `except`) uses.
+fn ensure_path_free(tx: &Transaction, path: &str, except: Option<i64>) -> anyhow::Result<()> {
+    let used: bool = tx.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM lane_worktrees JOIN lanes ON lanes.id = lane_worktrees.lane_id
+             WHERE lane_worktrees.path = ?1 AND lanes.state = 'active'
+               AND lanes.id IS NOT ?2)",
+        rusqlite::params![path, except],
+        |row| row.get(0),
+    )?;
+    if used {
+        bail!("Another active lane already uses {path}");
+    }
+    Ok(())
 }
 
 fn lane_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Lane> {
@@ -1183,6 +1211,33 @@ mod tests {
         other.name = "other".into();
         other.branch = "panoptes/other".into();
         assert!(store.add_lane(&other).is_err());
+    }
+
+    #[test]
+    fn an_archived_lane_frees_its_path_until_it_is_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let project = store
+            .add_project("/code/web", &settings("web", &[]))
+            .unwrap();
+        let first = NewLane {
+            project_id: project.id,
+            name: "quick".into(),
+            task: "Quick".into(),
+            branch: "trunk".into(),
+            worktrees: vec![NewLaneWorktree {
+                project_id: project.id,
+                path: "/code/web".into(),
+                main_checkout: true,
+            }],
+        };
+        let added = store.add_lane(&first).unwrap();
+        store.archive_lane(added.id, None).unwrap();
+        let mut second = first.clone();
+        second.name = "quick-2".into();
+        store.add_lane(&second).unwrap();
+        let error = store.restore_lane(added.id).unwrap_err().to_string();
+        assert!(error.contains("already uses"), "{error}");
     }
 
     #[test]
