@@ -68,7 +68,7 @@ function Prompt({ message }: { message: Message }) {
   const [all, setAll] = useState(false);
   const clamped = !all && lines.length > PROMPT_CLAMP;
   return (
-    <div className="rounded-md border border-line bg-surface-raised px-3 py-2">
+    <div className="max-w-[85%] self-end rounded-md border border-line bg-surface-raised px-3 py-2">
       <div className="whitespace-pre-wrap break-words">
         {clamped ? lines.slice(0, PROMPT_CLAMP).join("\n") : text}
       </div>
@@ -99,7 +99,11 @@ function Steps({ steps, live }: { steps: Step[]; live: boolean }) {
 function StepView({ step, live }: { step: Step; live: boolean }) {
   switch (step.type) {
     case "text":
-      return <Markdown text={step.text} className="py-1" />;
+      return (
+        <div className="max-w-[85%] self-start rounded-md border border-line bg-surface-raised px-3 py-2">
+          <Markdown text={step.text} />
+        </div>
+      );
     case "thinking":
       return <Thinking step={step} />;
     case "tool":
