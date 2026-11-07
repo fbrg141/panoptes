@@ -1,20 +1,27 @@
 # Domain model
 
-*Proposed 2026-11-06. Nothing here is built yet.*
+*Proposed 2026-11-06, revised for lanes 2026-11-07. Projects are built
+(#19); the rest is not built yet.*
 
 What Panoptes works with, how the pieces relate, and how they live and die.
 It answers the "domain model" parts of #8 and #9 and sets up the tool-call
 work in #11. The harness contract in `panoptes-harness` stays the boundary
 described in [decisions.md](decisions.md); this note adds what sits above it.
+Why the model is shaped this way is recorded in
+[decisions.md](decisions.md#lanes-are-the-unit-of-work).
 
 ## Principles
 
 - **The harness owns the conversation. Panoptes owns the organisation.**
   Messages stay in each harness's own storage (Pi's session files). Projects,
-  groups, workspaces, titles, tags and archiving live in Panoptes, because
-  they must work the same across every harness.
-- **The worktree is the main unit.** By default every new session gets its
-  own worktree, so agents running side by side never edit the same files.
+  lanes, groups, titles, tags and archiving live in Panoptes, because they
+  must work the same across every harness.
+- **The lane is the durable unit; a session is disposable.** A lane owns a
+  worktree, a branch, a task and a write lock, and exists with or without a
+  session. Closing or replacing a session never touches the lane's work.
+- **Decisions live in Rust; the UI only renders.** Lane state, the write
+  lock, queueing and what appears where in the sidebar are worked out in the
+  core and sent to the UI.
 - **Harness-neutral, not protocol-shaped.** The model follows what Panoptes
   needs. It borrows from other protocols where they fit, and copies none.
 
@@ -24,83 +31,86 @@ described in [decisions.md](decisions.md); this note adds what sits above it.
 graph TD
   G[Group] -->|contains| G2[Group]
   G -->|references| P[Project]
-  P -->|worktrees in| W[Workspace]
-  W -->|runs| S[Session]
-  S -->|conversation in| H[(Harness storage)]
+  P -->|has| L[Lane]
+  L -->|owns| W[Worktree]
+  L -->|runs| S[Session]
+  S -->|parent of| S2[Subsession]
+  S -->|references| H[(Harness session)]
   S -->|labelled by| T[Tag]
 ```
 
 ### Project
 
-A local git repository registered in Panoptes.
+A local git repository registered in Panoptes. Built in #19.
 
 | Field | Meaning |
 |---|---|
 | `id` | Panoptes' own id |
 | `name` | Display name, defaults to the folder name |
 | `repo` | Path of the main checkout |
-| `baseBranch` | What new worktrees branch from, defaults to the repo's default branch |
+| `baseBranch` | What new lanes branch from, defaults to the repo's default branch |
 | `copyFiles` | Untracked files copied into every new worktree, defaults to `[".env"]` |
 | `setup` | Optional command run in a new worktree, such as `pnpm install` |
 
 A project's settings live on the project, never on a group, so a project
 behaves the same whichever group it is used from.
 
-### Group
+### Lane
 
-A named folder for projects, for example "Panoptes" holding the app and the
-design system.
-
-- Groups nest: a group has at most one parent group, so groups form a tree.
-- A group references projects. A project can be referenced by several groups,
-  because shared repos (a design system, a common library) are normal.
-- A group can't contain itself, directly or through a subgroup.
-- A group is also how you start a session across several repos (see
-  [Workspace](#workspace)).
-
-### Workspace
-
-The one folder an agent runs in, made of worktrees. All workspaces live under
-one central folder, `~/Panoptes/workspaces/<workspace>/`, with one worktree per
-repo at `<workspace>/<repo>`.
+One line of work on a project: a task, the branch it happens on, the
+worktree it happens in, and the lock that decides who may edit it. The name
+was chosen over "workspace", which already means something else in VS Code,
+Zed and Cargo.
 
 | Field | Meaning |
 |---|---|
 | `id`, `name` | Panoptes' own id, and a slug used for the folder |
-| `origin` | The project or group it was created from |
-| `checkouts` | For each repo: project id, worktree path, branch |
+| `project` | The project it belongs to |
+| `task` | What the lane is for, in your words |
+| `branch` | The branch its worktree is on |
+| `worktrees` | For each worktree: project id, path, and whether it is the main checkout |
+| `writeLock` | The session that may edit files now, and the queue waiting for it |
 | `state` | `active` or `archived` |
 
-- **One repo:** the agent runs in the worktree itself.
-- **A group:** the agent runs in the workspace folder, with the repos side by
-  side underneath it.
-- **Main checkout:** for quick questions, a session can run in a project's own
-  repo folder instead. Panoptes neither creates nor removes that folder.
-
-Files listed in `copyFiles` are **copied**, not linked, from the main checkout
-when the worktree is made. Git never puts untracked files into a new worktree,
-and each worktree may need its own values (ports, database names).
+- **One worktree, room for more.** The schema lets a lane hold several
+  worktrees (one-to-many), so multi-repo lanes (#21) need no migration. The
+  service and UI only ever create one for now.
+- **A fresh worktree by default.** All lane worktrees live under one central
+  folder, `~/Panoptes/lanes/<lane>/<repo>`. Files listed in `copyFiles` are
+  **copied**, not linked, from the main checkout, because git never puts
+  untracked files into a new worktree and each worktree may need its own
+  values (ports, database names).
+- **The main checkout, on purpose.** For big repos where a fresh worktree is
+  too slow or too large, a lane can point at the project's own checkout. It
+  is an explicit opt-in, marked clearly wherever the lane is shown. Panoptes
+  neither creates nor removes that folder.
+- **Writes are serialised.** Several sessions can attach to a lane and read
+  it, but only the session holding the write lock edits files. The others
+  queue and show as Waiting until the lock passes to them. Two agents working
+  truly in parallel means two lanes.
 
 ### Session
 
-One conversation, run by one harness, in one workspace.
+One conversation, run by one harness, inside one lane.
 
 | Field | Meaning |
 |---|---|
 | `id` | Panoptes' own id, assigned before the harness starts |
 | `harnessRef` | Harness name, the harness's session id, and its locator (for Pi, the session file) |
-| `workspace` | The workspace it runs in |
-| `origin` | The group or project it was started from, which decides where it shows in the sidebar |
+| `lane` | The lane it runs in |
+| `parent` | For a subsession, the session that started it |
 | `title` | Set by you in Panoptes; when empty, the harness's title or first message |
 | `tags`, `pinned`, `archived` | Panoptes' organisation |
 
-- A workspace can hold several sessions, for example a fresh session that
-  continues a task once the first one's context is full.
-- A session shows in the sidebar only under its `origin`, even when its repos
-  appear in other groups too.
-- Sessions started outside Panoptes (Pi in a terminal) still appear. They get
-  a session record the first time they are listed, matched to a workspace or
-  project by their folder.
+- **A Panoptes session is its own record.** It references a harness session
+  through `harnessRef` and is never the Pi session itself. Pi sessions stay
+  an implementation detail of the adapter.
+- **Replaceable.** When a conversation goes stale (its context is full, or it
+  went the wrong way), you close it and start a fresh session in the same
+  lane, on the same diff. The lane keeps its worktree, branch and task.
+- **Subsessions** have their own transcript, share the lane's worktree (and
+  its write lock), and hand their result back to the parent. They share no
+  history: nothing of the parent's conversation is copied into the child.
 
 **Status** is sent by the backend, not worked out in the UI, using the design
 system's words:
@@ -108,53 +118,89 @@ system's words:
 | Status | Meaning |
 |---|---|
 | Running | The agent is working |
-| Waiting | The agent needs you: a question or an approval |
+| Waiting | The agent needs you (a question or an approval), or it is queued for the lane's write lock |
 | Failed | The process ended unexpectedly, or the last run errored |
 | Done | Idle and ready for the next prompt |
 
 A session whose process is not running has no status. It is simply closed and
 can be reopened.
 
+### Group
+
+A named folder for projects, for example "Panoptes" holding the app and the
+design system. Groups come last in the build order (#21).
+
+- Groups nest: a group has at most one parent group, so groups form a tree.
+- A group references projects. A project can be referenced by several groups,
+  because shared repos (a design system, a common library) are normal.
+- A group can't contain itself, directly or through a subgroup.
+- A lane started from a group holds one worktree per repo underneath it.
+
 ### Tag
 
 A flat label on sessions, for organising work inside a project ("auth",
 "bugs"). Tags don't nest; groups are the only hierarchy.
 
+## Navigation
+
+The sidebar splits in two (#57):
+
+- **Projects and lanes** are the primary tree: projects, their active lanes,
+  and each lane's sessions, with subsessions under their parent.
+- **History** lists every harness session found on disk, including ones
+  started from the terminal. You can adopt one into a lane, which creates a
+  Panoptes session record that points at it. Adopting never copies or
+  rewrites the harness's files.
+
 ## Lifecycles
 
-### Workspace
+### Lane
 
-1. **Create**, from a project or a group. From a group, every repo underneath
-   it is offered, without duplicates, and you untick the ones you don't need.
-   For each repo, Panoptes adds a worktree on a new branch from `baseBranch`,
-   copies `copyFiles` from the main checkout, then runs `setup`.
+1. **Create** from a project. Panoptes adds a worktree on a new branch from
+   `baseBranch`, copies `copyFiles` from the main checkout, then runs
+   `setup`. With the main-checkout opt-in, none of that happens.
 2. If any step fails or you cancel, everything created so far is removed, so
    nothing is left behind (#9).
-3. **Use:** one or more sessions run in it.
-4. **Archive**, when its last session is archived or on request: the worktrees
-   are removed and the branches kept.
+3. **Use:** sessions come and go inside it. The lane needs none to exist.
+4. **Archive**, on request. Archiving never touches the branch.
+   - A clean tree: the worktree is removed.
+   - A dirty tree never loses work. Panoptes offers three ways out and does
+     nothing until you pick one: **commit** the changes on the lane's branch,
+     **stash** them onto the branch, or **move the tree aside** to a holding
+     area so it can be restored later.
+   - A main-checkout lane: only the lane record is archived; the checkout is
+     left as it is.
 
 ### Session
 
-1. **New:** pick a target. By default that is a new workspace from the current
-   project or group; an existing workspace and the main checkout are the
-   alternatives. The session gets its Panoptes id here. The harness process
-   starts on the first message (#9).
+1. **New:** in an existing lane, or in a new lane created for it. The session
+   gets its Panoptes id here. The harness process starts on the first
+   message (#9).
 2. **Open:** one harness process runs it. Each prompt is one run, Running then
-   Done (or Waiting, or Failed).
-3. **Close or crash:** the process ends. The conversation stays in the harness
-   and the session can be reopened.
-4. **Archive:** hidden from the sidebar. If it was the workspace's last active
-   session, the workspace is archived too.
+   Done (or Waiting, or Failed). A run that needs to edit waits for the
+   lane's write lock.
+3. **Close or crash:** the process ends and releases the write lock. The
+   conversation stays in the harness and the session can be reopened.
+4. **Replace:** close it and start a fresh session in the same lane.
+5. **Archive:** hidden from the lane. Archiving a session never archives its
+   lane.
+
+## Deferred
+
+Left open on purpose, not forgotten:
+
+- **The base branch moving underneath a lane.** Whether Panoptes rebases,
+  merges, warns or does nothing is decided once lanes are in real use.
+- **Remote or cloud execution.** Lanes and sessions run locally for now. The
+  harness adapter boundary keeps a remote runner possible without changing
+  the model.
 
 ## Storage
 
-The Panoptes store replaces `index.json`. It now holds real data: projects,
-groups, workspaces, sessions and tags, with several many-to-many links. It
-needs a schema version, migrations, and must never silently drop data the way
-a corrupt `index.json` was read as empty. It is SQLite in the app data folder,
-built in #18 (see [decisions.md](decisions.md)); today's pins migrate into it
-once.
+The Panoptes store holds projects, lanes, worktrees, sessions, groups and
+tags, with several many-to-many links. It is SQLite in the app data folder,
+built in #18 (see [decisions.md](decisions.md)); new tables arrive as
+migrations.
 
 ## Changes to the harness contract
 
@@ -164,7 +210,7 @@ Smaller fixes from the backend review, needed by the model above:
    harness reports anything. The service no longer holds early events back
    until the harness id arrives, and the three overlapping shapes
    (`SessionSummary`, `SessionRef`, `SidebarSession`) become one session plus
-   its `harnessRef`.
+   its `harnessRef` (#22).
 2. **Explicit status.** A `StatusChanged` event from the service, with the
    four statuses above.
 3. **Tool calls as one entity.** Done in #24: a `ToolCall` holds its kind,
@@ -190,41 +236,47 @@ Smaller fixes from the backend review, needed by the model above:
 
 ## Effect on existing issues
 
-- **#8:** the worktree is the main unit; groups and subgroups are defined
-  above; per-worktree `.env` is a copy made at creation, replacing the
-  "override the project default" idea. Folder context is still open.
-- **#9:** the default target becomes a new workspace, which reverses that
-  issue's open question 3. The main checkout is the quick option.
+- **#8:** the lane is the main unit; groups and subgroups are defined above;
+  per-worktree `.env` is a copy made at creation. Folder context is still
+  open.
+- **#9:** the default target is a new lane with a fresh worktree. The main
+  checkout is an explicit, marked opt-in.
 - **#11:** the tool-call entity and approvals come first.
+- **#46:** the write lock answers "sessions sharing a mutation-capable
+  worktree", and the archive rules answer "never destroy user work".
+  Checkpoints and crash recovery stay with #46.
+- **#48:** the product bet is chosen through [bets.md](bets.md).
 
-## Tracking
+## Build order
 
-In a workable order. The first four build the model; the rest fix the
-contract and can go in any order.
+Build the spine fast and solid, not polished; the reason is in
+[bets.md](bets.md).
 
-| Issue | Covers |
-|---|---|
-| #18 | Versioned Panoptes store |
-| #19 | Projects and their settings |
-| #20 | Workspaces: a worktree per session |
-| #21 | Nested groups and multi-repo sessions |
-| #22 | Session identity, titles, tags and archiving |
-| #23 | Status from the backend |
-| #24 | Tool calls as one entity |
-| #25 | Approvals |
-| #26 | Stable message ids and images |
-| #27 | Typed errors |
+| Step | Issue | Covers |
+|---|---|---|
+| done | #18 | Versioned Panoptes store |
+| done | #19 | Projects and their settings |
+| 1 | #20 | Lanes: create a worktree, archive without losing work, main-checkout opt-in |
+| 2 | #22 | Sessions inside a lane: Panoptes identity, write lock and queue, replace |
+| 3 | #57 | Split sidebar: projects and lanes, and a History view to adopt from |
+| 4 | #58 | Subsessions that hand their result back |
+| 5 | #21 | Nested groups and multi-repo lanes, last |
+
+The contract fixes (#23 to #27) can go in any order alongside.
 
 ## Open questions
 
 1. **Group context** (#8): instructions a group gives the agents in its
-   sessions.
-2. **Branch names** for new worktrees, for example `panoptes/<workspace>`.
-3. **Multi-repo context files.** An agent running in the workspace folder does
-   not pick up each repo's `AGENTS.md` on its own. Panoptes may need to pass
-   them in.
-4. **Archiving with uncommitted changes:** refuse, warn, or keep the worktree.
-5. **Sessions outside any project:** a session started in a folder that isn't
-   a registered project. Offer to register it, or list it under "Other".
-6. **The central folder:** fixed at `~/Panoptes/workspaces` or set in
-   Settings.
+   lanes.
+2. **Branch names** for new lanes, for example `panoptes/<lane>`.
+3. **The holding area** for trees moved aside on archive: where it lives and
+   how a held tree is restored.
+4. **Enforcing the write lock:** gate edit tools through the approvals
+   extension, or start sessions without the lock with read-only tools.
+5. **Multi-repo context files.** An agent running in a multi-repo lane folder
+   does not pick up each repo's `AGENTS.md` on its own. Panoptes may need to
+   pass them in.
+6. **Sessions outside any project:** a History entry from a folder that isn't
+   a registered project. Offer to register it, or adopt it only into a lane
+   you pick.
+7. **The central folder:** fixed at `~/Panoptes/lanes` or set in Settings.

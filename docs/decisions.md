@@ -90,7 +90,7 @@ shape follows Zed's Agent Client Protocol (ACP) loosely, so an ACP adapter
 could cover several harnesses at once.
 
 Sessions stay in each harness's own storage. Panoptes keeps only what it adds
-on top (pins now; projects, groups, workspaces and tags next) in its own
+on top (pins and projects now; lanes, groups and tags next) in its own
 store, keyed by `<harness>:<session id>`.
 
 ## Panoptes' data in SQLite, with versioned migrations
@@ -122,6 +122,68 @@ SQLite gives transactions and integrity checks for free.
 - Debug builds keep their store in a `dev` folder inside the app data
   folder, so a migration that has not shipped never touches the installed
   app's data.
+
+## Lanes are the unit of work
+
+*Decided 2026-11-07.* The full model is in
+[domain-model.md](domain-model.md); this records the choices behind it.
+
+A project wraps a git repository (#19). A project has **lanes**. A lane owns
+a worktree, a branch, a task and a write lock, and sessions run inside it.
+The lane is the durable unit and a session is disposable: a lane exists
+without a session, and keeps its worktree, branch and task when a session
+closes, so a stale conversation can be replaced with a fresh one on the same
+diff.
+
+1. **Concurrent writes are serialised.** Several sessions can attach to a
+   lane and read, but only the one holding the lane's write lock edits files.
+   The others queue and show as Waiting. True parallelism means two lanes.
+   Letting two agents edit one tree at once trades a simple guarantee for
+   merge problems inside a single folder.
+2. **One worktree now, room for more.** The schema lets a lane hold several
+   worktrees, so multi-repo lanes (#21) need no migration, but the UI only
+   ever creates one. Room without complexity.
+3. **Archiving never destroys work.** A dirty tree is never removed as it
+   is: Panoptes offers commit, stash onto the branch, or moving the tree
+   aside to a holding area. Archive leaves the branch alone.
+4. **A fresh worktree by default, the main checkout on purpose.** A lane
+   normally gets its own worktree. For big repos it can point at the main
+   checkout instead, as an explicit opt-in that is clearly marked.
+5. **Subsessions** get their own transcript, share the lane's worktree, and
+   hand their result back to the parent. There is no shared history.
+6. **The word is "lane".** "Workspace" was the working name, but it already
+   means something different in VS Code, Zed and Cargo, and the clash would
+   confuse both users and agents reading the code.
+
+**Sessions stay the harness's.** A Panoptes session is its own record that
+references a harness session; it is never the Pi session itself, and Pi
+sessions stay an implementation detail of the adapter. Navigation splits in
+two: projects and lanes are the primary tree, and every harness session found
+on disk goes in a separate History view you can adopt from.
+
+All of this follows the standing rule that decisions live in Rust and the UI
+only renders: the lock, the queue, lane state and what appears where are
+worked out in the core.
+
+**Build order.** Lanes with worktree create and archive (#20), then sessions
+belonging to a lane (#22), then the split sidebar (#57), then subsessions
+(#58), then groups (#21) last.
+
+**Deferred on purpose.** What happens when the base branch moves underneath
+a lane, and remote or cloud execution. The harness adapter boundary keeps the
+second open without changing the model.
+
+## Build the lane spine fast; choose one bet after real use
+
+*Decided 2026-11-07.* The candidates and the review are in
+[bets.md](bets.md).
+
+A worktree per task is table stakes: Conductor, Crystal, Terragon and others
+already do it. Building it well earns Panoptes nothing on its own, so the
+spine is built fast and solid rather than polished. What sets Panoptes apart
+has to come from one chosen bet, picked after two weeks of real use of the
+spine, not before. Until then no bet gets more than the work the spine needs
+anyway.
 
 ## The design system lives in the repo as a package
 
