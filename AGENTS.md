@@ -33,11 +33,13 @@ this way.
   a neutral type.
 - **The event model is the contract.** The UI rebuilds streaming state from
   `HarnessEvent`s. `MessageCompleted` replaces whatever was streamed under
-  the same id, `ToolCallUpdated` replaces the tool call with the same id (a
-  `ToolCall` holds its status and output; there are no result messages, and
-  the UI keeps no tool state of its own), and an `Approval` names the tool
-  call it is about and is answered with allow or reject, `RunSettled` means the run is finished, and the history is then
-  reloaded to swap live ids for stable ones. A session's status (Running,
+  the same id. `ToolCallUpdated` replaces the tool call with the same id: a
+  `ToolCall` holds its status and output, there are no result messages, and
+  the UI keeps no tool state of its own. An `Approval` names the tool call it
+  is about and is answered with allow or reject. `QueueChanged` lists the
+  prompts still waiting, by id. `RunSettled` means the run is finished, and
+  the history is then reloaded as the authoritative message list; a message
+  keeps the id it streamed under, so nothing is swapped. A session's status (Running,
   Waiting, Failed, Done) is worked out once, in the service, and sent as
   `statusChanged`; the UI never derives it. Errors reach the UI as
   `{ kind, message }`, and adapters mark theirs with `HarnessError` so the

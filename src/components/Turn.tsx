@@ -61,7 +61,9 @@ function Prompt({ message }: { message: Message }) {
     .map((b) => (b?.type === "text" ? b.text : ""))
     .filter(Boolean)
     .join("\n");
-  const images = message.blocks.filter((b) => b?.type === "image").length;
+  const images = message.blocks.flatMap((b) => (b?.type === "image" ? [b] : []));
+  const shown = images.filter((b) => b.data);
+  const hidden = images.length - shown.length;
   const lines = text.split("\n");
   const [all, setAll] = useState(false);
   const clamped = !all && lines.length > PROMPT_CLAMP;
@@ -71,10 +73,19 @@ function Prompt({ message }: { message: Message }) {
         {clamped ? lines.slice(0, PROMPT_CLAMP).join("\n") : text}
       </div>
       {clamped && <ShowAll count={lines.length} onClick={() => setAll(true)} />}
-      {images > 0 && (
+      {shown.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {shown.map((image, i) => (
+            // Images are positional within the message.
+            // biome-ignore lint/suspicious/noArrayIndexKey: see above
+            <Thumbnail key={i} mimeType={image.mimeType} data={image.data ?? ""} />
+          ))}
+        </div>
+      )}
+      {hidden > 0 && (
         <div className="text-caption mt-1 flex items-center gap-1 text-ink-muted select-none">
           <Icon name="file" size={14} />
-          {images === 1 ? "1 image" : `${images} images`}
+          {hidden === 1 ? "1 image" : `${hidden} images`}
         </div>
       )}
     </div>
@@ -117,7 +128,11 @@ function StepView({ step, live }: { step: Step; live: boolean }) {
         </div>
       );
     case "image":
-      return (
+      return step.data ? (
+        <div className="py-1">
+          <Thumbnail mimeType={step.mimeType} data={step.data} />
+        </div>
+      ) : (
         <div className="text-caption flex items-center gap-1 text-ink-muted select-none">
           <Icon name="file" size={14} />
           Image ({step.mimeType})
@@ -400,6 +415,17 @@ function Footer({ turn }: { turn: Turn }) {
         </Button>
       )}
     </div>
+  );
+}
+
+/** An image from the conversation. */
+function Thumbnail({ mimeType, data }: { mimeType: string; data: string }) {
+  return (
+    <img
+      src={`data:${mimeType};base64,${data}`}
+      alt=""
+      className="max-h-40 max-w-60 rounded-md border border-line bg-surface-sunken object-contain"
+    />
   );
 }
 
