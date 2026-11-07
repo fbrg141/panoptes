@@ -12,19 +12,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// A session as listed in the sidebar, before it is opened.
+/// A harness-owned conversation discovered on disk, before Panoptes adds
+/// its own session identity and lane membership.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionSummary {
-    /// Which harness owns the session, e.g. `"pi"`.
-    pub harness: String,
-    /// The harness's own session id.
-    pub id: String,
-    /// Opaque harness-specific handle used to resume the session
-    /// (for Pi, the session file path).
-    pub locator: String,
-    /// Working directory the session runs in.
-    pub cwd: String,
+pub struct DiscoveredSession {
+    #[serde(flatten)]
+    pub harness_ref: HarnessRef,
     /// Display name, or the first user message when the session has no name.
     pub title: String,
     /// Creation time, Unix milliseconds.
@@ -470,10 +464,11 @@ pub enum PromptOutcome {
     Handled,
 }
 
-/// Identity of a started session.
+/// Identity of a harness-owned session. Panoptes wraps this in its own
+/// durable session record rather than treating it as the session's identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionRef {
+pub struct HarnessRef {
     pub harness: String,
     pub id: String,
     pub locator: String,
@@ -486,7 +481,7 @@ pub trait Harness: Send + Sync {
     /// Short stable name, e.g. `"pi"`.
     fn id(&self) -> &'static str;
 
-    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>>;
+    async fn list_sessions(&self) -> anyhow::Result<Vec<DiscoveredSession>>;
 
     /// Starts (or resumes) a session. Its events go to `events` until the
     /// session shuts down or the harness exits.
@@ -500,7 +495,7 @@ pub trait Harness: Send + Sync {
 /// A live, open session.
 #[async_trait]
 pub trait AgentSession: Send + Sync {
-    fn session_ref(&self) -> SessionRef;
+    fn harness_ref(&self) -> HarnessRef;
 
     /// The active conversation, oldest first, with stable message ids.
     async fn history(&self) -> anyhow::Result<Vec<Message>>;
