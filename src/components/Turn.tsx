@@ -3,8 +3,10 @@ import { type ReactNode, useState } from "react";
 import { diffStat, editDiff } from "../diff";
 import {
   answerText,
+  editsOf,
   formatDuration,
   groupLabel,
+  outputText,
   type Step,
   summarizeWork,
   type ToolStep,
@@ -96,7 +98,9 @@ function StepView({ step, live }: { step: Step; live: boolean }) {
           icon={step.steps.some((s) => s.call.kind === "search") ? "search" : "file"}
           title={groupLabel(step.steps)}
           subject={step.steps.map((s) => s.call.subject ?? s.call.name).join(", ")}
-          right={live && step.steps.some((s) => s.status !== "done") && <Status status="running" />}
+          right={
+            live && step.steps.some((s) => s.call.status !== "done") && <Status status="running" />
+          }
         >
           <div className="flex flex-col gap-1">
             {step.steps.map((s) => (
@@ -152,9 +156,10 @@ function Thinking({ step }: { step: Extract<Step, { type: "thinking" }> }) {
 }
 
 function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
-  const { call, status } = step;
+  const { call } = step;
+  const { status } = call;
   const running = status === "running" || (live && status === "pending");
-  const diffs = call.edits.map(editDiff);
+  const diffs = editsOf(call).map(editDiff);
   const stat = diffs.length > 0 ? diffStat(diffs) : null;
   return (
     <Disclosure
@@ -164,7 +169,7 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
       subject={call.subject ?? undefined}
       // Running calls show their output as it comes, failures stay in view,
       // and edits show their diff; the rest open on request.
-      defaultOpen={running || status === "error" || call.kind === "edit"}
+      defaultOpen={running || status === "failed" || call.kind === "edit"}
       right={
         <>
           {stat && (
@@ -174,7 +179,11 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
             </span>
           )}
           {step.durationMs !== null && <Time>{formatDuration(step.durationMs)}</Time>}
-          {running ? <Status status="running" /> : status === "error" && <Status status="failed" />}
+          {running ? (
+            <Status status="running" />
+          ) : (
+            status === "failed" && <Status status="failed" />
+          )}
         </>
       }
     >
@@ -194,7 +203,8 @@ function ToolBody({
   running: boolean;
   diffs: ReturnType<typeof editDiff>[];
 }) {
-  const { call, output } = step;
+  const { call } = step;
+  const output = outputText(call);
   if (call.kind === "edit" && diffs.length > 0) {
     return (
       <div className="flex flex-col gap-2">
@@ -202,15 +212,17 @@ function ToolBody({
           // Edits are positional within the call.
           // biome-ignore lint/suspicious/noArrayIndexKey: see above
           <Clamp key={i} lines={lines} from="head" limit={CLAMP * 3}>
-            {(shown) => <Diff file={call.edits[i].path} lines={shown} />}
+            {(shown) => <Diff file={editsOf(call)[i].path} lines={shown} />}
           </Clamp>
         ))}
-        {step.status === "error" && output && <Output text={output} />}
+        {call.status === "failed" && output && <Output text={output} />}
       </div>
     );
   }
   if (call.kind === "execute") {
     const lines = output ? output.replace(/\n$/, "").split("\n") : [];
+    const exitCode = call.output?.type === "shell" ? call.output.exitCode : null;
+    if (exitCode !== null && exitCode !== 0) lines.push(`exit ${exitCode}`);
     return (
       <Clamp lines={lines} from="tail" limit={CLAMP}>
         {(shown) => (
@@ -227,8 +239,8 @@ function ToolBody({
   }
   const args =
     call.kind === "other"
-      ? call.args
-        ? JSON.stringify(call.args, null, 2)
+      ? call.input
+        ? JSON.stringify(call.input, null, 2)
         : (call.argsText ?? "")
       : "";
   return (

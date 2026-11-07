@@ -1,12 +1,12 @@
-import type { Block, HarnessEvent, Message, NoticeLevel, PromptMode, Question } from "./types";
-
-export interface ToolRun {
-  status: "running" | "done" | "error";
-  output: string;
-  /** Unix ms, as seen by the UI. */
-  startedAt: number;
-  endedAt: number | null;
-}
+import type {
+  Block,
+  HarnessEvent,
+  Message,
+  NoticeLevel,
+  PromptMode,
+  Question,
+  ToolCall,
+} from "./types";
 
 export interface Notice {
   level: NoticeLevel;
@@ -22,7 +22,6 @@ export interface QueuedPrompt {
 export interface Conversation {
   messages: Message[];
   busy: boolean;
-  tools: Record<string, ToolRun>;
   notices: Notice[];
   /** Questions from the harness still waiting for an answer. */
   questions: Question[];
@@ -45,7 +44,6 @@ const MAX_NOTICES = 5;
 export const emptyConversation = (messages: Message[] = []): Conversation => ({
   messages,
   busy: false,
-  tools: {},
   notices: [],
   questions: [],
   exited: null,
@@ -149,33 +147,8 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
         : { ...conversation, messages: [...conversation.messages, event.message] };
       return event.message.role === "user" ? delivered(next, event.message) : next;
     }
-    case "toolStarted":
-    case "toolUpdated":
-      return {
-        ...conversation,
-        tools: {
-          ...conversation.tools,
-          [event.callId]: {
-            status: "running",
-            output: event.type === "toolUpdated" ? event.output : "",
-            startedAt: conversation.tools[event.callId]?.startedAt ?? Date.now(),
-            endedAt: null,
-          },
-        },
-      };
-    case "toolFinished":
-      return {
-        ...conversation,
-        tools: {
-          ...conversation.tools,
-          [event.callId]: {
-            status: event.isError ? "error" : "done",
-            output: event.output,
-            startedAt: conversation.tools[event.callId]?.startedAt ?? Date.now(),
-            endedAt: Date.now(),
-          },
-        },
-      };
+    case "toolCallUpdated":
+      return updateToolCall(conversation, event.call);
     case "runSettled":
       // Anything still queued was delivered under a different text
       // (expanded by the harness) or dropped by an abort.
@@ -203,6 +176,24 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
     case "raw":
       return conversation;
   }
+}
+
+/** Swaps in the latest state of a tool call, keeping the streamed argument text. */
+function updateToolCall(conversation: Conversation, call: ToolCall): Conversation {
+  let found = false;
+  const messages = conversation.messages.map((m) => {
+    if (found || !m.blocks.some((b) => b?.type === "toolCall" && b.id === call.id)) return m;
+    found = true;
+    return {
+      ...m,
+      blocks: m.blocks.map((b) =>
+        b?.type === "toolCall" && b.id === call.id
+          ? { type: "toolCall" as const, argsText: b.argsText, ...call }
+          : b,
+      ),
+    };
+  });
+  return found ? { ...conversation, messages } : conversation;
 }
 
 /** The agent read a queued prompt: drop the first one with the same text. */

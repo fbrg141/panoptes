@@ -4,6 +4,7 @@ for the adapter's tests. Prompts select behaviour:
 
   "ask"    asks a confirm question and replies with the answer
   "crash"  exits with code 7 straight away
+  "tool"   runs a `bash` call that fails with exit code 3, then replies
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -51,6 +52,26 @@ def append(message):
     entries.append(entry)
 
 
+def tool_run():
+    call = {"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {"command": "make"}}
+    assistant = {"role": "assistant", "content": [call], "stopReason": "toolUse", "timestamp": 2}
+    send({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending"}})
+    send({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_start", "contentIndex": 0, "id": "call-1", "toolName": "bash"}})
+    send({"type": "message_end", "message": assistant})
+    append(assistant)
+    send({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "bash", "args": call["arguments"]})
+    send({"type": "tool_execution_update", "toolCallId": "call-1", "toolName": "bash", "args": call["arguments"],
+          "partialResult": {"content": [{"type": "text", "text": "building"}]}})
+    content = [{"type": "text", "text": "building\nbroken\n\nCommand exited with code 3"}]
+    send({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "bash",
+          "result": {"content": content}, "isError": True})
+    result = {"role": "toolResult", "toolCallId": "call-1", "toolName": "bash", "content": content,
+              "isError": True, "timestamp": 3}
+    send({"type": "message_start", "message": result})
+    send({"type": "message_end", "message": result})
+    append(result)
+
+
 def run(text, images):
     user = {"role": "user", "content": text, "timestamp": 1}
     send({"type": "agent_start"})
@@ -60,6 +81,9 @@ def run(text, images):
     reply = f"echo: {text} done"
     if images:
         reply += f" [{len(images)} {images[0]['mimeType']}]"
+    if text == "tool":
+        tool_run()
+        reply = "ran it"
     if text == "ask":
         send({"type": "extension_ui_request", "id": "q1", "method": "confirm", "title": "Proceed?"})
         answer = json.loads(sys.stdin.readline())

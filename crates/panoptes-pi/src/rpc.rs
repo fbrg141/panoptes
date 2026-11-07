@@ -15,7 +15,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 use crate::locate::PiInstall;
-use crate::map::{self, EventMapper};
+use crate::map::{self, EventMapper, ToolTimes};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long Pi gets to exit after stdin closes before it is killed.
@@ -67,6 +67,7 @@ impl RpcProcess {
         cwd: &Path,
         session_file: Option<&str>,
         events: EventSink,
+        times: ToolTimes,
     ) -> anyhow::Result<Self> {
         let mut command = Command::new(&install.program);
         command.args(["--mode", "rpc"]);
@@ -136,7 +137,7 @@ impl RpcProcess {
             let pending = pending.clone();
             let mut exit = exit_rx.clone();
             tokio::spawn(async move {
-                read_stdout(stdout, &pending, &events).await;
+                read_stdout(stdout, &pending, &events, times).await;
                 // Stdout closed: Pi is gone or going. Dropping the waiters
                 // fails every outstanding command.
                 pending.lock().await.take();
@@ -238,12 +239,17 @@ fn not_running() -> anyhow::Error {
     HarnessError::exited("Pi is not running").into()
 }
 
-async fn read_stdout(stdout: tokio::process::ChildStdout, pending: &Pending, events: &EventSink) {
+async fn read_stdout(
+    stdout: tokio::process::ChildStdout,
+    pending: &Pending,
+    events: &EventSink,
+    times: ToolTimes,
+) {
     // Split strictly on LF bytes: U+2028 and U+2029 are valid inside JSON
     // strings and must not end a record.
     let mut stdout = BufReader::new(stdout);
     let mut line = Vec::new();
-    let mut mapper = EventMapper::default();
+    let mut mapper = EventMapper::new(times);
     loop {
         line.clear();
         match stdout.read_until(b'\n', &mut line).await {
@@ -265,7 +271,7 @@ async fn read_stdout(stdout: tokio::process::ChildStdout, pending: &Pending, eve
                 continue;
             }
             Some("extension_ui_request") => map::extension_ui(&record, now_ms()),
-            _ => mapper.map(record),
+            _ => mapper.map(record, now_ms()),
         };
         for event in mapped {
             let _ = events.send(event);

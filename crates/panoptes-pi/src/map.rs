@@ -1,10 +1,18 @@
 //! Translating Pi's messages and RPC events into the neutral harness types.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use panoptes_harness::{
     Block, ContextUsage, DeltaKind, FileEdit, HarnessEvent, Message, ModelInfo, NoticeLevel,
-    Question, QuestionKind, Role, ToolKind,
+    Question, QuestionKind, Role, ToolCall, ToolKind, ToolOutput, ToolStatus,
 };
 use serde_json::Value;
+
+/// When each tool call of a session started and ended, as seen live. Pi's
+/// history has no such times, so history reloads borrow them from here and
+/// give the same values the live events did.
+pub type ToolTimes = Arc<Mutex<HashMap<String, (i64, Option<i64>)>>>;
 
 /// Tool output beyond this many bytes is cut for display.
 const MAX_OUTPUT: usize = 64 * 1024;
@@ -68,11 +76,11 @@ fn content_blocks(content: &Value) -> Vec<Block> {
             "thinking" => Some(Block::Thinking {
                 text: block["thinking"].as_str().unwrap_or_default().to_string(),
             }),
-            "toolCall" => Some(tool_call(
+            "toolCall" => Some(Block::ToolCall(Box::new(tool_call(
                 block["id"].as_str()?,
                 block["name"].as_str()?,
                 block["arguments"].clone(),
-            )),
+            )))),
             "image" => Some(Block::Image {
                 mime_type: block["mimeType"].as_str().unwrap_or_default().to_string(),
             }),
@@ -83,8 +91,8 @@ fn content_blocks(content: &Value) -> Vec<Block> {
 
 /// A tool call with what Pi's built-in tools do spelled out neutrally.
 /// Extension tools are `Other`, with their first string argument as the
-/// subject.
-fn tool_call(id: &str, name: &str, args: Value) -> Block {
+/// subject. The call is pending until Pi reports it running.
+fn tool_call(id: &str, name: &str, args: Value) -> ToolCall {
     let arg = |key: &str| args[key].as_str().map(str::to_string);
     let (kind, subject, edits) = match name {
         "read" | "ls" => (ToolKind::Read, arg("path"), Vec::new()),
@@ -110,14 +118,65 @@ fn tool_call(id: &str, name: &str, args: Value) -> Block {
             (ToolKind::Other, first, Vec::new())
         }
     };
-    Block::ToolCall {
-        call_id: id.to_string(),
+    ToolCall {
+        id: id.to_string(),
         name: name.to_string(),
-        args,
         kind,
         subject: subject.map(|s| s.lines().next().unwrap_or_default().to_string()),
-        edits,
+        input: args,
+        status: ToolStatus::Pending,
+        output: (!edits.is_empty()).then_some(ToolOutput::Edits { edits, text: None }),
+        started_at: None,
+        ended_at: None,
     }
+}
+
+/// How Pi's `bash` tool reports a non-zero exit, as the last line of its
+/// output.
+const EXIT_PREFIX: &str = "Command exited with code ";
+
+/// Puts a tool's (partial or final) output on its call. `finished` is
+/// `Some(is_error)` once the tool has ended.
+fn set_output(call: &mut ToolCall, result: &Value, finished: Option<bool>) {
+    let text = result_text(result);
+    call.status = match finished {
+        None => ToolStatus::Running,
+        Some(false) => ToolStatus::Done,
+        Some(true) => ToolStatus::Failed,
+    };
+    call.output = match call.kind {
+        ToolKind::Execute => Some(shell_output(text, finished)),
+        ToolKind::Edit => {
+            let edits = match call.output.take() {
+                Some(ToolOutput::Edits { edits, .. }) => edits,
+                _ => Vec::new(),
+            };
+            Some(ToolOutput::Edits {
+                edits,
+                text: (!text.is_empty()).then_some(text),
+            })
+        }
+        _ => (!text.is_empty() || finished.is_some()).then_some(ToolOutput::Text { text }),
+    };
+}
+
+/// Shell output with its exit code. Pi's `bash` succeeds only on exit 0 and
+/// otherwise ends its output with "Command exited with code N"; a command
+/// that was stopped or timed out says so instead and has no code.
+fn shell_output(text: String, finished: Option<bool>) -> ToolOutput {
+    let (body, last) = match text.rsplit_once('\n') {
+        Some((body, last)) => (body, last),
+        None => ("", text.as_str()),
+    };
+    let reported = last
+        .strip_prefix(EXIT_PREFIX)
+        .and_then(|code| code.trim().parse::<i32>().ok());
+    let (text, exit_code) = match (reported, finished) {
+        (Some(code), Some(_)) => (body.trim_end_matches('\n').to_string(), Some(code)),
+        (_, Some(false)) => (text, Some(0)),
+        _ => (text, None),
+    };
+    ToolOutput::Shell { text, exit_code }
 }
 
 /// The replacements of an `edit` call. Pi takes an `edits` array, but models
@@ -151,7 +210,8 @@ fn edit_changes(args: &Value) -> Vec<FileEdit> {
 }
 
 /// Converts one Pi `AgentMessage`. System messages (prompt and tool
-/// loadout) are not part of the visible conversation and return `None`.
+/// loadout) are not part of the visible conversation, and tool results
+/// belong to their calls; both return `None`.
 pub fn message(value: &Value, id: String) -> Option<Message> {
     let timestamp = value["timestamp"].as_i64();
     let stopped = value["stopReason"].as_str() == Some("aborted");
@@ -170,16 +230,9 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
             };
             (Role::Assistant, content_blocks(&value["content"]), error)
         }
-        "toolResult" => (
-            Role::Tool,
-            vec![Block::ToolResult {
-                call_id: value["toolCallId"].as_str().unwrap_or_default().to_string(),
-                name: value["toolName"].as_str().unwrap_or_default().to_string(),
-                output: result_text(value),
-                is_error: value["isError"].as_bool().unwrap_or(false),
-            }],
-            None,
-        ),
+        // Results are folded into their calls (see `history` and
+        // `EventMapper`), so they are not messages of their own.
+        "toolResult" => return None,
         "bashExecution" => {
             let command = value["command"].as_str().unwrap_or_default();
             let output = value["output"].as_str().unwrap_or_default();
@@ -213,14 +266,27 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
 /// Turns the Pi event stream into harness events. Pi does not give
 /// streaming messages an id, so each one gets a live id here; history
 /// reloads later replace them with stable entry ids.
+///
+/// Tool calls are tracked from `tool_execution_start` to `_end`, so every
+/// [`HarnessEvent::ToolCallUpdated`] carries the whole call.
 #[derive(Default)]
 pub struct EventMapper {
     counter: u64,
     current: Option<String>,
+    calls: HashMap<String, ToolCall>,
+    times: ToolTimes,
 }
 
 impl EventMapper {
-    pub fn map(&mut self, event: Value) -> Vec<HarnessEvent> {
+    pub fn new(times: ToolTimes) -> Self {
+        Self {
+            times,
+            ..Self::default()
+        }
+    }
+
+    /// `now` is the time the event arrived, Unix milliseconds.
+    pub fn map(&mut self, event: Value, now: i64) -> Vec<HarnessEvent> {
         let kind = event["type"].as_str().unwrap_or_default();
         match kind {
             "agent_start" => vec![HarnessEvent::RunStarted],
@@ -248,23 +314,22 @@ impl EventMapper {
                     format!("live-{}", self.counter)
                 });
                 message(&event["message"], id)
-                    .map(|message| vec![HarnessEvent::MessageCompleted { message }])
+                    .map(|mut message| {
+                        // A call that already started keeps what is known of it.
+                        for block in &mut message.blocks {
+                            if let Block::ToolCall(call) = block
+                                && let Some(live) = self.calls.get(&call.id)
+                            {
+                                **call = live.clone();
+                            }
+                        }
+                        vec![HarnessEvent::MessageCompleted { message }]
+                    })
                     .unwrap_or_default()
             }
-            "tool_execution_start" => vec![HarnessEvent::ToolStarted {
-                call_id: event["toolCallId"].as_str().unwrap_or_default().to_string(),
-                name: event["toolName"].as_str().unwrap_or_default().to_string(),
-                args: event["args"].clone(),
-            }],
-            "tool_execution_update" => vec![HarnessEvent::ToolUpdated {
-                call_id: event["toolCallId"].as_str().unwrap_or_default().to_string(),
-                output: result_text(&event["partialResult"]),
-            }],
-            "tool_execution_end" => vec![HarnessEvent::ToolFinished {
-                call_id: event["toolCallId"].as_str().unwrap_or_default().to_string(),
-                output: result_text(&event["result"]),
-                is_error: event["isError"].as_bool().unwrap_or(false),
-            }],
+            "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+                self.tool(kind, &event, now)
+            }
             "session_info_changed" => vec![HarnessEvent::TitleChanged {
                 title: event["name"].as_str().map(str::to_string),
             }],
@@ -309,6 +374,41 @@ impl EventMapper {
         }
     }
 
+    fn tool(&mut self, kind: &str, event: &Value, now: i64) -> Vec<HarnessEvent> {
+        let Some(id) = event["toolCallId"].as_str() else {
+            return Vec::new();
+        };
+        let mut call = self.calls.remove(id).unwrap_or_else(|| {
+            tool_call(
+                id,
+                event["toolName"].as_str().unwrap_or_default(),
+                event["args"].clone(),
+            )
+        });
+        call.started_at.get_or_insert(now);
+        match kind {
+            "tool_execution_start" => call.status = ToolStatus::Running,
+            "tool_execution_update" => set_output(&mut call, &event["partialResult"], None),
+            _ => {
+                let is_error = event["isError"].as_bool().unwrap_or(false);
+                set_output(&mut call, &event["result"], Some(is_error));
+                call.ended_at = Some(now);
+            }
+        }
+        if let Some(started) = call.started_at {
+            self.times
+                .lock()
+                .unwrap()
+                .insert(call.id.clone(), (started, call.ended_at));
+        }
+        if call.ended_at.is_none() {
+            self.calls.insert(call.id.clone(), call.clone());
+        }
+        vec![HarnessEvent::ToolCallUpdated {
+            call: Box::new(call),
+        }]
+    }
+
     fn update(&mut self, update: &Value) -> Vec<HarnessEvent> {
         let Some(message_id) = self.current.clone() else {
             return Vec::new();
@@ -332,11 +432,11 @@ impl EventMapper {
             "thinking_start" => vec![started(Block::Thinking {
                 text: String::new(),
             })],
-            "toolcall_start" => vec![started(tool_call(
+            "toolcall_start" => vec![started(Block::ToolCall(Box::new(tool_call(
                 update["id"].as_str().unwrap_or_default(),
                 update["toolName"].as_str().unwrap_or_default(),
                 Value::Null,
-            ))],
+            ))))],
             "text_delta" => vec![delta(DeltaKind::Text)],
             "thinking_delta" => vec![delta(DeltaKind::Thinking)],
             "toolcall_delta" => vec![delta(DeltaKind::ToolArgs)],
@@ -403,7 +503,8 @@ pub fn extension_ui(request: &Value, now_ms: i64) -> Vec<HarnessEvent> {
 }
 
 /// The active branch of a session, oldest first, from `get_entries` data.
-pub fn history(entries: &[Value], leaf_id: Option<&str>) -> Vec<Message> {
+/// Tool results are folded into their calls, with the times from `times`.
+pub fn history(entries: &[Value], leaf_id: Option<&str>, times: &ToolTimes) -> Vec<Message> {
     let by_id: std::collections::HashMap<&str, &Value> = entries
         .iter()
         .filter_map(|entry| Some((entry["id"].as_str()?, entry)))
@@ -419,11 +520,39 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>) -> Vec<Message> {
         }
     }
     path.reverse();
+    let results: HashMap<&str, &Value> = path
+        .iter()
+        .map(|entry| &entry["message"])
+        .filter(|message| message["role"] == "toolResult")
+        .filter_map(|message| Some((message["toolCallId"].as_str()?, message)))
+        .collect();
+    let times = times.lock().unwrap();
+    let finish = |call: &mut ToolCall| {
+        let seen = times.get(&call.id).copied();
+        if let Some(result) = results.get(call.id.as_str()) {
+            let is_error = result["isError"].as_bool().unwrap_or(false);
+            set_output(call, result, Some(is_error));
+            call.ended_at = seen
+                .and_then(|(_, ended)| ended)
+                .or(result["timestamp"].as_i64());
+        } else if let Some((_, None)) = seen {
+            // Started, not yet finished: the result isn't written yet.
+            call.status = ToolStatus::Running;
+        }
+        call.started_at = seen.map(|(started, _)| started);
+    };
     path.into_iter()
         .filter_map(|entry| {
             let id = entry["id"].as_str()?.to_string();
             match entry["type"].as_str()? {
-                "message" => message(&entry["message"], id),
+                "message" => message(&entry["message"], id).map(|mut message| {
+                    for block in &mut message.blocks {
+                        if let Block::ToolCall(call) = block {
+                            finish(call);
+                        }
+                    }
+                    message
+                }),
                 "compaction" => Some(Message {
                     id,
                     role: Role::Other,
@@ -479,15 +608,15 @@ mod tests {
     #[test]
     fn streams_text_under_one_live_id() {
         let mut mapper = EventMapper::default();
-        let started = mapper.map(json!({"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}));
+        let started = mapper.map(json!({"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}), 0);
         assert!(
             matches!(&started[0], HarnessEvent::MessageStarted { message_id, role: Role::Assistant } if message_id == "live-1")
         );
-        let delta = mapper.map(json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hi"}}));
+        let delta = mapper.map(json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hi"}}), 0);
         assert!(
             matches!(&delta[0], HarnessEvent::BlockDelta { message_id, delta, .. } if message_id == "live-1" && delta == "Hi")
         );
-        let done = mapper.map(json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}],"stopReason":"stop"}}));
+        let done = mapper.map(json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}],"stopReason":"stop"}}), 0);
         assert!(
             matches!(&done[0], HarnessEvent::MessageCompleted { message } if message.id == "live-1" && message.error.is_none())
         );
@@ -501,7 +630,7 @@ mod tests {
             json!({"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"abandoned"}]}}),
             json!({"type":"session_info","id":"d","parentId":"b","name":"x"}),
         ];
-        let ids: Vec<_> = history(&entries, Some("d"))
+        let ids: Vec<_> = history(&entries, Some("d"), &ToolTimes::default())
             .into_iter()
             .map(|m| m.id)
             .collect();
@@ -510,14 +639,9 @@ mod tests {
 
     #[test]
     fn built_in_tools_get_a_neutral_kind_and_subject() {
-        let block = |name: &str, args: Value| match tool_call("t", name, args) {
-            Block::ToolCall {
-                kind,
-                subject,
-                edits,
-                ..
-            } => (kind, subject, edits),
-            _ => unreachable!(),
+        let block = |name: &str, args: Value| {
+            let call = tool_call("t", name, args);
+            (call.kind, call.subject, call.output)
         };
         let (kind, subject, _) = block("bash", json!({"command": "pnpm test\necho done"}));
         assert_eq!(
@@ -539,9 +663,9 @@ mod tests {
 
     #[test]
     fn edits_and_writes_carry_their_file_changes() {
-        let edits = |args: Value| match tool_call("t", "edit", args) {
-            Block::ToolCall { edits, .. } => edits,
-            _ => unreachable!(),
+        let edits = |args: Value| match tool_call("t", "edit", args).output {
+            Some(ToolOutput::Edits { edits, .. }) => edits,
+            other => panic!("expected edits, got {other:?}"),
         };
         let change = |old: &str, new: &str| FileEdit {
             path: "a.ts".into(),
@@ -567,10 +691,174 @@ mod tests {
             vec![change("a", "b")]
         );
         let write = tool_call("t", "write", json!({"path": "n.ts", "content": "x"}));
-        assert!(
-            matches!(write, Block::ToolCall { kind: ToolKind::Edit, edits, .. }
-            if edits == vec![FileEdit { path: "n.ts".into(), old_text: None, new_text: "x".into() }])
+        assert_eq!(write.kind, ToolKind::Edit);
+        assert_eq!(
+            write.output,
+            Some(ToolOutput::Edits {
+                edits: vec![FileEdit {
+                    path: "n.ts".into(),
+                    old_text: None,
+                    new_text: "x".into()
+                }],
+                text: None
+            })
         );
+    }
+
+    fn result(text: &str) -> Value {
+        json!({"content": [{"type": "text", "text": text}]})
+    }
+
+    fn shell(text: &str, finished: Option<bool>) -> ToolOutput {
+        shell_output(text.to_string(), finished)
+    }
+
+    #[test]
+    fn shell_output_carries_the_exit_code() {
+        let shell_ = |text: &str, exit_code| ToolOutput::Shell {
+            text: text.into(),
+            exit_code,
+        };
+        assert_eq!(shell("a\nb", Some(false)), shell_("a\nb", Some(0)));
+        assert_eq!(
+            shell("a\n\nCommand exited with code 2", Some(true)),
+            shell_("a", Some(2))
+        );
+        assert_eq!(
+            shell("Command exited with code 1", Some(true)),
+            shell_("", Some(1))
+        );
+        assert_eq!(
+            shell("a\n\nCommand timed out after 5 seconds", Some(true)),
+            shell_("a\n\nCommand timed out after 5 seconds", None)
+        );
+        assert_eq!(shell("partial", None), shell_("partial", None));
+    }
+
+    /// A bash call from Pi's events: message, start, update, end.
+    fn live_call(mapper: &mut EventMapper) -> Vec<HarnessEvent> {
+        let call =
+            json!({"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"false"}});
+        let mut events = Vec::new();
+        for (event, now) in [
+            (
+                json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+                0,
+            ),
+            (
+                json!({"type":"message_end","message":{"role":"assistant","content":[call],"stopReason":"toolUse"}}),
+                0,
+            ),
+            (
+                json!({"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"false"}}),
+                1_000,
+            ),
+            (
+                json!({"type":"tool_execution_update","toolCallId":"c1","toolName":"bash","partialResult":result("out")}),
+                1_500,
+            ),
+            (
+                json!({"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":result("out\n\nCommand exited with code 1"),"isError":true}),
+                3_000,
+            ),
+            (
+                json!({"type":"message_start","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[],"isError":true}}),
+                3_000,
+            ),
+            (
+                json!({"type":"message_end","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[],"isError":true}}),
+                3_000,
+            ),
+        ] {
+            events.extend(mapper.map(event, now));
+        }
+        events
+    }
+
+    #[test]
+    fn live_tool_events_carry_the_whole_call() {
+        let mut mapper = EventMapper::default();
+        let events = live_call(&mut mapper);
+        let calls: Vec<&ToolCall> = events
+            .iter()
+            .filter_map(|event| match event {
+                HarnessEvent::ToolCallUpdated { call } => Some(call.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            calls.iter().map(|c| c.status).collect::<Vec<_>>(),
+            [ToolStatus::Running, ToolStatus::Running, ToolStatus::Failed]
+        );
+        assert!(calls.iter().all(|c| c.kind == ToolKind::Execute
+            && c.subject.as_deref() == Some("false")
+            && c.input["command"] == "false"));
+        let last = calls[2];
+        assert_eq!((last.started_at, last.ended_at), (Some(1_000), Some(3_000)));
+        assert_eq!(
+            last.output,
+            Some(ToolOutput::Shell {
+                text: "out".into(),
+                exit_code: Some(1)
+            })
+        );
+        // The result message is folded into the call, not sent on its own.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, HarnessEvent::MessageCompleted { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn history_gives_the_same_call_as_the_live_events() {
+        let times = ToolTimes::default();
+        let mut mapper = EventMapper::new(times.clone());
+        let events = live_call(&mut mapper);
+        let Some(HarnessEvent::ToolCallUpdated { call: live }) = events
+            .iter()
+            .rfind(|e| matches!(e, HarnessEvent::ToolCallUpdated { .. }))
+        else {
+            panic!("no tool call in {events:?}");
+        };
+        let entries = vec![
+            json!({"type":"message","id":"a","parentId":null,"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"false"}}],"stopReason":"toolUse"}}),
+            json!({"type":"message","id":"b","parentId":"a","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"out\n\nCommand exited with code 1"}],"isError":true,"timestamp":9_999}}),
+        ];
+        let messages = history(&entries, Some("b"), &times);
+        assert_eq!(messages.len(), 1, "the result is not a message of its own");
+        assert_eq!(messages[0].blocks, vec![Block::ToolCall(live.clone())]);
+
+        // Without live times (a session opened later), the result's own
+        // timestamp is the end.
+        let cold = history(&entries, Some("b"), &ToolTimes::default());
+        let Block::ToolCall(call) = &cold[0].blocks[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            (call.status, call.started_at, call.ended_at),
+            (ToolStatus::Failed, None, Some(9_999))
+        );
+    }
+
+    #[test]
+    fn edits_keep_their_changes_when_they_finish() {
+        let mut call = tool_call(
+            "e",
+            "edit",
+            json!({"path": "a.ts", "edits": [{"oldText": "a", "newText": "b"}]}),
+        );
+        set_output(&mut call, &result("Could not find the text"), Some(true));
+        let Some(ToolOutput::Edits { edits, text }) = call.output else {
+            panic!("expected edits");
+        };
+        assert_eq!(
+            (edits.len(), text.as_deref()),
+            (1, Some("Could not find the text"))
+        );
+        assert_eq!(call.status, ToolStatus::Failed);
     }
 
     #[test]

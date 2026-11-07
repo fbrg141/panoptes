@@ -41,7 +41,6 @@ pub struct SessionSummary {
 pub enum Role {
     User,
     Assistant,
-    Tool,
     /// Anything else a harness stores in the conversation (summaries,
     /// extension messages). Rendered as a muted note.
     Other,
@@ -56,29 +55,67 @@ pub enum Block {
     Thinking {
         text: String,
     },
-    #[serde(rename_all = "camelCase")]
-    ToolCall {
-        call_id: String,
-        name: String,
-        args: Value,
-        /// What the call does, for choosing how to show it.
-        kind: ToolKind,
-        /// The argument that says what the call acts on: a path, a command
-        /// or a search pattern.
-        subject: Option<String>,
-        /// File changes the call makes, for showing as diffs.
-        edits: Vec<FileEdit>,
-    },
-    #[serde(rename_all = "camelCase")]
-    ToolResult {
-        call_id: String,
-        name: String,
-        output: String,
-        is_error: bool,
-    },
+    /// A tool call with everything known about it so far. Its status and
+    /// output are kept up to date here; there is no separate result.
+    ToolCall(Box<ToolCall>),
     #[serde(rename_all = "camelCase")]
     Image {
         mime_type: String,
+    },
+}
+
+/// One tool call: what it does, where it stands and what it produced.
+/// History and live events give the same values, so the UI keeps no tool
+/// state of its own.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    pub id: String,
+    /// The harness's name for the tool, for display.
+    pub name: String,
+    /// What the call does, for choosing how to show it.
+    pub kind: ToolKind,
+    /// The argument that says what the call acts on: a path, a command
+    /// or a search pattern.
+    pub subject: Option<String>,
+    /// The arguments as the model sent them; `null` while they stream.
+    pub input: Value,
+    pub status: ToolStatus,
+    /// `None` until there is something to show. Edits carry their changes
+    /// from the start, since the input already says what they will be.
+    pub output: Option<ToolOutput>,
+    /// Unix milliseconds, when the harness reports them.
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolStatus {
+    /// Written by the model but not started, or its arguments still stream.
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ToolOutput {
+    Text {
+        text: String,
+    },
+    /// File changes. `text` is what the tool said, such as why it failed.
+    Edits {
+        edits: Vec<FileEdit>,
+        text: Option<String>,
+    },
+    /// A command's output. `exit_code` is `None` while it runs, or when it
+    /// was stopped or timed out before exiting.
+    #[serde(rename_all = "camelCase")]
+    Shell {
+        text: String,
+        exit_code: Option<i32>,
     },
 }
 
@@ -201,22 +238,10 @@ pub enum HarnessEvent {
     MessageCompleted {
         message: Message,
     },
-    #[serde(rename_all = "camelCase")]
-    ToolStarted {
-        call_id: String,
-        name: String,
-        args: Value,
-    },
-    #[serde(rename_all = "camelCase")]
-    ToolUpdated {
-        call_id: String,
-        output: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    ToolFinished {
-        call_id: String,
-        output: String,
-        is_error: bool,
+    /// A tool call started, produced output or finished. Replaces the
+    /// tool-call block with the same id, wherever it is.
+    ToolCallUpdated {
+        call: Box<ToolCall>,
     },
     /// The agent will do no more work until the next prompt.
     RunSettled {

@@ -1,18 +1,12 @@
 import type { Conversation } from "./conversation";
-import type { Block, Message, ToolKind } from "./types";
+import type { Block, FileEdit, Message, ToolKind } from "./types";
 
 export type ToolCallBlock = Extract<Block, { type: "toolCall" }>;
-export type ToolResult = Extract<Block, { type: "toolResult" }>;
-
-/** `pending`: no result and no run seen, as for a call still being written. */
-export type ToolStatus = "pending" | "running" | "done" | "error";
 
 export interface ToolStep {
   type: "tool";
   key: string;
   call: ToolCallBlock;
-  status: ToolStatus;
-  output: string;
   durationMs: number | null;
 }
 
@@ -48,19 +42,13 @@ export interface Turn {
   endedAt: number | null;
 }
 
-type Source = Pick<Conversation, "messages" | "tools" | "thoughtFor" | "thinking" | "busy">;
+type Source = Pick<Conversation, "messages" | "thoughtFor" | "thinking" | "busy">;
 
 const QUIET: ToolKind[] = ["read", "search"];
 
-/** Groups a conversation's messages into turns, with tool results joined to their calls. */
+/** Groups a conversation's messages into turns. */
 export function buildTurns(conversation: Source): Turn[] {
-  const { messages, tools, thoughtFor, thinking, busy } = conversation;
-  const results: Record<string, ToolResult> = {};
-  for (const message of messages) {
-    for (const block of message.blocks) {
-      if (block?.type === "toolResult") results[block.callId] = block;
-    }
-  }
+  const { messages, thoughtFor, thinking, busy } = conversation;
 
   const turns: Turn[] = [];
   let current: { prompt: Message | null; messages: Message[] } | null = null;
@@ -70,7 +58,6 @@ export function buildTurns(conversation: Source): Turn[] {
   const turn = (prompt: Message | null, replies: Message[]): Turn => {
     const steps: Step[] = [];
     for (const message of replies) {
-      if (message.role === "tool") continue;
       if (message.role === "other") {
         steps.push({ type: "note", key: message.id, text: textOf(message) });
         continue;
@@ -94,24 +81,17 @@ export function buildTurns(conversation: Source): Turn[] {
               });
             }
             break;
-          case "toolCall": {
-            const run = tools[block.callId];
-            const result = results[block.callId];
-            const status: ToolStatus = result
-              ? result.isError
-                ? "error"
-                : "done"
-              : (run?.status ?? "pending");
+          case "toolCall":
             steps.push({
               type: "tool",
               key,
               call: block,
-              status,
-              output: result?.output ?? run?.output ?? "",
-              durationMs: run?.endedAt ? run.endedAt - run.startedAt : null,
+              durationMs:
+                block.startedAt !== null && block.endedAt !== null
+                  ? block.endedAt - block.startedAt
+                  : null,
             });
             break;
-          }
           case "image":
             steps.push({ type: "image", key, mimeType: block.mimeType });
             break;
@@ -168,7 +148,7 @@ function groupQuiet(steps: Step[]): Step[] {
     run = [];
   };
   for (const step of steps) {
-    if (step.type === "tool" && QUIET.includes(step.call.kind) && step.status !== "error") {
+    if (step.type === "tool" && QUIET.includes(step.call.kind) && step.call.status !== "failed") {
       run.push(step);
     } else {
       flush();
@@ -188,6 +168,16 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 /** The tool calls among a turn's steps, groups opened up. */
 export function toolSteps(steps: Step[]): ToolStep[] {
   return steps.flatMap((s) => (s.type === "tool" ? [s] : s.type === "group" ? s.steps : []));
+}
+
+/** The text a tool call produced, whatever its kind. */
+export function outputText(call: ToolCallBlock): string {
+  return call.output?.text ?? "";
+}
+
+/** The file changes a tool call makes. */
+export function editsOf(call: ToolCallBlock): FileEdit[] {
+  return call.output?.type === "edits" ? call.output.edits : [];
 }
 
 /** "Read 3 files" or "Read 2 files, searched 1 pattern", for a group row. */
