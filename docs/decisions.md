@@ -22,6 +22,46 @@ expensive to reverse, so change one only on purpose, and record it here.
 The UI is React rather than Svelte. It has the larger ecosystem for chat,
 markdown and diff views, and agents write it more reliably.
 
+## Stay hybrid for now, and keep a GPUI rewrite possible
+
+*Decided 2026-11-07.*
+
+Panoptes stays on Tauri, React and a Rust core. A later rewrite of the UI
+onto GPUI (Zed's Rust UI framework) is kept genuinely possible, but is not
+planned.
+
+**Why not now.**
+
+- **GPUI now** would give smoother scrolling, faster startup, less memory,
+  no IPC and one type system. Against that, its docs are thin, its API still
+  moves, its Windows support is weaker, and it would throw away the shipped
+  work-log chat and the design system.
+- **Dioxus** is still a webview, and it loses the React ecosystem.
+- **egui, Floem or Slint** would mean rebuilding markdown, diffs, code
+  highlighting and text selection by hand.
+- **Our own UI on winit, wgpu, cosmic-text, taffy and accesskit** is writing
+  a framework, not an app.
+
+**Standing rules.** These keep the UI replaceable and apply to every change:
+
+- **Decisions live in Rust; the UI only renders.** Status, tool calls,
+  approvals, ordering and ids are decided in the core, as #23 to #27 already
+  do. If a component needs logic, the logic belongs in the core or the
+  adapter.
+- **The typed event stream is the only frontend boundary.** The UI learns
+  everything from `HarnessEvent`s and the service's typed commands, and from
+  nothing else.
+- **Design tokens are data, not CSS.** They live in one place Rust can read
+  (`packages/design-system/tokens/tokens.json`). CSS variables follow from
+  that file and are never the only place a value exists.
+- **TypeScript keeps no model of its own of a session.** It holds what the
+  core sent and the view state on top (scroll, focus, open panels), and
+  nothing it would have to keep in step with the core.
+
+**Accepted risk.** The rewrite may never happen, because the hybrid stays
+good enough. That is fine: the layering pays for itself in testability and
+in a thinner UI, whether or not GPUI ever arrives.
+
 ## Drive `pi --mode rpc`, not Pi's Node SDK
 
 *Decided 2026-11-04.*
