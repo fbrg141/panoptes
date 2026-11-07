@@ -37,6 +37,9 @@ const ALLOW: &[&str] = &[
 ];
 const REJECT: &[&str] = &["no", "block", "deny", "reject", "cancel", "skip", "abort"];
 
+/// The status key `approvals.js` tags `tool_call` hook dialogs with.
+const APPROVAL_TAG: &str = "panoptes.approval";
+
 /// Tool output beyond this many bytes is cut for display.
 const MAX_OUTPUT: usize = 64 * 1024;
 
@@ -309,9 +312,9 @@ pub struct EventMapper {
     shared: Shared,
     /// Prompts waiting in Pi's queue, in delivery order.
     queued: Vec<QueuedPrompt>,
-    /// The call Pi has started but not yet run: extension `tool_call`
-    /// hooks, which is where permission dialogs come from, run in between.
-    preparing: Option<String>,
+    /// The call named by the status line Panoptes' Pi extension sends just
+    /// before a `tool_call` hook's dialog (see `approvals.js`).
+    approval_for: Option<String>,
 }
 
 impl EventMapper {
@@ -324,10 +327,15 @@ impl EventMapper {
 
     /// Translates an `extension_ui_request` (see [`extension_ui`]). A
     /// confirm, or a select between one allow and one reject option, that
-    /// arrives while a tool call is being prepared is that call's approval.
+    /// directly follows an approval tag is that call's approval. Any other
+    /// dialog, including one a tool asks while it runs, is a question.
     pub fn ui_request(&mut self, request: &Value, now: i64) -> Vec<HarnessEvent> {
+        if request["method"] == "setStatus" && request["statusKey"] == APPROVAL_TAG {
+            self.approval_for = request["statusText"].as_str().map(str::to_string);
+            return Vec::new();
+        }
         let mut events = extension_ui(request, now);
-        let Some(tool_call_id) = self.preparing.clone() else {
+        let Some(tool_call_id) = self.approval_for.take() else {
             return events;
         };
         if let [HarnessEvent::Question { question }] = events.as_slice() {
@@ -358,6 +366,7 @@ impl EventMapper {
 
     /// `now` is the time the event arrived, Unix milliseconds.
     pub fn map(&mut self, event: Value, now: i64) -> Vec<HarnessEvent> {
+        self.approval_for = None;
         let kind = event["type"].as_str().unwrap_or_default();
         match kind {
             "agent_start" => vec![HarnessEvent::RunStarted],
@@ -492,7 +501,6 @@ impl EventMapper {
             )
         });
         call.started_at.get_or_insert(now);
-        self.preparing = (kind == "tool_execution_start").then(|| call.id.clone());
         match kind {
             "tool_execution_start" => call.status = ToolStatus::Running,
             "tool_execution_update" => set_output(&mut call, &event["partialResult"], None),
@@ -1023,7 +1031,7 @@ mod tests {
     }
 
     /// A mapper with call `c1` started and its approvals map.
-    fn preparing() -> (EventMapper, Shared) {
+    fn started() -> (EventMapper, Shared) {
         let shared = Shared::default();
         let mut mapper = EventMapper::new(shared.clone());
         mapper.map(
@@ -1033,9 +1041,19 @@ mod tests {
         (mapper, shared)
     }
 
+    /// The status line `approvals.js` sends before a hook's dialog.
+    fn tag(mapper: &mut EventMapper, call: &str) {
+        let events = mapper.ui_request(
+            &json!({"id":"s","method":"setStatus","statusKey":"panoptes.approval","statusText":call}),
+            0,
+        );
+        assert!(events.is_empty(), "the tag is not shown: {events:?}");
+    }
+
     #[test]
-    fn permission_dialogs_while_a_call_prepares_are_approvals() {
-        let (mut mapper, shared) = preparing();
+    fn tagged_permission_dialogs_are_approvals() {
+        let (mut mapper, shared) = started();
+        tag(&mut mapper, "c1");
         let events = mapper.ui_request(
             &json!({"id":"q1","method":"select","title":"Dangerous command:\n\n  rm -rf x\n\nAllow?","options":["No","Yes"],"timeout":1000}),
             5,
@@ -1056,37 +1074,67 @@ mod tests {
             Some(("Yes".to_string(), "No".to_string()))
         );
 
+        // The tag names the call, which need not be the last one started.
+        mapper.map(
+            json!({"type":"tool_execution_start","toolCallId":"c2","toolName":"bash","args":{}}),
+            0,
+        );
+        tag(&mut mapper, "c1");
         let events = mapper.ui_request(&json!({"id":"q2","method":"confirm","title":"Run it?"}), 0);
         assert!(
-            matches!(&events[..], [HarnessEvent::Approval { approval }] if approval.id == "q2")
+            matches!(&events[..], [HarnessEvent::Approval { approval }] if approval.id == "q2" && approval.tool_call_id == "c1")
         );
         assert_eq!(shared.approvals.lock().unwrap()["q2"], None);
     }
 
     #[test]
-    fn other_dialogs_stay_questions() {
-        let (mut mapper, _) = preparing();
-        // Not an allow/reject choice.
+    fn untagged_dialogs_stay_questions() {
+        // A tool asking its own yes/no question as soon as it starts.
+        let (mut mapper, shared) = started();
+        let events = mapper.ui_request(&json!({"id":"q1","method":"confirm","title":"Tabs?"}), 0);
+        assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
         let events = mapper.ui_request(
-            &json!({"id":"q1","method":"select","title":"Pick","options":["Fast","Slow"]}),
+            &json!({"id":"q2","method":"select","title":"Sure?","options":["Yes","No"]}),
             0,
         );
         assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
-        let events = mapper.ui_request(&json!({"id":"q2","method":"input","title":"Name?"}), 0);
+        assert!(shared.approvals.lock().unwrap().is_empty());
+
+        // A tag covers only the dialog right after it.
+        tag(&mut mapper, "c1");
+        mapper.ui_request(&json!({"id":"q3","method":"confirm","title":"Run?"}), 0);
+        let events = mapper.ui_request(&json!({"id":"q4","method":"confirm","title":"Tabs?"}), 0);
         assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
 
-        // Once the call produces output it is running, not being prepared.
+        // A tag whose dialog never came (an aborted hook) is dropped by the
+        // next event.
+        tag(&mut mapper, "c1");
         mapper.map(
             json!({"type":"tool_execution_update","toolCallId":"c1","partialResult":{"content":[]}}),
             1,
         );
-        let events = mapper.ui_request(&json!({"id":"q3","method":"confirm","title":"Sure?"}), 0);
+        let events = mapper.ui_request(&json!({"id":"q5","method":"confirm","title":"Tabs?"}), 0);
         assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
 
-        // No call at all.
-        let events = EventMapper::default()
-            .ui_request(&json!({"id":"q4","method":"confirm","title":"Sure?"}), 0);
+        // A tagged dialog that is not an allow/reject choice.
+        tag(&mut mapper, "c1");
+        let events = mapper.ui_request(
+            &json!({"id":"q6","method":"select","title":"Pick","options":["Fast","Slow"]}),
+            0,
+        );
         assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
+        tag(&mut mapper, "c1");
+        let events = mapper.ui_request(&json!({"id":"q7","method":"input","title":"Name?"}), 0);
+        assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
+    }
+
+    #[test]
+    fn other_status_lines_pass_through() {
+        let events = EventMapper::default().ui_request(
+            &json!({"id":"s","method":"setStatus","statusKey":"footer","statusText":"hi"}),
+            0,
+        );
+        assert!(matches!(&events[..], [HarnessEvent::Raw { .. }]));
     }
 
     #[test]

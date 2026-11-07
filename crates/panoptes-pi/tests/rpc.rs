@@ -224,6 +224,37 @@ async fn approvals_are_tied_to_their_call_and_answered_in_kind() {
 }
 
 #[tokio::test]
+async fn a_tools_own_question_is_not_an_approval() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("tool-ask".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| {
+        matches!(
+            e,
+            HarnessEvent::Question { .. } | HarnessEvent::Approval { .. }
+        )
+    })
+    .await;
+    let Some(HarnessEvent::Question { question }) = events.last() else {
+        panic!("expected a question, got {:?}", events.last());
+    };
+    session
+        .answer(
+            question.id.clone(),
+            Answer::Value {
+                value: "Yes".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert_eq!(text_of(&events), "tabs=Yes");
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn questions_are_answered_through_the_session() {
     let (session, mut rx) = start().await;
     session

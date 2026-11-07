@@ -61,6 +61,29 @@ async fn wait_for_exit(exit: &mut watch::Receiver<ExitState>, limit: Duration) -
     }
 }
 
+/// Tags the dialogs of Pi's permission hooks, so they can be told apart from
+/// a tool's own questions. See the file for how.
+const APPROVALS_JS: &str = include_str!("approvals.js");
+
+/// Writes `approvals.js` where Pi can load it and returns its path. Each
+/// write goes through its own temporary file, so a Pi starting meanwhile
+/// never reads half a file.
+fn approvals_extension() -> anyhow::Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("panoptes");
+    std::fs::create_dir_all(&dir).with_context(|| format!("Could not create {}", dir.display()))?;
+    let path = dir.join("approvals.js");
+    if std::fs::read_to_string(&path).is_ok_and(|current| current == APPROVALS_JS) {
+        return Ok(path);
+    }
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let write = WRITES.fetch_add(1, Ordering::Relaxed);
+    let temporary = dir.join(format!("approvals.{}.{write}.tmp", std::process::id()));
+    std::fs::write(&temporary, APPROVALS_JS)
+        .and_then(|()| std::fs::rename(&temporary, &path))
+        .with_context(|| format!("Could not write {}", path.display()))?;
+    Ok(path)
+}
+
 impl RpcProcess {
     pub fn spawn(
         install: &PiInstall,
@@ -71,6 +94,7 @@ impl RpcProcess {
     ) -> anyhow::Result<Self> {
         let mut command = Command::new(&install.program);
         command.args(["--mode", "rpc"]);
+        command.arg("--extension").arg(approvals_extension()?);
         if let Some(file) = session_file {
             command.args(["--session", file]);
         }
