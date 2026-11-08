@@ -292,6 +292,16 @@ pub struct Session {
     pub open: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneNavigation {
+    pub lane_id: i64,
+    /// Non-archived sessions, pinned first and then most recent.
+    pub sessions: Vec<Session>,
+    /// Archived sessions stay attached to the lane for its archive view.
+    pub archived_sessions: Vec<Session>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Listing {
@@ -303,9 +313,22 @@ pub struct Listing {
     /// Every lane, including archived ones, with its write lock as it
     /// stands; navigation decides which to show.
     pub lanes: Vec<Lane>,
+    /// Authoritative session membership for each lane. The UI renders this
+    /// hierarchy rather than inferring it from folders.
+    pub navigation: Vec<LaneNavigation>,
     /// One line per harness whose sessions could not be listed, and one
     /// each if the pins, projects, lanes or sessions could not be read.
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AdoptionOutcome {
+    Adopted {
+        key: String,
+    },
+    /// No unique matching worktree; the user must pick an active lane.
+    ChooseLane,
 }
 
 #[derive(Debug, Serialize)]
@@ -777,10 +800,41 @@ impl Service {
         }
         drop(locations);
         drop(open);
+        let mut navigation: Vec<LaneNavigation> = lanes
+            .iter()
+            .map(|lane| {
+                let mut sessions: Vec<Session> = sessions
+                    .iter()
+                    .filter(|session| session.lane_id == Some(lane.id))
+                    .cloned()
+                    .collect();
+                sessions.sort_by(|a, b| {
+                    b.pinned
+                        .cmp(&a.pinned)
+                        .then_with(|| b.updated_at.cmp(&a.updated_at))
+                });
+                let archived_sessions = sessions
+                    .iter()
+                    .filter(|session| session.archived)
+                    .cloned()
+                    .collect();
+                sessions.retain(|session| !session.archived);
+                LaneNavigation {
+                    lane_id: lane.id,
+                    sessions,
+                    archived_sessions,
+                }
+            })
+            .collect();
+        navigation.sort_by_key(|entry| entry.lane_id);
+        // All sessions is one reverse-chronological list. The lane lists
+        // above apply their own pinned-first ordering.
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
         Listing {
             sessions,
             projects,
             lanes,
+            navigation,
             errors,
         }
     }
@@ -888,6 +942,80 @@ impl Service {
             .await
             .map_err(err)?;
         self.start_recorded(record.id, &lane, harness).await
+    }
+
+    /// Adopts a discovered harness conversation. With no explicit lane, a
+    /// unique active worktree containing its cwd is selected; otherwise the
+    /// UI asks for a lane. An open raw conversation must be closed first so
+    /// adoption cannot leave a second, lock-free process behind.
+    pub async fn adopt(
+        &self,
+        harness: &str,
+        key: &str,
+        locator: String,
+        cwd: String,
+        lane_id: Option<i64>,
+    ) -> ServiceResult<AdoptionOutcome> {
+        if panoptes_id(key).is_some() {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "This session already belongs to a lane",
+            ));
+        }
+        let harness_id = key
+            .strip_prefix(&format!("{harness}:"))
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| ServiceError::new(ErrorKind::Rejected, "Invalid harness session key"))?
+            .to_string();
+        let name = harness.to_string();
+        let id_for_lookup = harness_id.clone();
+        if let Some(id) = self
+            .with_store(move |store| store.session_for(&name, &id_for_lookup))
+            .await
+            .map_err(err)?
+        {
+            return Ok(AdoptionOutcome::Adopted {
+                key: panoptes_key(id),
+            });
+        }
+        if self.open.lock().await.contains_key(key) {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "Stop this session before adopting it into a lane",
+            ));
+        }
+
+        let lane_id = match lane_id {
+            Some(id) => id,
+            None => {
+                let cwd = PathBuf::from(cwd);
+                let candidates = self
+                    .with_store(|store| store.lanes())
+                    .await
+                    .map_err(err)?
+                    .into_iter()
+                    .filter(|lane| lane.state == LaneState::Active)
+                    .filter(|lane| {
+                        lane.worktrees
+                            .iter()
+                            .any(|worktree| same_or_inside(&cwd, Path::new(&worktree.path)))
+                    })
+                    .map(|lane| lane.id)
+                    .collect::<Vec<_>>();
+                match candidates.as_slice() {
+                    [id] => *id,
+                    _ => return Ok(AdoptionOutcome::ChooseLane),
+                }
+            }
+        };
+        let harness = harness.to_string();
+        let record = self
+            .with_store(move |store| store.adopt_session(lane_id, &harness, &harness_id, &locator))
+            .await
+            .map_err(err)?;
+        Ok(AdoptionOutcome::Adopted {
+            key: panoptes_key(record.id),
+        })
     }
 
     async fn start_recorded(
@@ -1474,6 +1602,12 @@ fn lane_cwd(lane: &Lane) -> String {
         .unwrap_or_default()
 }
 
+fn same_or_inside(path: &Path, root: &Path) -> bool {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    path.starts_with(root)
+}
+
 fn cached_location(cache: &mut HashMap<String, Location>, cwd: &str) -> Location {
     cache
         .entry(cwd.to_string())
@@ -1813,6 +1947,9 @@ mod tests {
         assert_eq!(listing.sessions.len(), 1, "{:?}", listing.sessions);
         assert_eq!(listing.sessions[0].key, key);
         assert_eq!(listing.sessions[0].title, "One");
+        assert_eq!(listing.navigation.len(), 1);
+        assert_eq!(listing.navigation[0].lane_id, lane.id);
+        assert_eq!(listing.navigation[0].sessions[0].key, key);
 
         f.service.set_pinned(key.clone(), true).await.unwrap();
         f.service.rename(&key, Some("Login".into())).await.unwrap();
@@ -1825,6 +1962,91 @@ mod tests {
         assert!(pins.is_empty(), "{pins:?}");
         let error = f.service.set_archived("fake:s1", true).await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::Rejected);
+
+        f.service.set_archived(&key, true).await.unwrap();
+        let listing = f.service.list().await;
+        assert!(listing.sessions[0].archived, "All sessions keeps it");
+        assert!(listing.navigation[0].sessions.is_empty());
+        assert_eq!(listing.navigation[0].archived_sessions[0].key, key);
+    }
+
+    #[tokio::test]
+    async fn adopting_uses_a_unique_worktree_or_asks_for_a_lane() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        f.service.set_pinned("fake:s1".into(), true).await.unwrap();
+
+        let outcome = f
+            .service
+            .adopt(
+                "fake",
+                "fake:s1",
+                "s1".into(),
+                lane.worktrees[0].path.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        let AdoptionOutcome::Adopted { key } = outcome else {
+            panic!("a unique worktree should adopt directly")
+        };
+        let listing = f.service.list().await;
+        assert_eq!(listing.sessions.len(), 1);
+        assert_eq!(listing.sessions[0].key, key);
+        assert!(listing.sessions[0].pinned);
+        assert!(
+            Store::open(f._dir.path())
+                .unwrap()
+                .pinned()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(listing.navigation[0].sessions[0].key, key);
+
+        let outcome = f
+            .service
+            .adopt(
+                "fake",
+                "fake:s2",
+                "s2".into(),
+                "/somewhere/else".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, AdoptionOutcome::ChooseLane));
+        let outcome = f
+            .service
+            .adopt(
+                "fake",
+                "fake:s2",
+                "s2".into(),
+                "/somewhere/else".into(),
+                Some(lane.id),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, AdoptionOutcome::Adopted { .. }));
+        let listing = f.service.list().await;
+        assert_eq!(listing.sessions.len(), 2);
+        assert_eq!(listing.navigation[0].sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_open_raw_session_must_stop_before_adoption() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        f.service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap();
+        let error = f
+            .service
+            .adopt("fake", "fake:s1", "s1".into(), "/tmp".into(), Some(lane.id))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Rejected);
+        assert!(error.message.contains("Stop this session"));
     }
 
     #[test]

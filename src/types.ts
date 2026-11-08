@@ -240,6 +240,14 @@ export interface Lane {
 
 export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
 export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
+export type AdoptionOutcome = { type: "adopted"; key: string } | { type: "chooseLane" };
+
+/** Backend-owned membership for the collapsible Lanes hierarchy. */
+export interface LaneNavigation {
+  laneId: number;
+  sessions: Session[];
+  archivedSessions: Session[];
+}
 
 export interface Listing {
   /** Panoptes sessions (archived ones too), then every conversation no lane has adopted. */
@@ -248,6 +256,8 @@ export interface Listing {
   projects: Project[];
   /** Every lane, including archived ones. */
   lanes: Lane[];
+  /** Session membership for each lane; never inferred by the UI from paths. */
+  navigation: LaneNavigation[];
   /** One line per harness or store collection that could not be read. */
   errors: string[];
 }

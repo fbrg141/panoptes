@@ -21,7 +21,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-use service::{ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult};
+use service::{
+    AdoptionOutcome, ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult,
+};
 use store::{Lane, Project, ProjectSettings, Store};
 
 #[derive(Clone, Serialize)]
@@ -74,6 +76,21 @@ async fn new_session(
     harness: String,
 ) -> ServiceResult<OpenedSession> {
     state.service.create(lane_id, &harness).await
+}
+
+#[tauri::command]
+async fn adopt_session(
+    state: State<'_, AppState>,
+    harness: String,
+    key: String,
+    locator: String,
+    cwd: String,
+    lane_id: Option<i64>,
+) -> ServiceResult<AdoptionOutcome> {
+    state
+        .service
+        .adopt(&harness, &key, locator, cwd, lane_id)
+        .await
 }
 
 #[tauri::command]
@@ -349,6 +366,7 @@ pub fn run() {
             list_sessions,
             open_session,
             new_session,
+            adopt_session,
             replace_session,
             archive_session,
             rename_session,

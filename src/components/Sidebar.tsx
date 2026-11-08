@@ -1,12 +1,11 @@
-import { AgentRow, Button, Checkbox, Dialog, Input, LoopMark } from "@panoptes/design-system";
+import { AgentRow, Button, Checkbox, Dialog, Input, LoopMark, Tabs } from "@panoptes/design-system";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
-import { groupSessions, relativeTime, type SessionGroup } from "../grouping";
+import { filterSessions, relativeTime } from "../grouping";
 import { useStore } from "../store";
-import type { ArchiveStrategy, Lane, Project, Session } from "../types";
+import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
 
-/** Sessions shown per project before "more". */
-const COLLAPSED_PROJECT_LIMIT = 5;
+type NavigationTab = "lanes" | "all";
 
 async function pickFolder(title: string): Promise<string | null> {
   const folder = await openDialog({ directory: true, title });
@@ -14,22 +13,50 @@ async function pickFolder(title: string): Promise<string | null> {
 }
 
 const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
+const includes = (text: string, query: string) => text.toLowerCase().includes(query);
+const laneMatches = (lane: Lane, query: string) =>
+  [lane.name, lane.task, lane.branch].some((text) => includes(text, query));
+const sessionMatches = (session: Session, query: string) =>
+  [session.title, session.cwd, ...session.tags].some((text) => includes(text, query));
+const navigationMatches = (navigation: LaneNavigation | undefined, query: string) =>
+  navigation !== undefined &&
+  [...navigation.sessions, ...navigation.archivedSessions].some((session) =>
+    sessionMatches(session, query),
+  );
 
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
   const listErrors = useStore((s) => s.listErrors);
   const projects = useStore((s) => s.projects);
   const lanes = useStore((s) => s.lanes);
+  const navigation = useStore((s) => s.navigation);
   const create = useStore((s) => s.create);
   const addProject = useStore((s) => s.addProject);
   const archiveLane = useStore((s) => s.archiveLane);
+  const adopt = useStore((s) => s.adopt);
+  const [tab, setTab] = useState<NavigationTab>("lanes");
   const [newLaneProject, setNewLaneProject] = useState<Project | null>(null);
   const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
+  const [adopting, setAdopting] = useState<Session | null>(null);
   const [query, setQuery] = useState("");
-  const groups = useMemo(
-    () => groupSessions(sessions, projects, query),
-    [sessions, projects, query],
+  const navigationByLane = useMemo(
+    () => new Map(navigation.map((entry) => [entry.laneId, entry])),
+    [navigation],
   );
+  const visibleSessions = useMemo(
+    () => filterSessions(sessions, projects, lanes, query),
+    [sessions, projects, lanes, query],
+  );
+  const needle = query.trim().toLowerCase();
+  const visibleProjects = projects.filter((project) => {
+    if (!needle || includes(project.name, needle) || includes(project.repo, needle)) return true;
+    return lanes
+      .filter((lane) => lane.projectId === project.id)
+      .some(
+        (lane) =>
+          laneMatches(lane, needle) || navigationMatches(navigationByLane.get(lane.id), needle),
+      );
+  });
 
   const register = async () => {
     const folder = await pickFolder("Add a git repository as a project");
@@ -41,8 +68,13 @@ export function Sidebar() {
     if (outcome?.type === "dirty") setDirtyLane(outcome.lane);
   };
 
+  const requestAdoption = async (session: Session) => {
+    const outcome = await adopt(session);
+    if (outcome?.type === "chooseLane") setAdopting(session);
+  };
+
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-line bg-surface">
+    <aside className="flex w-80 shrink-0 flex-col border-r border-line bg-surface">
       <header className="flex h-[var(--titlebar)] items-center gap-2 border-b border-line px-3">
         <LoopMark size={20} />
         <span className="text-wordmark flex-1">Panoptes</span>
@@ -55,13 +87,25 @@ export function Sidebar() {
           onClick={() => void register()}
         />
       </header>
+      <div className="px-3 pt-3">
+        <Tabs
+          tabs={[
+            { id: "lanes", label: "Lanes", icon: "git-branch" },
+            { id: "all", label: "All sessions", icon: "list", count: sessions.length },
+          ]}
+          value={tab}
+          onChange={(id) => setTab(id as NavigationTab)}
+        />
+      </div>
       <div className="p-3">
         <Input
           icon="search"
-          placeholder="Filter sessions"
+          placeholder={
+            tab === "lanes" ? "Filter projects, lanes and sessions" : "Filter all sessions"
+          }
           aria-label="Filter sessions"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(event) => setQuery(event.target.value)}
         />
       </div>
       {listErrors.map((error) => (
@@ -69,25 +113,50 @@ export function Sidebar() {
           {error}
         </p>
       ))}
-      <nav className="flex-1 overflow-y-auto pb-4">
-        {groups.map((group) => (
-          <Group
-            key={group.id}
-            group={group}
-            lanes={lanes.filter((lane) => lane.projectId === group.project?.id)}
-            onNewLane={
-              group.project ? () => setNewLaneProject(group.project as Project) : undefined
-            }
-            onWork={(lane) => void create(lane.id)}
-            onArchive={(lane) => void requestArchive(lane)}
-          />
-        ))}
-        {groups.length === 0 && (
-          <p className="px-3 text-ink-muted">
-            {query
-              ? "No sessions match."
-              : "No sessions yet. Add a project, then start a lane in it."}
-          </p>
+      <nav
+        className="flex-1 overflow-y-auto pb-4"
+        aria-label={tab === "lanes" ? "Lanes" : "All sessions"}
+      >
+        {tab === "lanes" ? (
+          <>
+            {visibleProjects.map((project) => (
+              <ProjectItem
+                key={project.id}
+                project={project}
+                lanes={lanes.filter((lane) => lane.projectId === project.id)}
+                navigationByLane={navigationByLane}
+                query={needle}
+                onNewLane={() => setNewLaneProject(project)}
+                onWork={(lane) => void create(lane.id)}
+                onArchive={(lane) => void requestArchive(lane)}
+              />
+            ))}
+            {visibleProjects.length === 0 && (
+              <p className="px-3 text-ink-muted">
+                {needle ? "No lanes match." : "No projects yet. Add one with the folder button."}
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            <ul>
+              {visibleSessions.map((session) => (
+                <SessionItem
+                  key={session.key}
+                  session={session}
+                  context={sessionContext(session, projects, lanes)}
+                  onAdopt={
+                    session.laneId === null ? () => void requestAdoption(session) : undefined
+                  }
+                />
+              ))}
+            </ul>
+            {visibleSessions.length === 0 && (
+              <p className="px-3 text-ink-muted">
+                {needle ? "No sessions match." : "No harness sessions found."}
+              </p>
+            )}
+          </>
         )}
       </nav>
       {newLaneProject && (
@@ -100,169 +169,247 @@ export function Sidebar() {
           onArchived={() => setDirtyLane(null)}
         />
       )}
+      {adopting && (
+        <AdoptSessionDialog
+          session={adopting}
+          lanes={lanes.filter((lane) => lane.state === "active")}
+          projects={projects}
+          onClose={() => setAdopting(null)}
+        />
+      )}
     </aside>
   );
 }
 
-function Group({
-  group,
+function ProjectItem({
+  project,
   lanes,
+  navigationByLane,
+  query,
   onNewLane,
   onWork,
   onArchive,
 }: {
-  group: SessionGroup;
+  project: Project;
   lanes: Lane[];
-  onNewLane?: () => void;
+  navigationByLane: Map<number, LaneNavigation>;
+  query: string;
+  onNewLane: () => void;
   onWork: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
 }) {
-  const addProject = useStore((s) => s.addProject);
   const removeProject = useStore((s) => s.removeProject);
   const restoreLane = useStore((s) => s.restoreLane);
-  const [expanded, setExpanded] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const active = lanes.filter((lane) => lane.state === "active");
   const archived = lanes.filter((lane) => lane.state === "archived");
-  const project = group.project;
-  const collapsible = group.cwd !== undefined;
-  const shown =
-    collapsible && !expanded ? group.sessions.slice(0, COLLAPSED_PROJECT_LIMIT) : group.sessions;
-  const hidden = group.sessions.length - shown.length;
+  const projectMatches =
+    query !== "" && (includes(project.name, query) || includes(project.repo, query));
+  const visible = (lane: Lane) =>
+    !query ||
+    projectMatches ||
+    laneMatches(lane, query) ||
+    navigationMatches(navigationByLane.get(lane.id), query);
 
   return (
-    <section className="group/section mt-2">
-      <header className="flex h-7 items-center justify-between px-3 text-ink-muted">
-        <h2 className="text-caption" title={group.cwd}>
-          {group.label}
-        </h2>
-        <span className="invisible flex gap-1 group-hover/section:visible">
-          {project && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="x"
-              aria-label={`Remove project ${group.label}`}
-              title="Remove this project from Panoptes. Nothing on disk changes"
-              onClick={() => void removeProject(project.id)}
-            />
-          )}
-          {!project && group.checkout && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="folder"
-              aria-label={`Add ${group.label} as a project`}
-              title={`Add ${group.checkout} as a project`}
-              onClick={() => void addProject(group.checkout as string)}
-            />
-          )}
-          {onNewLane && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="git-branch"
-              aria-label={`New lane in ${group.label}`}
-              title={`New lane in ${group.label}`}
-              onClick={onNewLane}
-            />
-          )}
-        </span>
-      </header>
-      {project && group.sessions.length === 0 && (
-        <p className="px-3 pb-1 text-ink-muted">No sessions yet.</p>
-      )}
-      <ul>
-        {active.map((lane) => (
-          <LaneItem
-            key={lane.id}
-            lane={lane}
-            onWork={() => onWork(lane)}
-            onAction={() => onArchive(lane)}
-          />
-        ))}
-        {showArchived &&
-          archived.map((lane) => (
-            <LaneItem key={lane.id} lane={lane} onAction={() => void restoreLane(lane.id)} />
-          ))}
-      </ul>
-      {archived.length > 0 && (
+    <section className="group/project mt-2">
+      <header className="relative flex min-h-8 items-center px-2 text-ink-muted">
         <Button
           variant="ghost"
           size="sm"
-          className="ml-2"
-          onClick={() => setShowArchived((shown) => !shown)}
+          icon={collapsed && !query ? "chevron-right" : "chevron-down"}
+          aria-label={`${collapsed ? "Expand" : "Collapse"} project ${project.name}`}
+          onClick={() => setCollapsed((value) => !value)}
+        />
+        <button
+          type="button"
+          className="min-w-0 flex-1 truncate py-1 text-left text-caption"
+          title={project.repo}
+          onClick={() => setCollapsed((value) => !value)}
         >
-          {showArchived ? "Hide archived lanes" : `${archived.length} archived`}
-        </Button>
-      )}
-      <ul>
-        {shown.map((session) => (
-          <SessionItem key={session.key} session={session} />
-        ))}
-      </ul>
-      {hidden > 0 && (
-        <Button variant="ghost" size="sm" className="ml-2" onClick={() => setExpanded(true)}>
-          {hidden} more
-        </Button>
+          {project.name}
+        </button>
+        <span className="invisible absolute right-2 flex gap-1 bg-surface group-hover/project:visible">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="git-branch"
+            aria-label={`New lane in ${project.name}`}
+            title={`New lane in ${project.name}`}
+            onClick={onNewLane}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="x"
+            aria-label={`Remove project ${project.name}`}
+            title="Remove this project from Panoptes. Nothing on disk changes"
+            onClick={() => void removeProject(project.id)}
+          />
+        </span>
+      </header>
+      {(!collapsed || query) && (
+        <div className="ml-3 border-l border-line pl-1">
+          <ul>
+            {active.filter(visible).map((lane) => (
+              <LaneItem
+                key={lane.id}
+                lane={lane}
+                navigation={navigationByLane.get(lane.id)}
+                query={query}
+                projectMatches={projectMatches}
+                onWork={() => onWork(lane)}
+                onAction={() => onArchive(lane)}
+              />
+            ))}
+            {showArchived &&
+              archived
+                .filter(visible)
+                .map((lane) => (
+                  <LaneItem
+                    key={lane.id}
+                    lane={lane}
+                    navigation={navigationByLane.get(lane.id)}
+                    query={query}
+                    projectMatches={projectMatches}
+                    onAction={() => void restoreLane(lane.id)}
+                  />
+                ))}
+          </ul>
+          {active.length === 0 && <p className="px-3 py-1 text-ink-muted">No active lanes.</p>}
+          {archived.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-2"
+              onClick={() => setShowArchived((shown) => !shown)}
+            >
+              {showArchived ? "Hide archived lanes" : `${archived.length} archived lanes`}
+            </Button>
+          )}
+        </div>
       )}
     </section>
   );
 }
 
-/** An active lane offers New session and Archive; an archived one offers Restore. */
+/** A lane and its backend-assigned sessions, both independently collapsible. */
 function LaneItem({
   lane,
+  navigation,
+  query,
+  projectMatches,
   onWork,
   onAction,
 }: {
   lane: Lane;
+  navigation?: LaneNavigation;
+  query: string;
+  projectMatches: boolean;
   onWork?: () => void;
   onAction: () => void;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
   const archived = lane.state === "archived";
   const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
+  const directMatch = projectMatches || (query !== "" && laneMatches(lane, query));
+  const sessions = navigation?.sessions ?? [];
+  const archivedSessions = navigation?.archivedSessions ?? [];
+  const visibleSessions = (items: Session[]) =>
+    !query || directMatch ? items : items.filter((session) => sessionMatches(session, query));
+
   return (
-    <li className={`group/lane relative px-3 py-2 ${archived ? "text-ink-muted" : ""}`}>
-      <div className="pr-14">
-        <p className="truncate" title={lane.task}>
-          {lane.task}
-        </p>
-        <p
-          className={`truncate text-caption ${main ? "text-waiting" : "text-ink-muted"}`}
-          title={lane.worktrees[0]?.path}
-        >
-          {main ? "Main checkout" : lane.branch}
-          {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
-        </p>
-      </div>
-      <span className="absolute top-2 right-2 hidden gap-1 group-hover/lane:flex">
-        {onWork && (
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="plus"
-            aria-label={`New session in lane ${lane.name}`}
-            title={`New session in ${lane.worktrees[0]?.path ?? lane.name}`}
-            onClick={onWork}
-          />
-        )}
+    <li className={archived ? "text-ink-muted" : ""}>
+      <div className="group/lane relative flex min-h-12 items-center px-1">
         <Button
           variant="ghost"
           size="sm"
-          icon={archived ? "rotate-ccw" : "x"}
-          aria-label={`${archived ? "Restore" : "Archive"} lane ${lane.name}`}
-          title={
-            archived
-              ? checkpoint
-                ? "Restore lane and its checkpoint"
-                : "Restore lane"
-              : "Archive lane"
-          }
-          onClick={onAction}
+          icon={collapsed && !query ? "chevron-right" : "chevron-down"}
+          aria-label={`${collapsed ? "Expand" : "Collapse"} lane ${lane.name}`}
+          onClick={() => setCollapsed((value) => !value)}
         />
-      </span>
+        <button
+          type="button"
+          className="min-w-0 flex-1 py-1 pr-12 text-left"
+          onClick={() => setCollapsed((value) => !value)}
+        >
+          <p className="truncate" title={lane.task}>
+            {lane.task}
+          </p>
+          <p
+            className={`truncate text-caption ${main ? "text-waiting" : "text-ink-muted"}`}
+            title={lane.worktrees[0]?.path}
+          >
+            {main ? "Main checkout" : lane.branch}
+            {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
+          </p>
+        </button>
+        <span className="absolute right-1 hidden gap-1 bg-surface group-hover/lane:flex">
+          {onWork && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="plus"
+              aria-label={`New session in lane ${lane.name}`}
+              title={`New session in ${lane.worktrees[0]?.path ?? lane.name}`}
+              onClick={onWork}
+            />
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={archived ? "rotate-ccw" : "x"}
+            aria-label={`${archived ? "Restore" : "Archive"} lane ${lane.name}`}
+            title={
+              archived
+                ? checkpoint
+                  ? "Restore lane and its checkpoint"
+                  : "Restore lane"
+                : "Archive lane"
+            }
+            onClick={onAction}
+          />
+        </span>
+      </div>
+      {(!collapsed || query) && (
+        <div className="ml-4">
+          <ul>
+            {visibleSessions(archived ? [...sessions, ...archivedSessions] : sessions).map(
+              (session) => (
+                <SessionItem
+                  key={session.key}
+                  session={session}
+                  laneActions
+                  laneActive={!archived}
+                  nested
+                />
+              ),
+            )}
+          </ul>
+          {!archived && archivedSessions.length > 0 && (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setShowArchived((shown) => !shown)}>
+                {showArchived
+                  ? "Hide archived sessions"
+                  : `${archivedSessions.length} archived sessions`}
+              </Button>
+              {showArchived && (
+                <ul>
+                  {visibleSessions(archivedSessions).map((session) => (
+                    <SessionItem key={session.key} session={session} laneActions nested />
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+          {sessions.length === 0 && archivedSessions.length === 0 && (
+            <p className="px-3 py-1 text-caption text-ink-muted">No sessions yet.</p>
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -395,7 +542,70 @@ function ArchiveLaneDialog({
   );
 }
 
-function SessionItem({ session }: { session: Session }) {
+function AdoptSessionDialog({
+  session,
+  lanes,
+  projects,
+  onClose,
+}: {
+  session: Session;
+  lanes: Lane[];
+  projects: Project[];
+  onClose: () => void;
+}) {
+  const adopt = useStore((s) => s.adopt);
+  const [busy, setBusy] = useState(false);
+  const choose = async (laneId: number) => {
+    if (busy) return;
+    setBusy(true);
+    const outcome = await adopt(session, laneId);
+    setBusy(false);
+    if (outcome?.type === "adopted") onClose();
+  };
+
+  return (
+    <Dialog title={`Adopt “${session.title}” into a lane`} onClose={busy ? undefined : onClose}>
+      <p className="pb-3 text-ink-muted">
+        The conversation stays in the harness's own files. Only its Panoptes lane membership is
+        added.
+      </p>
+      {lanes.length === 0 ? (
+        <p>Create an active lane before adopting this session.</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {lanes.map((lane) => (
+            <li key={lane.id}>
+              <Button
+                variant="ghost"
+                className="w-full justify-start"
+                disabled={busy}
+                onClick={() => void choose(lane.id)}
+              >
+                {projects.find((project) => project.id === lane.projectId)?.name} / {lane.task}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Dialog>
+  );
+}
+
+function SessionItem({
+  session,
+  context,
+  onAdopt,
+  laneActions = false,
+  laneActive = true,
+  nested = false,
+}: {
+  session: Session;
+  context?: string;
+  onAdopt?: () => void;
+  laneActions?: boolean;
+  laneActive?: boolean;
+  nested?: boolean;
+}) {
   const active = useStore((s) => s.activeKey === session.key);
   const status = useStore((s) => s.statuses[session.key] ?? "idle");
   const open = useStore((s) => s.open);
@@ -403,19 +613,36 @@ function SessionItem({ session }: { session: Session }) {
   const togglePin = useStore((s) => s.togglePin);
   const replace = useStore((s) => s.replace);
   const setArchived = useStore((s) => s.setArchived);
-  const inLane = session.laneId !== null;
+  const inLane = laneActions && session.laneId !== null;
+  const metadata = [
+    session.archived ? "Archived" : null,
+    session.pinned ? "Pinned" : null,
+    context ?? basename(session.cwd),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <li className="group/item relative">
+    <li className={`group/item relative ${nested ? "ml-2" : ""}`}>
       <AgentRow
         name={session.title}
-        task={basename(session.cwd)}
+        task={metadata}
         status={status}
         time={relativeTime(session.updatedAt)}
         selected={active}
         onClick={() => void open(session)}
       />
       <span className="absolute top-1 right-2 hidden gap-1 rounded-sm bg-surface group-hover/item:flex">
+        {onAdopt && (
+          <Button
+            variant="ghost"
+            size="sm"
+            title="Add this conversation to a lane"
+            onClick={onAdopt}
+          >
+            Adopt
+          </Button>
+        )}
         <Button variant="ghost" size="sm" onClick={() => void togglePin(session)}>
           {session.pinned ? "Unpin" : "Pin"}
         </Button>
@@ -429,7 +656,7 @@ function SessionItem({ session }: { session: Session }) {
             Stop
           </Button>
         )}
-        {inLane && (
+        {inLane && laneActive && !session.archived && (
           <Button
             variant="ghost"
             size="sm"
@@ -443,13 +670,27 @@ function SessionItem({ session }: { session: Session }) {
           <Button
             variant="ghost"
             size="sm"
-            title="Hide this session. Its lane stays as it is"
-            onClick={() => void setArchived(session.key, true)}
+            title={
+              session.archived
+                ? "Bring this session back"
+                : "Hide this session. Its lane stays as it is"
+            }
+            onClick={() => void setArchived(session.key, !session.archived)}
           >
-            Archive
+            {session.archived ? "Unarchive" : "Archive"}
           </Button>
         )}
       </span>
     </li>
   );
+}
+
+function sessionContext(session: Session, projects: Project[], lanes: Lane[]): string {
+  const lane = lanes.find((item) => item.id === session.laneId);
+  if (lane) {
+    const project = projects.find((item) => item.id === lane.projectId);
+    return `${project?.name ?? "Project"} / ${lane.task}`;
+  }
+  const project = projects.find((item) => item.id === session.projectId);
+  return project?.name ?? basename(session.projectRoot);
 }

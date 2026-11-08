@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { api } from "./api";
 import { createAppStore } from "./store";
 import type {
+  AdoptionOutcome,
   ArchiveLaneOutcome,
   Lane,
   Listing,
@@ -92,11 +93,15 @@ function fakeBackend() {
         sessions: [session],
         projects: [],
         lanes: [],
+        navigation: [],
         errors: [],
       }),
     ),
     openSession: vi.fn(async () => opened),
     newSession: vi.fn(async (): Promise<OpenedSession> => opened),
+    adoptSession: vi.fn(
+      async (): Promise<AdoptionOutcome> => ({ type: "adopted", key: "panoptes:7" }),
+    ),
     replaceSession: vi.fn(async (): Promise<OpenedSession> => opened),
     archiveSession: vi.fn(async () => {}),
     history: vi.fn(async () => []),
@@ -273,6 +278,7 @@ describe("store", () => {
       sessions: [{ ...session, projectId: 1 }],
       projects: [project],
       lanes: [],
+      navigation: [],
       errors: [],
     });
     await store.getState().addProject("/code/src");
@@ -299,6 +305,7 @@ describe("store", () => {
       sessions: [session],
       projects: [project],
       lanes: [lane],
+      navigation: [],
       errors: [],
     });
     const created = await store.getState().createLane(1, "Fix login", false);
@@ -327,6 +334,7 @@ describe("store", () => {
       sessions: [session],
       projects: [project],
       lanes: [{ ...lane, state: "archived" }],
+      navigation: [{ laneId: 1, sessions: [], archivedSessions: [] }],
       errors: [],
     });
     const archived = await store.getState().archiveLane(1, "checkpoint");
@@ -340,12 +348,33 @@ describe("store", () => {
       sessions: [laneSession, session],
       projects: [project],
       lanes: [lane],
+      navigation: [{ laneId: 1, sessions: [laneSession], archivedSessions: [] }],
       errors: [],
     });
     await store.getState().create(lane.id);
     expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
     expect(store.getState().activeKey).toBe("panoptes:7");
     expect(store.getState().sessions[0]).toEqual(laneSession);
+    expect(store.getState().navigation[0].sessions).toEqual([laneSession]);
+  });
+
+  it("adopts a raw session after the backend asks for a lane", async () => {
+    fake.backend.adoptSession.mockResolvedValueOnce({ type: "chooseLane" });
+    const choice = await store.getState().adopt(session);
+    expect(choice).toEqual({ type: "chooseLane" });
+    expect(fake.backend.adoptSession).toHaveBeenCalledWith(session, null);
+
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [laneSession],
+      projects: [project],
+      lanes: [lane],
+      navigation: [{ laneId: 1, sessions: [laneSession], archivedSessions: [] }],
+      errors: [],
+    });
+    const adopted = await store.getState().adopt(session, 1);
+    expect(adopted).toEqual({ type: "adopted", key: "panoptes:7" });
+    expect(fake.backend.adoptSession).toHaveBeenLastCalledWith(session, 1);
+    expect(store.getState().navigation[0].sessions).toEqual([laneSession]);
   });
 
   it("follows an adopted conversation to its Panoptes key", async () => {

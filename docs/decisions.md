@@ -161,8 +161,9 @@ diff.
 **Sessions stay the harness's.** A Panoptes session is its own record that
 references a harness session; it is never the Pi session itself, and Pi
 sessions stay an implementation detail of the adapter. Navigation splits in
-two: projects and lanes are the primary tree, and every harness session found
-on disk goes in a separate History view you can adopt from.
+two: projects, lanes and their sessions form a collapsible **Lanes** tree, and
+every harness session found on disk appears in a flat **All sessions** list
+that you can adopt from.
 
 All of this follows the standing rule that decisions live in Rust and the UI
 only renders: the lock, the queue, lane state and what appears where are

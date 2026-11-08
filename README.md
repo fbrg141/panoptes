@@ -10,8 +10,10 @@ by a design system.
 
 ## What works
 
-- Lists your existing Pi sessions, grouped as **Running**, **Pinned**, then by
-  project (git repository root, or folder).
+- Two navigation tabs: **Lanes** is a collapsible project → lane → session
+  hierarchy; **All sessions** is one flat, reverse-chronological list of every
+  Pi conversation, including ones started from the terminal. External sessions
+  can be adopted into lanes without copying or rewriting Pi's files.
 - Opens or resumes any session. New sessions start in a lane, as Panoptes
   sessions with their own id; their conversations are still Pi's own files,
   so the CLI (`pi --continue`, `/resume`) sees the same history.

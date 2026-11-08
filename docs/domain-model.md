@@ -145,14 +145,19 @@ A flat label on sessions, for organising work inside a project ("auth",
 
 ## Navigation
 
-The sidebar splits in two (#57):
+The sidebar has two tabs (#57):
 
-- **Projects and lanes** are the primary tree: projects, their active lanes,
-  and each lane's sessions, with subsessions under their parent.
-- **History** lists every harness session found on disk, including ones
-  started from the terminal. You can adopt one into a lane, which creates a
-  Panoptes session record that points at it. Adopting never copies or
-  rewrites the harness's files.
+- **Lanes** is the primary, collapsible hierarchy: projects, their active
+  lanes, and each lane's sessions, with subsessions under their parent.
+  Sessions stay in their lane while running or pinned; there are no separate
+  Open or Pinned sections. Archived lanes and sessions have expandable
+  archive views.
+- **All sessions** is one flat, reverse-chronological list of every harness
+  session found on disk, including ones started from the terminal and ones
+  already shown under Lanes. You can adopt an unassociated conversation into
+  a lane, which creates a Panoptes session record that points at it. Adoption
+  never copies or rewrites the harness's files. Lane membership comes from
+  these records, never from a cwd guess.
 
 ## Lifecycles
 
@@ -262,7 +267,7 @@ Build the spine fast and solid, not polished; the reason is in
 | done | #19 | Projects and their settings |
 | done | #20 | Lanes: create a worktree, archive without losing work, main-checkout opt-in |
 | done | #22 | Sessions inside a lane: Panoptes identity, write lock and queue, replace |
-| 3 | #57 | Split sidebar: projects and lanes, and a History view to adopt from |
+| done | #57 | Collapsible Lanes hierarchy, flat All sessions list and adoption |
 | 4 | #58 | Subsessions that hand their result back |
 | 5 | #21 | Nested groups and multi-repo lanes, last |
 
@@ -275,6 +280,3 @@ The contract fixes (#23 to #27) can go in any order alongside.
 2. **Multi-repo context files.** An agent running in a multi-repo lane folder
    does not pick up each repo's `AGENTS.md` on its own. Panoptes may need to
    pass them in.
-3. **Sessions outside any project:** a History entry from a folder that isn't
-   a registered project. Offer to register it, or adopt it only into a lane
-   you pick.
