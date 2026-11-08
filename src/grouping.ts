@@ -1,82 +1,30 @@
-import type { Project, Session } from "./types";
-
-export interface SessionGroup {
-  id: string;
-  label: string;
-  /** The project's main checkout, or the folder the group shows. */
-  cwd?: string;
-  /** The registered project this group shows. */
-  project?: Project;
-  /** For a folder that is not registered: the git repository it can be registered as. */
-  checkout?: string;
-  sessions: Session[];
-}
-
-const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
-
-const byRecent = (a: Session, b: Session) => b.updatedAt - a.updatedAt;
+import type { Lane, Project, Session } from "./types";
 
 /**
- * Sidebar groups: open sessions (with a live process), then pinned sessions, then
- * every registered project and every other folder (git root, else folder) by most
- * recent activity, then registered projects with no sessions yet. A session appears
- * once, in the first group that claims it; archived sessions in none. A filter hides
- * empty projects.
+ * Search the backend's flat All sessions list without changing its ordering or
+ * membership. Lane and project names are searchable metadata, not grouping.
  */
-export function groupSessions(
+export function filterSessions(
   sessions: Session[],
-  projects: Project[] = [],
+  projects: Project[],
+  lanes: Lane[],
   query = "",
-): SessionGroup[] {
+): Session[] {
   const needle = query.trim().toLowerCase();
-  const projectById = new Map(projects.map((p) => [p.id, p]));
-  const matches = (s: Session) => {
-    if (!needle) return true;
-    const project = s.projectId === null ? undefined : projectById.get(s.projectId);
-    return [s.title, s.projectRoot, project?.name ?? ""].some((text) =>
-      text.toLowerCase().includes(needle),
-    );
-  };
-  const visible = sessions.filter((s) => !s.archived && matches(s)).sort(byRecent);
-
-  const open = visible.filter((s) => s.open);
-  const pinned = visible.filter((s) => !s.open && s.pinned);
-  const rest = visible.filter((s) => !s.open && !s.pinned);
-
-  // Insertion order is most recent first, since `rest` is sorted.
-  const places = new Map<string, SessionGroup>();
-  for (const session of rest) {
+  if (!needle) return sessions;
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  return sessions.filter((session) => {
     const project = session.projectId === null ? undefined : projectById.get(session.projectId);
-    const id = project ? `project:${project.id}` : `folder:${session.projectRoot}`;
-    let group = places.get(id);
-    if (!group) {
-      group = project
-        ? { id, label: project.name, cwd: project.repo, project, sessions: [] }
-        : {
-            id,
-            label: basename(session.projectRoot),
-            cwd: session.projectRoot,
-            checkout: session.checkout ?? undefined,
-            sessions: [],
-          };
-      places.set(id, group);
-    }
-    group.sessions.push(session);
-  }
-  if (!needle) {
-    for (const project of projects) {
-      const id = `project:${project.id}`;
-      if (!places.has(id)) {
-        places.set(id, { id, label: project.name, cwd: project.repo, project, sessions: [] });
-      }
-    }
-  }
-
-  const groups: SessionGroup[] = [];
-  if (open.length) groups.push({ id: "open", label: "Open", sessions: open });
-  if (pinned.length) groups.push({ id: "pinned", label: "Pinned", sessions: pinned });
-  groups.push(...places.values());
-  return groups;
+    const lane = session.laneId === null ? undefined : laneById.get(session.laneId);
+    return [
+      session.title,
+      session.cwd,
+      project?.name ?? "",
+      lane?.task ?? "",
+      ...session.tags,
+    ].some((text) => text.toLowerCase().includes(needle));
+  });
 }
 
 /** A past time in the design system's voice: "just now", "12m ago", "3d ago". */

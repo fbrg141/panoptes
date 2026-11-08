@@ -627,6 +627,41 @@ impl Store {
         self.session(self.conn.last_insert_rowid())
     }
 
+    /// Adopts an existing harness conversation into a lane without starting
+    /// a process or touching the harness's files. A legacy pin follows the
+    /// conversation into its new Panoptes record.
+    pub fn adopt_session(
+        &self,
+        lane_id: i64,
+        harness: &str,
+        harness_id: &str,
+        locator: &str,
+    ) -> anyhow::Result<SessionRecord> {
+        if self.lane(lane_id)?.state != LaneState::Active {
+            bail!("That lane is archived; restore it before adopting a session");
+        }
+        if self.session_for(harness, harness_id)?.is_some() {
+            bail!("That conversation already belongs to a lane");
+        }
+        let legacy_key = format!("{harness}:{harness_id}");
+        let tx = self.conn.unchecked_transaction()?;
+        let pinned = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM pins WHERE session_key = ?1)",
+            [&legacy_key],
+            |row| row.get::<_, bool>(0),
+        )?;
+        tx.execute(
+            "INSERT INTO sessions
+             (lane_id, harness, harness_id, locator, pinned, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![lane_id, harness, harness_id, locator, pinned, now_ms()],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.execute("DELETE FROM pins WHERE session_key = ?1", [&legacy_key])?;
+        tx.commit()?;
+        self.session(id)
+    }
+
     /// Records which harness conversation a session wraps, once the harness
     /// has reported it.
     pub fn set_harness_ref(&self, id: i64, harness_id: &str, locator: &str) -> anyhow::Result<()> {
@@ -1455,6 +1490,30 @@ mod tests {
                 .set_harness_ref(other.id, "abc", "/s/abc.jsonl")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn adoption_persists_the_harness_ref_and_moves_its_legacy_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let lane = lane_in(&store);
+        store.set_pinned("pi:abc", true).unwrap();
+        let adopted = store
+            .adopt_session(lane.id, "pi", "abc", "/s/abc.jsonl")
+            .unwrap();
+        assert_eq!(adopted.lane_id, lane.id);
+        assert_eq!(adopted.harness_id.as_deref(), Some("abc"));
+        assert!(adopted.pinned);
+        assert!(store.pinned().unwrap().is_empty());
+        assert!(
+            store
+                .adopt_session(lane.id, "pi", "abc", "/s/abc.jsonl")
+                .is_err()
+        );
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.session_for("pi", "abc").unwrap(), Some(adopted.id));
+        assert!(store.session(adopted.id).unwrap().pinned);
     }
 
     #[test]

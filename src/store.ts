@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api } from "./api";
 import { applyEvent, type Conversation, emptyConversation, removeQuestion } from "./conversation";
 import type {
+  AdoptionOutcome,
   Answer,
   AppInfo,
   ArchiveLaneOutcome,
@@ -9,6 +10,7 @@ import type {
   ErrorKind,
   ImageAttachment,
   Lane,
+  LaneNavigation,
   LockState,
   ModelInfo,
   OpenedSession,
@@ -33,6 +35,8 @@ export interface State {
   projects: Project[];
   /** Durable lanes, including archived ones. */
   lanes: Lane[];
+  /** Backend-owned session membership for each lane. */
+  navigation: LaneNavigation[];
   conversations: Record<string, Conversation>;
   /** Each open session's status, as the backend reports it. */
   statuses: Record<string, SessionStatus>;
@@ -54,6 +58,8 @@ export interface State {
   open: (session: Session) => Promise<void>;
   /** Starts a new session in a lane's worktree. */
   create: (laneId: number) => Promise<void>;
+  /** Adopts a discovered conversation into a matching or explicitly chosen lane. */
+  adopt: (session: Session, laneId?: number | null) => Promise<AdoptionOutcome | null>;
   /** Archives a lane session and starts a fresh one on the same worktree, branch and task. */
   replace: (key: string) => Promise<void>;
   /** Hides a lane session (closing it first) or brings it back; its lane is untouched. */
@@ -177,6 +183,7 @@ export function createAppStore(backend: typeof api) {
       sessions: [],
       projects: [],
       lanes: [],
+      navigation: [],
       conversations: {},
       statuses: {},
       locks: {},
@@ -204,8 +211,8 @@ export function createAppStore(backend: typeof api) {
 
       refresh: async () => {
         try {
-          const { sessions, projects, lanes, errors } = await backend.listSessions();
-          set({ sessions, projects, lanes, listErrors: errors });
+          const { sessions, projects, lanes, navigation, errors } = await backend.listSessions();
+          set({ sessions, projects, lanes, navigation, listErrors: errors });
         } catch (e) {
           fail(e);
         }
@@ -228,6 +235,17 @@ export function createAppStore(backend: typeof api) {
           await get().refresh();
         } catch (e) {
           fail(e);
+        }
+      },
+
+      adopt: async (session, laneId = null) => {
+        try {
+          const outcome = await backend.adoptSession(session, laneId);
+          if (outcome.type === "adopted") await get().refresh();
+          return outcome;
+        } catch (e) {
+          fail(e);
+          return null;
         }
       },
 

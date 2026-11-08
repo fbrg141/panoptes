@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AdoptionOutcome,
   Answer,
   AppInfo,
   ArchiveLaneOutcome,
@@ -34,6 +35,17 @@ export const api = {
     }),
   newSession: (laneId: number, harness: string) =>
     invoke<OpenedSession>("new_session", { laneId, harness }),
+  adoptSession: (
+    s: Pick<Session, "harness" | "key" | "harnessRef" | "cwd">,
+    laneId: number | null,
+  ) =>
+    invoke<AdoptionOutcome>("adopt_session", {
+      harness: s.harness,
+      key: s.key,
+      locator: s.harnessRef?.locator ?? "",
+      cwd: s.cwd,
+      laneId,
+    }),
   replaceSession: (key: string) => invoke<OpenedSession>("replace_session", { key }),
   archiveSession: (key: string, archived: boolean) =>
     invoke<void>("archive_session", { key, archived }),

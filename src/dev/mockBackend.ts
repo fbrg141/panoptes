@@ -548,17 +548,31 @@ export function installMockBackend() {
             harnesses: [{ id: "pi", program: "mock", version: "1.4.0", supported: true }],
             errors: [],
           };
-        case "list_sessions":
-          return {
-            sessions: sessions.map((s) => {
+        case "list_sessions": {
+          const all = sessions
+            .map((s) => {
               const project = projects.find((p) => p.repo === s.checkout);
               const projectId = s.laneId === null ? (project?.id ?? null) : s.projectId;
               return { ...s, projectId, open: open.has(s.key) };
-            }),
+            })
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+          return {
+            sessions: all,
             projects: [...projects].sort((x, y) => x.name.localeCompare(y.name)),
             lanes,
+            navigation: lanes.map((lane) => {
+              const owned = all
+                .filter((s) => s.laneId === lane.id)
+                .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
+              return {
+                laneId: lane.id,
+                sessions: owned.filter((s) => !s.archived),
+                archivedSessions: owned.filter((s) => s.archived),
+              };
+            }),
             errors: [],
           };
+        }
         case "add_project": {
           if (projects.some((p) => p.repo === a.folder)) {
             throw { kind: "other", message: `${a.folder} is already registered` };
@@ -643,6 +657,33 @@ export function installMockBackend() {
           const recorded = recordSession((args as { laneId: number }).laneId);
           open.add(recorded.key);
           return { key: recorded.key, history: [] };
+        }
+        case "adopt_session": {
+          const request = args as unknown as { key: string; laneId: number | null };
+          const existing = sessions.find((s) => s.key === request.key);
+          if (!existing || existing.laneId !== null) {
+            return { type: "adopted", key: existing?.key ?? request.key };
+          }
+          if (open.has(existing.key)) {
+            throw { kind: "rejected", message: "Stop this session before adopting it into a lane" };
+          }
+          let laneId = request.laneId;
+          if (laneId === null) {
+            const matches = lanes.filter(
+              (lane) =>
+                lane.state === "active" &&
+                lane.worktrees.some((tree) => existing.cwd.startsWith(tree.path)),
+            );
+            if (matches.length !== 1) return { type: "chooseLane" };
+            laneId = matches[0].id;
+          }
+          const id = nextSessionId++;
+          sessions = sessions.map((s) =>
+            s.key === request.key
+              ? { ...s, key: `panoptes:${id}`, id, laneId, archived: false }
+              : s,
+          );
+          return { type: "adopted", key: `panoptes:${id}` };
         }
         case "replace_session": {
           const old = sessions.find((s) => s.key === a.key);

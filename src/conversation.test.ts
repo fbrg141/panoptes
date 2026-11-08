@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyEvent, emptyConversation, removeQuestion } from "./conversation";
-import { groupSessions, relativeTime } from "./grouping";
+import { filterSessions, relativeTime } from "./grouping";
 import type { Approval, HarnessEvent, Session, ToolCall } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
@@ -164,58 +164,55 @@ const session = (over: Partial<Session>): Session => ({
   ...over,
 });
 
-describe("groupSessions", () => {
-  it("puts each session in its first matching group", () => {
-    const groups = groupSessions([
-      session({ key: "a", open: true, pinned: true, updatedAt: 1 }),
-      session({ key: "b", pinned: true, updatedAt: 2 }),
-      session({ key: "c", projectRoot: "/code/panoptes", updatedAt: 3 }),
-      session({ key: "d", projectRoot: "/code/panoptes", updatedAt: 4 }),
-    ]);
-    expect(groups.map((g) => [g.label, g.sessions.map((s) => s.key)])).toEqual([
-      ["Open", ["a"]],
-      ["Pinned", ["b"]],
-      ["panoptes", ["d", "c"]],
-    ]);
-  });
-
-  it("leaves archived sessions out", () => {
-    const groups = groupSessions([session({ key: "a" }), session({ key: "b", archived: true })]);
-    expect(groups.flatMap((g) => g.sessions.map((s) => s.key))).toEqual(["a"]);
-  });
-
-  it("groups sessions under their registered project, then lists empty projects", () => {
-    const project = (id: number, name: string, repo: string) => ({
-      id,
-      repo,
-      name,
+describe("filterSessions", () => {
+  it("filters the flat list by session, project, lane and tags without reordering it", () => {
+    const project = {
+      id: 1,
+      repo: "/code/web",
+      name: "Web app",
       baseBranch: "main",
       copyFiles: [".env"],
       setup: null,
-    });
-    const web = project(1, "Web app", "/code/web");
-    const api = project(2, "api", "/code/api");
+    };
+    const lane = {
+      id: 1,
+      projectId: 1,
+      name: "fix-login",
+      task: "Fix login",
+      branch: "panoptes/fix-login",
+      state: "active" as const,
+      worktrees: [],
+      writeLock: { holder: null, queue: [] },
+    };
     const sessions = [
-      session({ key: "a", projectRoot: "/code/web", projectId: 1, updatedAt: 1 }),
-      session({ key: "b", projectRoot: "/ws/fix/web", projectId: 1, updatedAt: 3 }),
-      session({ key: "c", projectRoot: "/code/other", checkout: "/code/other", updatedAt: 2 }),
-      session({ key: "d", projectRoot: "/scratch", updatedAt: 0 }),
+      session({ key: "new", title: "First", updatedAt: 3 }),
+      session({
+        key: "owned",
+        laneId: 1,
+        projectId: 1,
+        title: "Investigate",
+        tags: ["auth"],
+        archived: true,
+        updatedAt: 2,
+      }),
+      session({ key: "old", title: "Last", updatedAt: 1 }),
     ];
-    const groups = groupSessions(sessions, [api, web]);
-    expect(groups.map((g) => [g.label, g.sessions.map((s) => s.key)])).toEqual([
-      ["Web app", ["b", "a"]],
-      ["other", ["c"]],
-      ["scratch", ["d"]],
-      ["api", []],
-    ]);
-    expect(groups[0]).toMatchObject({ cwd: "/code/web", project: web });
-    expect(groups[1].project).toBeUndefined();
-    expect(groups[1].checkout).toBe("/code/other");
-    expect(groups[2].checkout).toBeUndefined();
 
-    // A filter matches the project's name and hides empty projects.
-    const filtered = groupSessions(sessions, [api, web], "web app");
-    expect(filtered.map((g) => g.label)).toEqual(["Web app"]);
+    expect(filterSessions(sessions, [project], [lane], "web app").map((s) => s.key)).toEqual([
+      "owned",
+    ]);
+    expect(filterSessions(sessions, [project], [lane], "fix login").map((s) => s.key)).toEqual([
+      "owned",
+    ]);
+    expect(filterSessions(sessions, [project], [lane], "auth").map((s) => s.key)).toEqual([
+      "owned",
+    ]);
+    // All sessions includes archived sessions and preserves backend order.
+    expect(filterSessions(sessions, [project], [lane]).map((s) => s.key)).toEqual([
+      "new",
+      "owned",
+      "old",
+    ]);
   });
 });
 
