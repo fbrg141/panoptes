@@ -54,6 +54,13 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
 }
 
 #[tauri::command]
+fn set_zoom(app: AppHandle, scale: f64) {
+    for window in app.webview_windows().values() {
+        let _ = window.set_zoom(scale);
+    }
+}
+
+#[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> ServiceResult<Listing> {
     Ok(state.service.list().await)
 }
@@ -363,6 +370,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            set_zoom,
             list_sessions,
             open_session,
             new_session,

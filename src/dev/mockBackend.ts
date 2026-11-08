@@ -548,6 +548,8 @@ export function installMockBackend() {
             harnesses: [{ id: "pi", program: "mock", version: "1.4.0", supported: true }],
             errors: [],
           };
+        case "set_zoom":
+          return null;
         case "list_sessions": {
           const all = sessions
             .map((s) => {

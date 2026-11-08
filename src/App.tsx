@@ -1,8 +1,10 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect } from "react";
+import { api } from "./api";
 import { ChatPane } from "./components/ChatPane";
 import { Sidebar } from "./components/Sidebar";
 import { useStore } from "./store";
+import { nextZoom, zoomCommand } from "./zoom";
 
 export default function App() {
   const init = useStore((s) => s.init);
@@ -13,6 +15,20 @@ export default function App() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  // ⌘+/- zooms the whole window, ⌘0 resets it.
+  useEffect(() => {
+    let zoom = 1;
+    const onKey = (e: KeyboardEvent) => {
+      const command = zoomCommand(e);
+      if (!command) return;
+      e.preventDefault();
+      zoom = nextZoom(zoom, command);
+      void api.setZoom(zoom);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const pi = info?.harnesses.find((h) => h.id === "pi");
   const warning =

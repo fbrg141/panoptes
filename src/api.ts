@@ -25,6 +25,7 @@ import type {
 /** Typed wrappers for the commands in src-tauri/src/lib.rs. */
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
+  setZoom: (scale: number) => invoke<void>("set_zoom", { scale }),
   listSessions: () => invoke<Listing>("list_sessions"),
   openSession: (s: Pick<Session, "harness" | "key" | "harnessRef" | "cwd">) =>
     invoke<OpenedSession>("open_session", {
