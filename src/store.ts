@@ -60,10 +60,10 @@ export interface State {
   create: (laneId: number) => Promise<void>;
   /** Adopts a discovered conversation into a matching or explicitly chosen lane. */
   adopt: (session: Session, laneId?: number | null) => Promise<AdoptionOutcome | null>;
-  /** Archives a lane session and starts a fresh one on the same worktree, branch and task. */
-  replace: (key: string) => Promise<void>;
   /** Hides a lane session (closing it first) or brings it back; its lane is untouched. */
   setArchived: (key: string, archived: boolean) => Promise<void>;
+  /** Renames a lane session; an empty title falls back to the harness's. */
+  rename: (key: string, title: string) => Promise<void>;
   send: (text: string, options?: SendOptions) => Promise<void>;
   loadModels: () => Promise<void>;
   setModel: (modelId: string) => Promise<void>;
@@ -71,7 +71,6 @@ export interface State {
   abort: () => Promise<void>;
   answer: (questionId: string, answer: Answer) => Promise<void>;
   close: (key: string) => Promise<void>;
-  togglePin: (session: Session) => Promise<void>;
   /** Registers the git repository `folder` is in. */
   addProject: (folder: string) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
@@ -249,21 +248,20 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      replace: async (key) => {
+      setArchived: async (key, archived) => {
         try {
-          const opened = await backend.replaceSession(key);
-          forget(key);
-          adopt(opened);
+          await backend.archiveSession(key, archived);
+          if (archived) forget(key);
           await get().refresh();
         } catch (e) {
           fail(e);
         }
       },
 
-      setArchived: async (key, archived) => {
+      rename: async (key, title) => {
+        const trimmed = title.trim();
         try {
-          await backend.archiveSession(key, archived);
-          if (archived) forget(key);
+          await backend.renameSession(key, trimmed === "" ? null : trimmed);
           await get().refresh();
         } catch (e) {
           fail(e);
@@ -350,15 +348,6 @@ export function createAppStore(backend: typeof api) {
         await backend.closeSession(key).catch(fail);
         forget(key);
         await get().refresh();
-      },
-
-      togglePin: async (session) => {
-        try {
-          await backend.setPinned(session.key, !session.pinned);
-          await get().refresh();
-        } catch (e) {
-          fail(e);
-        }
       },
 
       addProject: async (folder) => {

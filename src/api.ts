@@ -50,6 +50,8 @@ export const api = {
   replaceSession: (key: string) => invoke<OpenedSession>("replace_session", { key }),
   archiveSession: (key: string, archived: boolean) =>
     invoke<void>("archive_session", { key, archived }),
+  renameSession: (key: string, title: string | null) =>
+    invoke<void>("rename_session", { key, title }),
   history: (key: string) => invoke<Message[]>("session_history", { key }),
   sendPrompt: (key: string, text: string, images: ImageAttachment[], mode: PromptMode) =>
     invoke<PromptOutcome>("send_prompt", { key, text, images, mode }),

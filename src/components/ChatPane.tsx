@@ -1,7 +1,8 @@
-import { Button, Icon, LoopMark, StatusPill } from "@panoptes/design-system";
+import { Button, Icon, Input, LoopMark, StatusPill } from "@panoptes/design-system";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import { buildTurns, looseApprovals } from "../turns";
+import type { Session } from "../types";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
 import { QuestionCard } from "./QuestionCard";
@@ -97,7 +98,11 @@ export function ChatPane() {
       <header className="flex h-[var(--titlebar)] items-center gap-3 border-b border-line px-4">
         {status === "running" && <LoopMark size={20} state="thinking" tone="current" />}
         <div className="min-w-0 flex-1">
-          <div className="text-body-strong truncate">{session?.title ?? "Session"}</div>
+          {session ? (
+            <SessionTitle session={session} />
+          ) : (
+            <div className="text-body-strong truncate">Session</div>
+          )}
         </div>
         <span className="text-code-sm truncate text-ink-muted" title={session?.cwd}>
           {session?.cwd}
@@ -200,5 +205,57 @@ export function ChatPane() {
         <Composer busy={conversation?.busy ?? false} sending={sending} />
       </div>
     </main>
+  );
+}
+
+/* The session's name in the header: click it to rename, empty falls back. */
+function SessionTitle({ session }: { session: Session }) {
+  const rename = useStore((s) => s.rename);
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const commit = () => {
+    if (draft === null) return;
+    setDraft(null);
+    void rename(session.key, draft);
+  };
+
+  // Only a session a lane has adopted has a Panoptes record to rename.
+  if (session.id === null) {
+    return (
+      <div className="max-w-full truncate text-body-strong" title={session.title}>
+        {session.title}
+      </div>
+    );
+  }
+
+  if (draft !== null) {
+    return (
+      <Input
+        className="max-w-md"
+        aria-label="Session name"
+        value={draft}
+        autoFocus
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+          if (event.key === "Escape") setDraft(null);
+        }}
+        onBlur={commit}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="block max-w-full truncate text-body-strong underline-offset-4 hover:underline"
+      title="Rename session"
+      onClick={() => setDraft(session.title)}
+    >
+      {session.title}
+    </button>
   );
 }

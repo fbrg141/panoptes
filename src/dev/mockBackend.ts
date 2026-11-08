@@ -702,6 +702,11 @@ export function installMockBackend() {
           if (archived) open.delete(a.key);
           return null;
         }
+        case "rename_session": {
+          const title = (args as { title: string | null }).title;
+          sessions = sessions.map((s) => (s.key === a.key ? { ...s, title: title ?? s.title } : s));
+          return null;
+        }
         case "session_history":
           return history;
         case "send_prompt":

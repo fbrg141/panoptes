@@ -16,19 +16,15 @@ export const laneMenuItems = (lane: Pick<Lane, "state">): MenuItem[] =>
       ]
     : [{ id: "restore-lane", label: "Restore lane", icon: "rotate-ccw" }];
 
+/** The items in a session row's menu: adopt, stop, archive. */
 export const sessionMenuItems = (
-  session: Pick<Session, "laneId" | "pinned" | "archived" | "open">,
-  { adoptable = false, laneActions = false, laneActive = true } = {},
+  session: Pick<Session, "laneId" | "archived" | "open">,
+  { adoptable = false, laneActions = false } = {},
 ): MenuItem[] => {
-  const inLane = laneActions && session.laneId !== null;
   const items: MenuItem[] = [];
   if (adoptable) items.push({ id: "adopt", label: "Adopt into lane", icon: "git-branch" });
-  items.push({ id: "pin", label: session.pinned ? "Unpin" : "Pin" });
   if (session.open) items.push({ id: "stop", label: "Stop", icon: "square" });
-  if (inLane && laneActive && !session.archived) {
-    items.push({ id: "replace", label: "Replace", icon: "rotate-ccw" });
-  }
-  if (inLane) {
+  if (laneActions && session.laneId !== null) {
     items.push({
       id: "archive",
       label: session.archived ? "Unarchive" : "Archive",

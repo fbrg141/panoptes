@@ -1,4 +1,13 @@
-import { AgentRow, Button, Checkbox, Dialog, Input, LoopMark, Tabs } from "@panoptes/design-system";
+import {
+  AgentRow,
+  Button,
+  Checkbox,
+  Dialog,
+  Icon,
+  Input,
+  LoopMark,
+  Tabs,
+} from "@panoptes/design-system";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
 import { filterSessions, relativeTime } from "../grouping";
@@ -234,7 +243,7 @@ function ProjectItem({
         </button>
         <RowMenu
           label={`Actions for project ${project.name}`}
-          className="absolute right-2 hidden group-hover/project:block group-focus-within/project:block"
+          className="absolute top-1/2 right-2 hidden -translate-y-1/2 group-hover/project:block group-focus-within/project:block"
           items={projectMenuItems()}
           onSelect={(id) => {
             if (id === "new-lane") onNewLane();
@@ -342,7 +351,7 @@ function LaneItem({
         </button>
         <RowMenu
           label={`Actions for lane ${lane.name}`}
-          className="absolute right-1 hidden group-hover/lane:block group-focus-within/lane:block"
+          className="absolute top-1/2 right-1 hidden -translate-y-1/2 group-hover/lane:block group-focus-within/lane:block"
           items={laneMenuItems(lane)}
           onSelect={(id) => {
             if (id === "new-session") onWork?.();
@@ -355,13 +364,7 @@ function LaneItem({
           <ul>
             {visibleSessions(archived ? [...sessions, ...archivedSessions] : sessions).map(
               (session) => (
-                <SessionItem
-                  key={session.key}
-                  session={session}
-                  laneActions
-                  laneActive={!archived}
-                  nested
-                />
+                <SessionItem key={session.key} session={session} laneActions nested />
               ),
             )}
           </ul>
@@ -572,28 +575,21 @@ function SessionItem({
   context,
   onAdopt,
   laneActions = false,
-  laneActive = true,
   nested = false,
 }: {
   session: Session;
   context?: string;
   onAdopt?: () => void;
   laneActions?: boolean;
-  laneActive?: boolean;
   nested?: boolean;
 }) {
   const active = useStore((s) => s.activeKey === session.key);
   const status = useStore((s) => s.statuses[session.key] ?? "idle");
   const open = useStore((s) => s.open);
   const close = useStore((s) => s.close);
-  const togglePin = useStore((s) => s.togglePin);
-  const replace = useStore((s) => s.replace);
   const setArchived = useStore((s) => s.setArchived);
-  const metadata = [
-    session.archived ? "Archived" : null,
-    session.pinned ? "Pinned" : null,
-    context ?? basename(session.cwd),
-  ]
+  const holder = useStore((s) => s.locks[session.key]?.holder ?? false);
+  const metadata = [session.archived ? "Archived" : null, context ?? basename(session.cwd)]
     .filter(Boolean)
     .join(" · ");
 
@@ -607,19 +603,24 @@ function SessionItem({
         selected={active}
         onClick={() => void open(session)}
       />
+      {holder && (
+        <span
+          className="absolute top-1/2 right-2 -translate-y-1/2 text-ink-muted group-hover/item:hidden group-focus-within/item:hidden"
+          title="Holds the lane's write lock"
+        >
+          <Icon name="lock" size={14} />
+        </span>
+      )}
       <RowMenu
         label={`Actions for session ${session.title}`}
-        className="absolute top-1 right-2 hidden group-hover/item:block group-focus-within/item:block"
+        className="absolute top-1/2 right-2 hidden -translate-y-1/2 group-hover/item:block group-focus-within/item:block"
         items={sessionMenuItems(session, {
           adoptable: onAdopt !== undefined,
           laneActions,
-          laneActive,
         })}
         onSelect={(id) => {
           if (id === "adopt") onAdopt?.();
-          if (id === "pin") void togglePin(session);
           if (id === "stop") void close(session.key);
-          if (id === "replace") void replace(session.key);
           if (id === "archive") void setArchived(session.key, !session.archived);
         }}
       />

@@ -104,6 +104,7 @@ function fakeBackend() {
     ),
     replaceSession: vi.fn(async (): Promise<OpenedSession> => opened),
     archiveSession: vi.fn(async () => {}),
+    renameSession: vi.fn(async () => {}),
     history: vi.fn(async () => []),
     sendPrompt: vi.fn(async (): Promise<PromptOutcome> => "started"),
     settings: vi.fn(async () => settings),
@@ -383,14 +384,11 @@ describe("store", () => {
     expect(store.getState().activeKey).toBe("panoptes:7");
   });
 
-  it("replaces a session with a fresh one and forgets the old one", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
-    await store.getState().create(lane.id);
-    fake.backend.replaceSession.mockResolvedValueOnce({ key: "panoptes:8", history: [] });
-    await store.getState().replace("panoptes:7");
-    expect(fake.backend.replaceSession).toHaveBeenCalledWith("panoptes:7");
-    expect(store.getState().activeKey).toBe("panoptes:8");
-    expect(store.getState().conversations["panoptes:7"]).toBeUndefined();
+  it("renames a lane session, clearing the title when it is emptied", async () => {
+    await store.getState().rename("panoptes:7", "  Fix redirects ");
+    expect(fake.backend.renameSession).toHaveBeenCalledWith("panoptes:7", "Fix redirects");
+    await store.getState().rename("panoptes:7", "   ");
+    expect(fake.backend.renameSession).toHaveBeenLastCalledWith("panoptes:7", null);
   });
 
   it("archives a session, closing it here", async () => {

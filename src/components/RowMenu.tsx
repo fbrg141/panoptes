@@ -49,7 +49,7 @@ export function RowMenu({
       <Button
         variant="ghost"
         size="sm"
-        icon="ellipsis"
+        icon="ellipsis-vertical"
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
