@@ -2,8 +2,10 @@ import { AgentRow, Button, Checkbox, Dialog, Input, LoopMark, Tabs } from "@pano
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
 import { filterSessions, relativeTime } from "../grouping";
+import { laneMenuItems, projectMenuItems, sessionMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
+import { RowMenu } from "./RowMenu";
 
 type NavigationTab = "lanes" | "all";
 
@@ -230,24 +232,15 @@ function ProjectItem({
         >
           {project.name}
         </button>
-        <span className="invisible absolute right-2 flex gap-1 bg-surface group-hover/project:visible">
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="git-branch"
-            aria-label={`New lane in ${project.name}`}
-            title={`New lane in ${project.name}`}
-            onClick={onNewLane}
-          />
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="x"
-            aria-label={`Remove project ${project.name}`}
-            title="Remove this project from Panoptes. Nothing on disk changes"
-            onClick={() => void removeProject(project.id)}
-          />
-        </span>
+        <RowMenu
+          label={`Actions for project ${project.name}`}
+          className="absolute right-2 hidden group-hover/project:block group-focus-within/project:block"
+          items={projectMenuItems()}
+          onSelect={(id) => {
+            if (id === "new-lane") onNewLane();
+            if (id === "remove-project") void removeProject(project.id);
+          }}
+        />
       </header>
       {(!collapsed || query) && (
         <div className="ml-3 border-l border-line pl-1">
@@ -333,7 +326,7 @@ function LaneItem({
         />
         <button
           type="button"
-          className="min-w-0 flex-1 py-1 pr-12 text-left"
+          className="min-w-0 flex-1 py-1 pr-8 text-left"
           onClick={() => setCollapsed((value) => !value)}
         >
           <p className="truncate" title={lane.task}>
@@ -347,32 +340,15 @@ function LaneItem({
             {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
           </p>
         </button>
-        <span className="absolute right-1 hidden gap-1 bg-surface group-hover/lane:flex">
-          {onWork && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="plus"
-              aria-label={`New session in lane ${lane.name}`}
-              title={`New session in ${lane.worktrees[0]?.path ?? lane.name}`}
-              onClick={onWork}
-            />
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={archived ? "rotate-ccw" : "x"}
-            aria-label={`${archived ? "Restore" : "Archive"} lane ${lane.name}`}
-            title={
-              archived
-                ? checkpoint
-                  ? "Restore lane and its checkpoint"
-                  : "Restore lane"
-                : "Archive lane"
-            }
-            onClick={onAction}
-          />
-        </span>
+        <RowMenu
+          label={`Actions for lane ${lane.name}`}
+          className="absolute right-1 hidden group-hover/lane:block group-focus-within/lane:block"
+          items={laneMenuItems(lane)}
+          onSelect={(id) => {
+            if (id === "new-session") onWork?.();
+            if (id === "archive-lane" || id === "restore-lane") onAction();
+          }}
+        />
       </div>
       {(!collapsed || query) && (
         <div className="ml-4">
@@ -613,7 +589,6 @@ function SessionItem({
   const togglePin = useStore((s) => s.togglePin);
   const replace = useStore((s) => s.replace);
   const setArchived = useStore((s) => s.setArchived);
-  const inLane = laneActions && session.laneId !== null;
   const metadata = [
     session.archived ? "Archived" : null,
     session.pinned ? "Pinned" : null,
@@ -632,55 +607,22 @@ function SessionItem({
         selected={active}
         onClick={() => void open(session)}
       />
-      <span className="absolute top-1 right-2 hidden gap-1 rounded-sm bg-surface group-hover/item:flex">
-        {onAdopt && (
-          <Button
-            variant="ghost"
-            size="sm"
-            title="Add this conversation to a lane"
-            onClick={onAdopt}
-          >
-            Adopt
-          </Button>
-        )}
-        <Button variant="ghost" size="sm" onClick={() => void togglePin(session)}>
-          {session.pinned ? "Unpin" : "Pin"}
-        </Button>
-        {session.open && (
-          <Button
-            variant="ghost"
-            size="sm"
-            title="Stop this session's agent process"
-            onClick={() => void close(session.key)}
-          >
-            Stop
-          </Button>
-        )}
-        {inLane && laneActive && !session.archived && (
-          <Button
-            variant="ghost"
-            size="sm"
-            title="Archive this session and start a fresh one on the same worktree, branch and task"
-            onClick={() => void replace(session.key)}
-          >
-            Replace
-          </Button>
-        )}
-        {inLane && (
-          <Button
-            variant="ghost"
-            size="sm"
-            title={
-              session.archived
-                ? "Bring this session back"
-                : "Hide this session. Its lane stays as it is"
-            }
-            onClick={() => void setArchived(session.key, !session.archived)}
-          >
-            {session.archived ? "Unarchive" : "Archive"}
-          </Button>
-        )}
-      </span>
+      <RowMenu
+        label={`Actions for session ${session.title}`}
+        className="absolute top-1 right-2 hidden group-hover/item:block group-focus-within/item:block"
+        items={sessionMenuItems(session, {
+          adoptable: onAdopt !== undefined,
+          laneActions,
+          laneActive,
+        })}
+        onSelect={(id) => {
+          if (id === "adopt") onAdopt?.();
+          if (id === "pin") void togglePin(session);
+          if (id === "stop") void close(session.key);
+          if (id === "replace") void replace(session.key);
+          if (id === "archive") void setArchived(session.key, !session.archived);
+        }}
+      />
     </li>
   );
 }
