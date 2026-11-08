@@ -11,14 +11,14 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use panoptes_harness::SessionSummary;
+use panoptes_harness::{DiscoveredSession, HarnessRef};
 use serde_json::Value;
 
 use crate::map::user_text;
 
 #[derive(Default)]
 pub struct SessionCache {
-    entries: HashMap<PathBuf, (u64, SystemTime, SessionSummary)>,
+    entries: HashMap<PathBuf, (u64, SystemTime, DiscoveredSession)>,
 }
 
 fn millis(time: SystemTime) -> i64 {
@@ -28,7 +28,7 @@ fn millis(time: SystemTime) -> i64 {
 }
 
 impl SessionCache {
-    pub fn scan(&mut self, root: &Path) -> Vec<SessionSummary> {
+    pub fn scan(&mut self, root: &Path) -> Vec<DiscoveredSession> {
         let mut seen = HashSet::new();
         let Ok(project_dirs) = std::fs::read_dir(root) else {
             return Vec::new();
@@ -71,7 +71,7 @@ impl SessionCache {
     }
 }
 
-fn read_summary(path: &Path, meta: &std::fs::Metadata) -> Option<SessionSummary> {
+fn read_summary(path: &Path, meta: &std::fs::Metadata) -> Option<DiscoveredSession> {
     let mut lines = BufReader::new(File::open(path).ok()?).split(b'\n');
     let header: Value = serde_json::from_slice(&lines.next()?.ok()?).ok()?;
     if header.get("type")?.as_str()? != "session" {
@@ -102,11 +102,13 @@ fn read_summary(path: &Path, meta: &std::fs::Metadata) -> Option<SessionSummary>
     let title = name
         .or(first_user.map(|text| first_line(&text)))
         .unwrap_or_else(|| "New session".to_string());
-    Some(SessionSummary {
-        harness: "pi".to_string(),
-        id: header["id"].as_str()?.to_string(),
-        locator: path.to_string_lossy().into_owned(),
-        cwd: header["cwd"].as_str().unwrap_or_default().to_string(),
+    Some(DiscoveredSession {
+        harness_ref: HarnessRef {
+            harness: "pi".to_string(),
+            id: header["id"].as_str()?.to_string(),
+            locator: path.to_string_lossy().into_owned(),
+            cwd: header["cwd"].as_str().unwrap_or_default().to_string(),
+        },
         title,
         created_at: millis(meta.created().unwrap_or(UNIX_EPOCH)),
         updated_at: millis(meta.modified().unwrap_or(UNIX_EPOCH)),
@@ -164,8 +166,8 @@ mod tests {
         let sessions = SessionCache::default().scan(root.path());
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
-        assert_eq!(session.id, "s1");
-        assert_eq!(session.cwd, "/code/app");
+        assert_eq!(session.harness_ref.id, "s1");
+        assert_eq!(session.harness_ref.cwd, "/code/app");
         assert_eq!(session.title, "Fix the login bug");
         assert_eq!(session.message_count, 3);
     }

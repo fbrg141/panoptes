@@ -3,7 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
 import { groupSessions, relativeTime, type SessionGroup } from "../grouping";
 import { useStore } from "../store";
-import type { ArchiveStrategy, Lane, Project, SidebarSession } from "../types";
+import type { ArchiveStrategy, Lane, Project, Session } from "../types";
 
 /** Sessions shown per project before "more". */
 const COLLAPSED_PROJECT_LIMIT = 5;
@@ -17,7 +17,6 @@ const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path
 
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
-  const drafts = useStore((s) => s.drafts);
   const listErrors = useStore((s) => s.listErrors);
   const projects = useStore((s) => s.projects);
   const lanes = useStore((s) => s.lanes);
@@ -28,14 +27,9 @@ export function Sidebar() {
   const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
   const [query, setQuery] = useState("");
   const groups = useMemo(
-    () => groupSessions([...drafts, ...sessions], projects, query),
-    [sessions, drafts, projects, query],
+    () => groupSessions(sessions, projects, query),
+    [sessions, projects, query],
   );
-
-  const startIn = async (cwd?: string, projectId?: number) => {
-    const folder = cwd ?? (await pickFolder("Start a session in…"));
-    if (folder) await create(folder, projectId);
-  };
 
   const register = async () => {
     const folder = await pickFolder("Add a git repository as a project");
@@ -60,14 +54,6 @@ export function Sidebar() {
           title="Add a git repository as a project"
           onClick={() => void register()}
         />
-        <Button
-          variant="ghost"
-          size="sm"
-          icon="plus"
-          aria-label="New session"
-          title="New session in a folder"
-          onClick={() => void startIn()}
-        />
       </header>
       <div className="p-3">
         <Input
@@ -89,20 +75,18 @@ export function Sidebar() {
             key={group.id}
             group={group}
             lanes={lanes.filter((lane) => lane.projectId === group.project?.id)}
-            onNew={group.cwd ? () => void startIn(group.cwd, group.project?.id) : undefined}
             onNewLane={
               group.project ? () => setNewLaneProject(group.project as Project) : undefined
             }
-            onWork={(lane) => {
-              const cwd = lane.worktrees[0]?.path;
-              if (cwd) void startIn(cwd, lane.projectId);
-            }}
+            onWork={(lane) => void create(lane.id)}
             onArchive={(lane) => void requestArchive(lane)}
           />
         ))}
         {groups.length === 0 && (
           <p className="px-3 text-ink-muted">
-            {query ? "No sessions match." : "No sessions yet. Start one with the + button."}
+            {query
+              ? "No sessions match."
+              : "No sessions yet. Add a project, then start a lane in it."}
           </p>
         )}
       </nav>
@@ -123,14 +107,12 @@ export function Sidebar() {
 function Group({
   group,
   lanes,
-  onNew,
   onNewLane,
   onWork,
   onArchive,
 }: {
   group: SessionGroup;
   lanes: Lane[];
-  onNew?: () => void;
   onNewLane?: () => void;
   onWork: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
@@ -183,16 +165,6 @@ function Group({
               aria-label={`New lane in ${group.label}`}
               title={`New lane in ${group.label}`}
               onClick={onNewLane}
-            />
-          )}
-          {onNew && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="plus"
-              aria-label={`New session in ${group.label}`}
-              title={`New session in ${group.cwd}`}
-              onClick={onNew}
             />
           )}
         </span>
@@ -311,10 +283,7 @@ function NewLaneDialog({ project, onClose }: { project: Project; onClose: () => 
     setBusy(false);
     if (lane) {
       onClose();
-      if (startSession) {
-        const cwd = lane.worktrees[0]?.path;
-        if (cwd) await createSession(cwd, project.id);
-      }
+      if (startSession) await createSession(lane.id);
     }
   };
 
@@ -426,12 +395,15 @@ function ArchiveLaneDialog({
   );
 }
 
-function SessionItem({ session }: { session: SidebarSession }) {
+function SessionItem({ session }: { session: Session }) {
   const active = useStore((s) => s.activeKey === session.key);
   const status = useStore((s) => s.statuses[session.key] ?? "idle");
   const open = useStore((s) => s.open);
   const close = useStore((s) => s.close);
   const togglePin = useStore((s) => s.togglePin);
+  const replace = useStore((s) => s.replace);
+  const setArchived = useStore((s) => s.setArchived);
+  const inLane = session.laneId !== null;
 
   return (
     <li className="group/item relative">
@@ -455,6 +427,26 @@ function SessionItem({ session }: { session: SidebarSession }) {
             onClick={() => void close(session.key)}
           >
             Stop
+          </Button>
+        )}
+        {inLane && (
+          <Button
+            variant="ghost"
+            size="sm"
+            title="Archive this session and start a fresh one on the same worktree, branch and task"
+            onClick={() => void replace(session.key)}
+          >
+            Replace
+          </Button>
+        )}
+        {inLane && (
+          <Button
+            variant="ghost"
+            size="sm"
+            title="Hide this session. Its lane stays as it is"
+            onClick={() => void setArchived(session.key, true)}
+          >
+            Archive
           </Button>
         )}
       </span>

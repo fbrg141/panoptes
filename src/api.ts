@@ -16,24 +16,27 @@ import type {
   ProjectSettings,
   PromptMode,
   PromptOutcome,
+  Session,
   SessionEvent,
   SessionSettings,
-  SidebarSession,
 } from "./types";
 
 /** Typed wrappers for the commands in src-tauri/src/lib.rs. */
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   listSessions: () => invoke<Listing>("list_sessions"),
-  openSession: (s: Pick<SidebarSession, "harness" | "key" | "locator" | "cwd">) =>
+  openSession: (s: Pick<Session, "harness" | "key" | "harnessRef" | "cwd">) =>
     invoke<OpenedSession>("open_session", {
       harness: s.harness,
       key: s.key,
-      locator: s.locator,
+      locator: s.harnessRef?.locator ?? "",
       cwd: s.cwd,
     }),
-  newSession: (harness: string, cwd: string) =>
-    invoke<OpenedSession>("new_session", { harness, cwd }),
+  newSession: (laneId: number, harness: string) =>
+    invoke<OpenedSession>("new_session", { laneId, harness }),
+  replaceSession: (key: string) => invoke<OpenedSession>("replace_session", { key }),
+  archiveSession: (key: string, archived: boolean) =>
+    invoke<void>("archive_session", { key, archived }),
   history: (key: string) => invoke<Message[]>("session_history", { key }),
   sendPrompt: (key: string, text: string, images: ImageAttachment[], mode: PromptMode) =>
     invoke<PromptOutcome>("send_prompt", { key, text, images, mode }),

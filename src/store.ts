@@ -9,14 +9,15 @@ import type {
   ErrorKind,
   ImageAttachment,
   Lane,
+  LockState,
   ModelInfo,
   OpenedSession,
   Project,
   PromptMode,
+  Session,
   SessionEvent,
   SessionSettings,
   SessionStatus,
-  SidebarSession,
 } from "./types";
 
 export interface SendOptions {
@@ -27,16 +28,16 @@ export interface SendOptions {
 
 export interface State {
   info: AppInfo | null;
-  sessions: SidebarSession[];
+  sessions: Session[];
   /** Registered projects, as the backend lists them. */
   projects: Project[];
   /** Durable lanes, including archived ones. */
   lanes: Lane[];
-  /** Sessions started here that the harness has not written to disk yet. */
-  drafts: SidebarSession[];
   conversations: Record<string, Conversation>;
   /** Each open session's status, as the backend reports it. */
   statuses: Record<string, SessionStatus>;
+  /** How each open lane session stands with its lane's write lock. */
+  locks: Record<string, LockState>;
   /** Keys with a prompt on its way to the harness. */
   sending: Record<string, boolean>;
   /** Model, thinking level and context use, per open session. */
@@ -50,9 +51,13 @@ export interface State {
 
   init: () => Promise<void>;
   refresh: () => Promise<void>;
-  open: (session: SidebarSession) => Promise<void>;
-  /** Starts a session in `cwd`, listed under `projectId` until the backend lists it. */
-  create: (cwd: string, projectId?: number | null) => Promise<void>;
+  open: (session: Session) => Promise<void>;
+  /** Starts a new session in a lane's worktree. */
+  create: (laneId: number) => Promise<void>;
+  /** Archives a lane session and starts a fresh one on the same worktree, branch and task. */
+  replace: (key: string) => Promise<void>;
+  /** Hides a lane session (closing it first) or brings it back; its lane is untouched. */
+  setArchived: (key: string, archived: boolean) => Promise<void>;
   send: (text: string, options?: SendOptions) => Promise<void>;
   loadModels: () => Promise<void>;
   setModel: (modelId: string) => Promise<void>;
@@ -60,7 +65,7 @@ export interface State {
   abort: () => Promise<void>;
   answer: (questionId: string, answer: Answer) => Promise<void>;
   close: (key: string) => Promise<void>;
-  togglePin: (session: SidebarSession) => Promise<void>;
+  togglePin: (session: Session) => Promise<void>;
   /** Registers the git repository `folder` is in. */
   addProject: (folder: string) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
@@ -86,27 +91,6 @@ export function errorKind(error: unknown): ErrorKind {
 
 /** The session's process is gone; opening it again starts a new one. */
 const needsReopen = (error: unknown) => ["notOpen", "exited"].includes(errorKind(error));
-
-function draftFrom(opened: OpenedSession, projectId: number | null): SidebarSession {
-  const now = Date.now();
-  return {
-    key: opened.key,
-    harness: opened.session.harness,
-    id: opened.session.id,
-    locator: opened.session.locator,
-    cwd: opened.session.cwd,
-    title: "New session",
-    createdAt: now,
-    updatedAt: now,
-    messageCount: 0,
-    parentLocator: null,
-    projectRoot: opened.session.cwd,
-    checkout: null,
-    projectId,
-    pinned: false,
-    open: true,
-  };
-}
 
 /** Builds the store around an API, so tests can pass a fake one. */
 export function createAppStore(backend: typeof api) {
@@ -140,6 +124,24 @@ export function createAppStore(backend: typeof api) {
       void loadSettings(opened.key);
     };
 
+    /** Drops everything kept about a session that is no longer open. */
+    const forget = (key: string) =>
+      set((s) => {
+        const { [key]: _closed, ...conversations } = s.conversations;
+        const { [key]: _status, ...statuses } = s.statuses;
+        const { [key]: _lock, ...locks } = s.locks;
+        const { [key]: _settings, ...settings } = s.settings;
+        const { [key]: _models, ...models } = s.models;
+        return {
+          conversations,
+          statuses,
+          locks,
+          settings,
+          models,
+          activeKey: s.activeKey === key ? null : s.activeKey,
+        };
+      });
+
     const reloadHistory = async (key: string) => {
       try {
         const messages = await backend.history(key);
@@ -152,6 +154,11 @@ export function createAppStore(backend: typeof api) {
     const onEvent = ({ key, event }: SessionEvent) => {
       if (event.type === "statusChanged") {
         set((s) => ({ statuses: { ...s.statuses, [key]: event.status } }));
+        return;
+      }
+      if (event.type === "lockChanged") {
+        const { holder, queued } = event;
+        set((s) => ({ locks: { ...s.locks, [key]: { holder, queued } } }));
         return;
       }
       patch(key, (c) => applyEvent(c, event));
@@ -170,9 +177,9 @@ export function createAppStore(backend: typeof api) {
       sessions: [],
       projects: [],
       lanes: [],
-      drafts: [],
       conversations: {},
       statuses: {},
+      locks: {},
       sending: {},
       settings: {},
       models: {},
@@ -198,14 +205,7 @@ export function createAppStore(backend: typeof api) {
       refresh: async () => {
         try {
           const { sessions, projects, lanes, errors } = await backend.listSessions();
-          const known = new Set(sessions.map((s) => s.key));
-          set((s) => ({
-            sessions,
-            projects,
-            lanes,
-            listErrors: errors,
-            drafts: s.drafts.filter((d) => !known.has(d.key)),
-          }));
+          set({ sessions, projects, lanes, listErrors: errors });
         } catch (e) {
           fail(e);
         }
@@ -221,11 +221,32 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      create: async (cwd, projectId = null) => {
+      create: async (laneId) => {
         try {
-          const opened = await backend.newSession("pi", cwd);
-          set((s) => ({ drafts: [...s.drafts, draftFrom(opened, projectId)] }));
+          // The session is recorded before it starts, so it is listed at once.
+          adopt(await backend.newSession(laneId, "pi"));
+          await get().refresh();
+        } catch (e) {
+          fail(e);
+        }
+      },
+
+      replace: async (key) => {
+        try {
+          const opened = await backend.replaceSession(key);
+          forget(key);
           adopt(opened);
+          await get().refresh();
+        } catch (e) {
+          fail(e);
+        }
+      },
+
+      setArchived: async (key, archived) => {
+        try {
+          await backend.archiveSession(key, archived);
+          if (archived) forget(key);
+          await get().refresh();
         } catch (e) {
           fail(e);
         }
@@ -236,7 +257,7 @@ export function createAppStore(backend: typeof api) {
         if (!key || get().sending[key]) return;
         set((s) => ({ sending: { ...s.sending, [key]: true } }));
         const reopen = async () => {
-          const session = [...get().sessions, ...get().drafts].find((s) => s.key === key);
+          const session = get().sessions.find((s) => s.key === key);
           if (!session) throw new Error("This session is no longer listed.");
           adopt(await backend.openSession(session));
         };
@@ -309,19 +330,7 @@ export function createAppStore(backend: typeof api) {
 
       close: async (key) => {
         await backend.closeSession(key).catch(fail);
-        set((s) => {
-          const { [key]: _closed, ...conversations } = s.conversations;
-          const { [key]: _status, ...statuses } = s.statuses;
-          const { [key]: _settings, ...settings } = s.settings;
-          const { [key]: _models, ...models } = s.models;
-          return {
-            conversations,
-            statuses,
-            settings,
-            models,
-            activeKey: s.activeKey === key ? null : s.activeKey,
-          };
-        });
+        forget(key);
         await get().refresh();
       },
 

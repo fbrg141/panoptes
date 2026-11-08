@@ -88,7 +88,8 @@ Zed and Cargo.
 - **Writes are serialised.** Several sessions can attach to a lane and read
   it, but only the session holding the write lock edits files. The others
   queue and show as Waiting until the lock passes to them. Two agents working
-  truly in parallel means two lanes.
+  truly in parallel means two lanes. How the lock is enforced is in
+  [decisions.md](decisions.md#the-write-lock-is-enforced-by-starting-non-holders-read-only).
 
 ### Session
 
@@ -177,8 +178,8 @@ The sidebar splits in two (#57):
 ### Session
 
 1. **New:** in an existing lane, or in a new lane created for it. The session
-   gets its Panoptes id here. The harness process starts on the first
-   message (#9).
+   gets its Panoptes id here, before its harness process starts, so every
+   event it sends carries that id.
 2. **Open:** one harness process runs it. Each prompt is one run, Running then
    Done (or Waiting, or Failed). A run that needs to edit waits for the
    lane's write lock.
@@ -260,7 +261,7 @@ Build the spine fast and solid, not polished; the reason is in
 | done | #18 | Versioned Panoptes store |
 | done | #19 | Projects and their settings |
 | done | #20 | Lanes: create a worktree, archive without losing work, main-checkout opt-in |
-| 2 | #22 | Sessions inside a lane: Panoptes identity, write lock and queue, replace |
+| done | #22 | Sessions inside a lane: Panoptes identity, write lock and queue, replace |
 | 3 | #57 | Split sidebar: projects and lanes, and a History view to adopt from |
 | 4 | #58 | Subsessions that hand their result back |
 | 5 | #21 | Nested groups and multi-repo lanes, last |
@@ -271,11 +272,9 @@ The contract fixes (#23 to #27) can go in any order alongside.
 
 1. **Group context** (#8): instructions a group gives the agents in its
    lanes.
-2. **Enforcing the write lock:** gate edit tools through the approvals
-   extension, or start sessions without the lock with read-only tools.
-3. **Multi-repo context files.** An agent running in a multi-repo lane folder
+2. **Multi-repo context files.** An agent running in a multi-repo lane folder
    does not pick up each repo's `AGENTS.md` on its own. Panoptes may need to
    pass them in.
-4. **Sessions outside any project:** a History entry from a folder that isn't
+3. **Sessions outside any project:** a History entry from a folder that isn't
    a registered project. Offer to register it, or adopt it only into a lane
    you pick.

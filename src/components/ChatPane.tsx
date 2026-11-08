@@ -17,7 +17,8 @@ export function ChatPane() {
   const conversation = useStore((s) => (s.activeKey ? s.conversations[s.activeKey] : undefined));
   const status = useStore((s) => (s.activeKey ? s.statuses[s.activeKey] : undefined)) ?? "idle";
   const sending = useStore((s) => (s.activeKey ? (s.sending[s.activeKey] ?? false) : false));
-  const session = useStore((s) => [...s.drafts, ...s.sessions].find((x) => x.key === s.activeKey));
+  const session = useStore((s) => s.sessions.find((x) => x.key === s.activeKey));
+  const queued = useStore((s) => (s.activeKey ? s.locks[s.activeKey]?.queued : false) ?? false);
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   // Follow new output while the user is at the bottom; stop once they scroll up.
@@ -84,7 +85,7 @@ export function ChatPane() {
       <main className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
         <LoopMark size={96} />
         <h1 className="text-display">Panoptes</h1>
-        <p className="text-ink-muted">Pick a session, or start a new one with the + button.</p>
+        <p className="text-ink-muted">Pick a session, or start a lane in a project.</p>
       </main>
     );
   }
@@ -170,6 +171,13 @@ export function ChatPane() {
           {notice.text}
         </div>
       ))}
+      {queued && (
+        <div className="flex items-center gap-2 border-t border-line bg-waiting-soft px-4 py-1 text-waiting">
+          <Icon name="circle-alert" size={14} />
+          Another session in this lane holds the write lock. This one runs read-only until it is
+          free.
+        </div>
+      )}
       {conversation?.exited && (
         <div
           className="flex items-center gap-2 border-t border-line bg-error-soft px-4 py-1 text-error"

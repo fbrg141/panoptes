@@ -12,15 +12,18 @@ by a design system.
 
 - Lists your existing Pi sessions, grouped as **Running**, **Pinned**, then by
   project (git repository root, or folder).
-- Opens or resumes any session, and starts new ones in a folder you pick.
-  Sessions are Pi's own files, so the CLI (`pi --continue`, `/resume`) sees
-  the same history.
+- Opens or resumes any session. New sessions start in a lane, as Panoptes
+  sessions with their own id; their conversations are still Pi's own files,
+  so the CLI (`pi --continue`, `/resume`) sees the same history.
 - Creates durable lanes with their own Git worktree and branch, including
   project file copying and setup. Lanes exist without sessions; clean lanes
   can be archived, and dirty work can be committed, stashed or saved as a
   restorable private checkpoint. The main checkout is a marked opt-in.
   Start a chat in a lane when creating it, or later with the lane's +
-  action; no folder picker is needed.
+  action. A session can be replaced with a fresh one on the same worktree,
+  or archived without touching its lane.
+- One session per lane edits at a time: the holder of the lane's write lock
+  runs with every tool, the others run read-only and queue for it.
 - Streams replies (rendered as markdown), thinking and tool calls. While the
   agent is working, Enter steers it and Esc stops it.
 - Questions from Pi extensions (confirm, select, input, editor) appear above

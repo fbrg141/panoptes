@@ -1,6 +1,6 @@
 //! Panoptes' own data, in a SQLite database in the app data folder. Harnesses
 //! keep their conversations; this holds what Panoptes adds on top (pins,
-//! projects and lanes now, then groups, sessions and tags, see
+//! projects, lanes and the sessions that run in them now, then groups, see
 //! `docs/domain-model.md`).
 //!
 //! The schema version is SQLite's `user_version`. Opening the store runs
@@ -57,6 +57,10 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         apply: v3_lanes,
+        committed: |_| {},
+    },
+    Migration {
+        apply: v4_sessions,
         committed: |_| {},
     },
 ];
@@ -131,6 +135,34 @@ fn v3_lanes(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
         ) STRICT;
         CREATE INDEX lanes_by_project ON lanes (project_id, state, created_at);
         CREATE INDEX lane_worktrees_by_path ON lane_worktrees (path);",
+    )?;
+    Ok(())
+}
+
+/// Panoptes sessions. Each belongs to one lane, runs in that lane's
+/// worktree, and points at a harness conversation by `harness_id` and
+/// `locator`, which stay NULL until the harness reports them on the first
+/// start. `title` is Panoptes' own name for it; NULL shows the harness's.
+fn v4_sessions(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lane_id INTEGER NOT NULL REFERENCES lanes (id) ON DELETE RESTRICT,
+            harness TEXT NOT NULL CHECK (harness <> ''),
+            harness_id TEXT CHECK (harness_id <> ''),
+            locator TEXT CHECK (locator <> ''),
+            title TEXT CHECK (title <> ''),
+            pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+            archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+            created_at INTEGER NOT NULL,
+            UNIQUE (harness, harness_id)
+        ) STRICT;
+        CREATE INDEX sessions_by_lane ON sessions (lane_id, created_at);
+        CREATE TABLE session_tags (
+            session_id INTEGER NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+            tag TEXT NOT NULL CHECK (tag <> ''),
+            PRIMARY KEY (session_id, tag)
+        ) STRICT;",
     )?;
     Ok(())
 }
@@ -214,8 +246,10 @@ impl LaneState {
     }
 }
 
-/// The write lock belongs to the lane, not to any one process. Sessions and
-/// its queue arrive in #22; until then there are no sessions that can hold it.
+/// The write lock belongs to the lane, not to any one process: by the key of
+/// the open session that may edit files, and the keys of those waiting for
+/// it. Only an open session can hold it, so it lives in the service's
+/// memory and is filled into listings; the store always reads it empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLock {
@@ -260,6 +294,24 @@ pub struct NewLane {
     pub task: String,
     pub branch: String,
     pub worktrees: Vec<NewLaneWorktree>,
+}
+
+/// A Panoptes session: its own identity, the lane it belongs to, and the
+/// harness conversation it wraps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRecord {
+    pub id: i64,
+    pub lane_id: i64,
+    pub harness: String,
+    /// The harness's session id and locator, once it has reported them.
+    pub harness_id: Option<String>,
+    pub locator: Option<String>,
+    pub title: Option<String>,
+    pub tags: Vec<String>,
+    pub pinned: bool,
+    pub archived: bool,
+    pub created_at: i64,
 }
 
 pub struct Store {
@@ -513,6 +565,145 @@ impl Store {
     /// Forgets a project with no lanes. Its repository and worktrees on disk
     /// are not touched. A project with lanes stays registered so their records
     /// and recovery refs cannot silently lose the repository they refer to.
+    /// Every Panoptes session, oldest first, archived ones included.
+    pub fn sessions(&self) -> anyhow::Result<Vec<SessionRecord>> {
+        let mut statement = self.conn.prepare_cached(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY created_at, id"
+        ))?;
+        let records = statement
+            .query_map([], session_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        records
+            .into_iter()
+            .map(|record| self.with_tags(record))
+            .collect()
+    }
+
+    pub fn session(&self, id: i64) -> anyhow::Result<SessionRecord> {
+        let record = self
+            .conn
+            .query_row(
+                &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1"),
+                [id],
+                session_from_row,
+            )
+            .optional()?
+            .context("That session no longer exists")?;
+        self.with_tags(record)
+    }
+
+    /// The Panoptes session wrapping a harness conversation, if any.
+    pub fn session_for(&self, harness: &str, harness_id: &str) -> anyhow::Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM sessions WHERE harness = ?1 AND harness_id = ?2",
+                [harness, harness_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    fn with_tags(&self, mut record: SessionRecord) -> anyhow::Result<SessionRecord> {
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT tag FROM session_tags WHERE session_id = ?1 ORDER BY tag")?;
+        record.tags = statement
+            .query_map([record.id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(record)
+    }
+
+    /// Gives a session its Panoptes id before any harness process exists.
+    /// Only an active lane takes new sessions.
+    pub fn add_session(&self, lane_id: i64, harness: &str) -> anyhow::Result<SessionRecord> {
+        if self.lane(lane_id)?.state != LaneState::Active {
+            bail!("That lane is archived; restore it to start a session");
+        }
+        self.conn.execute(
+            "INSERT INTO sessions (lane_id, harness, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![lane_id, harness, now_ms()],
+        )?;
+        self.session(self.conn.last_insert_rowid())
+    }
+
+    /// Records which harness conversation a session wraps, once the harness
+    /// has reported it.
+    pub fn set_harness_ref(&self, id: i64, harness_id: &str, locator: &str) -> anyhow::Result<()> {
+        let locator = (!locator.is_empty()).then_some(locator);
+        self.conn.execute(
+            "UPDATE sessions SET harness_id = ?2, locator = ?3 WHERE id = ?1",
+            rusqlite::params![id, harness_id, locator],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_session_title(&self, id: i64, title: Option<&str>) -> anyhow::Result<()> {
+        let title = title.map(str::trim).filter(|title| !title.is_empty());
+        self.update_session(id, "UPDATE sessions SET title = ?2 WHERE id = ?1", title)
+    }
+
+    pub fn set_session_pinned(&self, id: i64, pinned: bool) -> anyhow::Result<()> {
+        self.update_session(id, "UPDATE sessions SET pinned = ?2 WHERE id = ?1", pinned)
+    }
+
+    /// Archiving a session hides it; its lane is untouched.
+    pub fn set_session_archived(&self, id: i64, archived: bool) -> anyhow::Result<()> {
+        self.update_session(
+            id,
+            "UPDATE sessions SET archived = ?2 WHERE id = ?1",
+            archived,
+        )
+    }
+
+    pub fn set_session_tags(&self, id: i64, tags: &[String]) -> anyhow::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        if tx.execute("DELETE FROM session_tags WHERE session_id = ?1", [id])? == 0
+            && !tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sessions WHERE id = ?1)",
+                [id],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            bail!("That session no longer exists");
+        }
+        let mut insert = tx.prepare_cached(
+            "INSERT OR IGNORE INTO session_tags (session_id, tag) VALUES (?1, ?2)",
+        )?;
+        for tag in tags
+            .iter()
+            .map(|tag| tag.trim())
+            .filter(|tag| !tag.is_empty())
+        {
+            insert.execute(rusqlite::params![id, tag])?;
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forgets a session whose harness never started, so no record points
+    /// at nothing.
+    pub fn discard_session(&self, id: i64) -> anyhow::Result<()> {
+        self.conn.execute(
+            "DELETE FROM sessions WHERE id = ?1 AND harness_id IS NULL",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    fn update_session(
+        &self,
+        id: i64,
+        sql: &str,
+        value: impl rusqlite::ToSql,
+    ) -> anyhow::Result<()> {
+        if self.conn.execute(sql, rusqlite::params![id, value])? == 0 {
+            bail!("That session no longer exists");
+        }
+        Ok(())
+    }
+
     pub fn remove_project(&self, id: i64) -> anyhow::Result<()> {
         let lanes: i64 = self.conn.query_row(
             "SELECT count(*) FROM lanes WHERE project_id = ?1",
@@ -555,6 +746,24 @@ fn lane_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Lane> {
         state: LaneState::parse(&state)?,
         worktrees: Vec::new(),
         write_lock: WriteLock::default(),
+    })
+}
+
+const SESSION_COLUMNS: &str =
+    "id, lane_id, harness, harness_id, locator, title, pinned, archived, created_at";
+
+fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
+    Ok(SessionRecord {
+        id: row.get(0)?,
+        lane_id: row.get(1)?,
+        harness: row.get(2)?,
+        harness_id: row.get(3)?,
+        locator: row.get(4)?,
+        title: row.get(5)?,
+        tags: Vec::new(),
+        pinned: row.get(6)?,
+        archived: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 
@@ -1185,6 +1394,87 @@ mod tests {
 
         let error = store.remove_project(project.id).unwrap_err().to_string();
         assert!(error.contains("still has lanes"), "{error}");
+    }
+
+    fn lane_in(store: &Store) -> Lane {
+        let project = store
+            .add_project("/code/web", &settings("web", &[]))
+            .unwrap();
+        store
+            .add_lane(&NewLane {
+                project_id: project.id,
+                name: "fix-login".into(),
+                task: "Fix login".into(),
+                branch: "panoptes/fix-login".into(),
+                worktrees: vec![NewLaneWorktree {
+                    project_id: project.id,
+                    path: "/lanes/fix-login/web".into(),
+                    main_checkout: false,
+                }],
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn sessions_get_an_id_first_and_their_harness_ref_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let lane = lane_in(&store);
+        let session = store.add_session(lane.id, "pi").unwrap();
+        assert_eq!(session.lane_id, lane.id);
+        assert_eq!(session.harness_id, None);
+        assert_eq!(store.session_for("pi", "abc").unwrap(), None);
+
+        store
+            .set_harness_ref(session.id, "abc", "/s/abc.jsonl")
+            .unwrap();
+        store
+            .set_session_title(session.id, Some("  Fix it "))
+            .unwrap();
+        store.set_session_pinned(session.id, true).unwrap();
+        store
+            .set_session_tags(session.id, &["ui".into(), " ".into(), "bug".into()])
+            .unwrap();
+        // Recorded sessions survive a reopen, archived or not.
+        store.set_session_archived(session.id, true).unwrap();
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        let session = store.session(session.id).unwrap();
+        assert_eq!(session.harness_id.as_deref(), Some("abc"));
+        assert_eq!(session.locator.as_deref(), Some("/s/abc.jsonl"));
+        assert_eq!(session.title.as_deref(), Some("Fix it"));
+        assert_eq!(session.tags, ["bug", "ui"]);
+        assert!(session.pinned && session.archived);
+        assert_eq!(store.session_for("pi", "abc").unwrap(), Some(session.id));
+        // Archiving the session leaves its lane alone.
+        assert_eq!(store.lane(lane.id).unwrap().state, LaneState::Active);
+        // One harness conversation, one Panoptes session.
+        let other = store.add_session(lane.id, "pi").unwrap();
+        assert!(
+            store
+                .set_harness_ref(other.id, "abc", "/s/abc.jsonl")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn only_unstarted_sessions_are_discarded_and_archived_lanes_take_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let lane = lane_in(&store);
+        let started = store.add_session(lane.id, "pi").unwrap();
+        store.set_harness_ref(started.id, "abc", "").unwrap();
+        let unstarted = store.add_session(lane.id, "pi").unwrap();
+        store.discard_session(started.id).unwrap();
+        store.discard_session(unstarted.id).unwrap();
+        let left: Vec<i64> = store.sessions().unwrap().iter().map(|s| s.id).collect();
+        assert_eq!(left, [started.id]);
+        assert_eq!(store.session(started.id).unwrap().locator, None);
+
+        store.archive_lane(lane.id, None).unwrap();
+        assert!(store.add_session(lane.id, "pi").is_err());
+        assert!(store.set_session_pinned(999, true).is_err());
+        assert!(store.set_session_tags(999, &[]).is_err());
     }
 
     #[test]

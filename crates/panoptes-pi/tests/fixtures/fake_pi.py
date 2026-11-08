@@ -12,6 +12,7 @@ for the adapter's tests. Prompts select behaviour:
            answer
   "tool-ask"  starts a call whose tool asks its own Yes/No question, untagged,
            and replies with the answer
+  "tools"  replies with the tools it was started with ("all" by default)
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -21,6 +22,7 @@ import sys
 
 # Panoptes passes its approvals extension; only a real file counts.
 extension = sys.argv[sys.argv.index("--extension") + 1] if "--extension" in sys.argv else None
+tools = sys.argv[sys.argv.index("--tools") + 1] if "--tools" in sys.argv else "all"
 tags_approvals = extension is not None and "panoptes.approval" in open(extension).read()
 
 entries = []
@@ -105,6 +107,8 @@ def run(text, images):
     reply = f"echo: {text} done"
     if images:
         reply += f" [{len(images)} {images[0]['mimeType']}]"
+    if text == "tools":
+        reply = f"tools={tools}"
     if text == "tool":
         tool_run()
         reply = "ran it"

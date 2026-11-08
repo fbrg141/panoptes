@@ -1,42 +1,43 @@
-import type { Project, SidebarSession } from "./types";
+import type { Project, Session } from "./types";
 
 export interface SessionGroup {
   id: string;
   label: string;
-  /** Folder new sessions in this group start in, when the group is a project or a folder. */
+  /** The project's main checkout, or the folder the group shows. */
   cwd?: string;
   /** The registered project this group shows. */
   project?: Project;
   /** For a folder that is not registered: the git repository it can be registered as. */
   checkout?: string;
-  sessions: SidebarSession[];
+  sessions: Session[];
 }
 
 const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
 
-const byRecent = (a: SidebarSession, b: SidebarSession) => b.updatedAt - a.updatedAt;
+const byRecent = (a: Session, b: Session) => b.updatedAt - a.updatedAt;
 
 /**
  * Sidebar groups: open sessions (with a live process), then pinned sessions, then
  * every registered project and every other folder (git root, else folder) by most
  * recent activity, then registered projects with no sessions yet. A session appears
- * once, in the first group that claims it. A filter hides empty projects.
+ * once, in the first group that claims it; archived sessions in none. A filter hides
+ * empty projects.
  */
 export function groupSessions(
-  sessions: SidebarSession[],
+  sessions: Session[],
   projects: Project[] = [],
   query = "",
 ): SessionGroup[] {
   const needle = query.trim().toLowerCase();
   const projectById = new Map(projects.map((p) => [p.id, p]));
-  const matches = (s: SidebarSession) => {
+  const matches = (s: Session) => {
     if (!needle) return true;
     const project = s.projectId === null ? undefined : projectById.get(s.projectId);
     return [s.title, s.projectRoot, project?.name ?? ""].some((text) =>
       text.toLowerCase().includes(needle),
     );
   };
-  const visible = sessions.filter(matches).sort(byRecent);
+  const visible = sessions.filter((s) => !s.archived && matches(s)).sort(byRecent);
 
   const open = visible.filter((s) => s.open);
   const pinned = visible.filter((s) => !s.open && s.pinned);

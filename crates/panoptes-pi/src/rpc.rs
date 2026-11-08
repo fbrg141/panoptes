@@ -84,11 +84,15 @@ fn approvals_extension() -> anyhow::Result<std::path::PathBuf> {
     Ok(path)
 }
 
+/// Pi's built-in tools that only read the workspace.
+const READ_ONLY_TOOLS: &str = "read,grep,find,ls";
+
 impl RpcProcess {
     pub fn spawn(
         install: &PiInstall,
         cwd: &Path,
         session_file: Option<&str>,
+        read_only: bool,
         events: EventSink,
         mapper: EventMapper,
     ) -> anyhow::Result<Self> {
@@ -97,6 +101,11 @@ impl RpcProcess {
         command.arg("--extension").arg(approvals_extension()?);
         if let Some(file) = session_file {
             command.args(["--session", file]);
+        }
+        if read_only {
+            // Pi's own tools that cannot change files; `bash` can, so it
+            // is left out.
+            command.args(["--tools", READ_ONLY_TOOLS]);
         }
         let mut child = command
             .current_dir(cwd)

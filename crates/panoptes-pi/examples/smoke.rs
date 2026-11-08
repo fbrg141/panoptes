@@ -27,8 +27,8 @@ async fn main() -> anyhow::Result<()> {
     let cwd = std::env::temp_dir().join("panoptes-smoke");
     std::fs::create_dir_all(&cwd)?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let session = harness.start_session(StartSession::New { cwd }, tx).await?;
-    println!("started {:?}", session.session_ref());
+    let session = harness.start_session(StartSession::new(cwd), tx).await?;
+    println!("started {:?}", session.harness_ref());
 
     session
         .prompt(prompt, Vec::new(), PromptMode::Start)
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     );
     session.shutdown().await;
 
-    let file = std::path::PathBuf::from(session.session_ref().locator);
+    let file = std::path::PathBuf::from(session.harness_ref().locator);
     let _ = std::fs::remove_file(&file);
     if let Some(dir) = file.parent() {
         let _ = std::fs::remove_dir(dir); // only succeeds once empty

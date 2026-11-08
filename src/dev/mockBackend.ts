@@ -11,9 +11,9 @@ import type {
   ModelInfo,
   Project,
   QueuedPrompt,
+  Session,
   SessionSettings,
   SessionUpdate,
-  SidebarSession,
   ToolCall,
   ToolOutput,
 } from "../types";
@@ -21,13 +21,19 @@ import type {
 const now = Date.now();
 const hour = 3_600_000;
 
-const session = (
-  over: Partial<SidebarSession> & Pick<SidebarSession, "id" | "title">,
-): SidebarSession => ({
-  key: `pi:${over.id}`,
+const session = (over: Partial<Session> & { name: string; title: string }): Session => ({
+  key: `pi:${over.name}`,
+  id: null,
+  laneId: null,
   harness: "pi",
-  locator: `/sessions/${over.id}.jsonl`,
+  harnessRef: {
+    harness: "pi",
+    id: over.name,
+    locator: `/sessions/${over.name}.jsonl`,
+    cwd: over.cwd ?? "/Users/you/code/panoptes",
+  },
   cwd: "/Users/you/code/panoptes",
+  tags: [],
   createdAt: now - 48 * hour,
   updatedAt: now - hour,
   messageCount: 12,
@@ -36,16 +42,25 @@ const session = (
   checkout: "/Users/you/code/panoptes",
   projectId: 1,
   pinned: false,
+  archived: false,
   open: false,
   ...over,
 });
 
-const sessions: SidebarSession[] = [
-  session({ id: "a", title: "Sketch the harness interface", updatedAt: now - 5 * 60_000 }),
-  session({ id: "b", title: "Release checklist", pinned: true, updatedAt: now - 30 * hour }),
-  session({ id: "c", title: "Fix streaming scroll jump", updatedAt: now - 3 * hour }),
+let sessions: Session[] = [
   session({
-    id: "d",
+    name: "a",
+    key: "panoptes:1",
+    id: 1,
+    laneId: 1,
+    cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
+    title: "Sketch the harness interface",
+    updatedAt: now - 5 * 60_000,
+  }),
+  session({ name: "b", title: "Release checklist", pinned: true, updatedAt: now - 30 * hour }),
+  session({ name: "c", title: "Fix streaming scroll jump", updatedAt: now - 3 * hour }),
+  session({
+    name: "d",
     title: "Parse invoice PDFs",
     cwd: "/Users/you/code/pdf-review",
     projectRoot: "/Users/you/code/pdf-review",
@@ -54,7 +69,7 @@ const sessions: SidebarSession[] = [
     updatedAt: now - 26 * hour,
   }),
   session({
-    id: "e",
+    name: "e",
     title: "Try a new tokenizer",
     cwd: "/Users/you/scratch",
     projectRoot: "/Users/you/scratch",
@@ -103,6 +118,33 @@ let lanes: Lane[] = [
   },
 ];
 let nextLaneId = 2;
+let nextSessionId = 2;
+
+/** Records a Panoptes session in a lane, as the backend does before it starts. */
+const recordSession = (laneId: number): Session => {
+  const lane = lanes.find((item) => item.id === laneId);
+  if (lane?.state !== "active") {
+    throw { kind: "other", message: "That lane is archived; restore it to start a session" };
+  }
+  const id = nextSessionId++;
+  const cwd = lane.worktrees[0].path;
+  const recorded: Session = {
+    ...session({ name: `new-${id}`, title: "New session", cwd }),
+    key: `panoptes:${id}`,
+    id,
+    laneId,
+    harnessRef: null,
+    cwd,
+    projectRoot: cwd,
+    checkout: projects.find((p) => p.id === lane.projectId)?.repo ?? null,
+    projectId: lane.projectId,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messageCount: 0,
+  };
+  sessions.push(recorded);
+  return recorded;
+};
 
 type ToolCallBlock = Extract<Message["blocks"][number], { type: "toolCall" }>;
 
@@ -510,7 +552,8 @@ export function installMockBackend() {
           return {
             sessions: sessions.map((s) => {
               const project = projects.find((p) => p.repo === s.checkout);
-              return { ...s, projectId: project?.id ?? null, open: open.has(s.key) };
+              const projectId = s.laneId === null ? (project?.id ?? null) : s.projectId;
+              return { ...s, projectId, open: open.has(s.key) };
             }),
             projects: [...projects].sort((x, y) => x.name.localeCompare(y.name)),
             lanes,
@@ -595,11 +638,27 @@ export function installMockBackend() {
             });
           }
           open.add(a.key);
-          return {
-            key: a.key,
-            session: { harness: "pi", id: a.key.slice(3), locator: a.locator, cwd: a.cwd },
-            history,
-          };
+          return { key: a.key, history };
+        case "new_session": {
+          const recorded = recordSession((args as { laneId: number }).laneId);
+          open.add(recorded.key);
+          return { key: recorded.key, history: [] };
+        }
+        case "replace_session": {
+          const old = sessions.find((s) => s.key === a.key);
+          if (old?.laneId == null) throw { kind: "rejected", message: "Not in a lane" };
+          sessions = sessions.map((s) => (s.key === a.key ? { ...s, archived: true } : s));
+          open.delete(a.key);
+          const recorded = recordSession(old.laneId);
+          open.add(recorded.key);
+          return { key: recorded.key, history: [] };
+        }
+        case "archive_session": {
+          const archived = (args as { archived: boolean }).archived;
+          sessions = sessions.map((s) => (s.key === a.key ? { ...s, archived } : s));
+          if (archived) open.delete(a.key);
+          return null;
+        }
         case "session_history":
           return history;
         case "send_prompt":
