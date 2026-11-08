@@ -14,6 +14,7 @@ import { filterSessions, relativeTime } from "../grouping";
 import { laneMenuItems, projectMenuItems, sessionMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
+import { ContextMenu } from "./ContextMenu";
 import { RowMenu } from "./RowMenu";
 
 type NavigationTab = "lanes" | "all";
@@ -594,26 +595,9 @@ function SessionItem({
     .join(" · ");
 
   return (
-    <li className={`group/item relative ${nested ? "ml-2" : ""}`}>
-      <AgentRow
-        name={session.title}
-        task={metadata}
-        status={status}
-        time={relativeTime(session.updatedAt)}
-        selected={active}
-        onClick={() => void open(session)}
-      />
-      {holder && (
-        <span
-          className="absolute top-1/2 right-2 -translate-y-1/2 text-ink-muted group-hover/item:hidden group-focus-within/item:hidden"
-          title="Holds the lane's write lock"
-        >
-          <Icon name="lock" size={14} />
-        </span>
-      )}
-      <RowMenu
+    <li className={`relative ${nested ? "ml-2" : ""}`}>
+      <ContextMenu
         label={`Actions for session ${session.title}`}
-        className="absolute top-1/2 right-2 hidden -translate-y-1/2 group-hover/item:block group-focus-within/item:block"
         items={sessionMenuItems(session, {
           adoptable: onAdopt !== undefined,
           laneActions,
@@ -623,7 +607,24 @@ function SessionItem({
           if (id === "stop") void close(session.key);
           if (id === "archive") void setArchived(session.key, !session.archived);
         }}
-      />
+      >
+        <AgentRow
+          name={session.title}
+          task={metadata}
+          status={status}
+          time={relativeTime(session.updatedAt)}
+          selected={active}
+          onClick={() => void open(session)}
+        />
+        {holder && (
+          <span
+            className="absolute top-1/2 right-2 -translate-y-1/2 text-ink-muted"
+            title="Holds the lane's write lock"
+          >
+            <Icon name="lock" size={14} />
+          </span>
+        )}
+      </ContextMenu>
     </li>
   );
 }

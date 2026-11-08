@@ -24,6 +24,14 @@ describe("sidebar row menus", () => {
     expect(ids(laneMenuItems({ state: "archived" }))).toEqual(["restore-lane"]);
   });
 
+  it("lists session actions by name only, without icons", () => {
+    const items = sessionMenuItems(
+      { ...session, laneId: 1, open: true },
+      { adoptable: true, laneActions: true },
+    );
+    expect(items.every((item) => !("icon" in item))).toBe(true);
+  });
+
   it("offers adoption and stopping outside a lane", () => {
     expect(ids(sessionMenuItems({ ...session, open: true }, { adoptable: true }))).toEqual([
       "adopt",
