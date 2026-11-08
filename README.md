@@ -39,6 +39,27 @@ by a design system.
 - For development: Rust (via [rustup](https://rustup.rs)), Node 22+, pnpm,
   and Xcode Command Line Tools.
 
+## Install on your Mac
+
+```bash
+pnpm app:install
+```
+
+This builds a release, signs it ad hoc (no Apple developer account needed for
+a build you made yourself), replaces `/Applications/Panoptes.app` and opens
+it. Run it again after pulling to update; it quits a running Panoptes first.
+
+The installed app keeps its own data, apart from `pnpm tauri dev`:
+
+| | Installed app | `pnpm tauri dev` |
+|---|---|---|
+| Store | `~/Library/Application Support/dev.panoptes.app/panoptes.db` | `…/dev.panoptes.app/dev/panoptes.db` |
+| Lane worktrees | `~/Panoptes/lanes` | `~/Panoptes/dev/lanes` |
+
+Apps opened from Finder don't get your shell's `PATH`, so at startup the
+installed app reads it from your login shell. That is how it finds `pi`,
+`node` and whatever a project's setup runs.
+
 ## Development
 
 ```bash
