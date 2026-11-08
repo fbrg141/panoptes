@@ -5,6 +5,7 @@ mod files;
 mod lanes;
 mod projects;
 mod service;
+mod shell_path;
 mod store;
 
 use std::path::Path;
@@ -259,12 +260,18 @@ fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
         data_dir
     };
     let store = Store::open(&data_dir)?;
-    let lanes_root = app
+    // Lanes are split the same way, so a debug lane never takes the folder
+    // name an installed app's lane wants.
+    let panoptes_home = app
         .path()
         .home_dir()
         .context("Could not find the home folder for lanes")?
-        .join("Panoptes")
-        .join("lanes");
+        .join("Panoptes");
+    let lanes_root = if cfg!(debug_assertions) {
+        panoptes_home.join("dev").join("lanes")
+    } else {
+        panoptes_home.join("lanes")
+    };
 
     let mut harnesses: Vec<Arc<dyn Harness>> = Vec::new();
     let mut info = AppInfo {
@@ -305,6 +312,10 @@ fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `pnpm tauri dev` inherits the terminal's PATH; an installed app does not.
+    if !cfg!(debug_assertions) {
+        shell_path::apply();
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
