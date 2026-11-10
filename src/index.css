@@ -229,3 +229,39 @@ textarea:focus-visible {
     animation: none;
   }
 }
+
+/*
+ * Overlays (the search palette and the dialogs) arrive with a short fade and
+ * settle, so opening one reads as a layer over the window rather than a cut.
+ * Closing is instant: the keyboard is already back on the window.
+ */
+.overlay-scrim,
+.px-scrim:has(> .overlay-panel) {
+  animation: overlay-fade var(--duration-fast) var(--ease-out);
+}
+.overlay-panel {
+  animation: overlay-rise var(--duration-base) var(--ease-out);
+}
+@keyframes overlay-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes overlay-rise {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .overlay-scrim,
+  .px-scrim:has(> .overlay-panel),
+  .overlay-panel {
+    animation: none;
+  }
+}
+
+/* A menu's search field sits in its own header row; the menu is the focus. */
+.menu-search:focus-visible {
+  outline: none;
+}

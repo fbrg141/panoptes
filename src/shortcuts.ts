@@ -70,3 +70,21 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     ],
   },
 ];
+
+/**
+ * The cheatsheet narrowed to `query`: an entry stays when its label or its
+ * group's name contains every word typed, and groups left empty drop out.
+ */
+export function filterShortcuts(groups: ShortcutGroup[], query: string): ShortcutGroup[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return groups;
+  return groups
+    .map((group) => ({
+      ...group,
+      entries: group.entries.filter((entry) => {
+        const text = `${group.label} ${entry.label}`.toLowerCase();
+        return words.every((word) => text.includes(word));
+      }),
+    }))
+    .filter((group) => group.entries.length > 0);
+}

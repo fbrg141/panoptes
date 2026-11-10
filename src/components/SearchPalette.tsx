@@ -1,5 +1,5 @@
 import { CommandPalette } from "@panoptes/design-system";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { paletteGroups, paletteTarget } from "../palette";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
@@ -13,14 +13,30 @@ export function SearchPalette() {
   const sessions = useStore((s) => s.sessions);
   const projects = useStore((s) => s.projects);
   const lanes = useStore((s) => s.lanes);
+  const activeKey = useStore((s) => s.activeKey);
   const open = useStore((s) => s.open);
   const create = useStore((s) => s.create);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
   const groups = useMemo(
-    () => paletteGroups(sessions, projects, lanes),
-    [sessions, projects, lanes],
+    () => paletteGroups(sessions, projects, lanes, activeKey),
+    [sessions, projects, lanes, activeKey],
   );
+  const scrim = useRef<HTMLDivElement>(null);
+
+  // The palette moves its highlight but never scrolls to it; keep the
+  // highlighted row in view as the arrows walk past the list's edge.
+  useEffect(() => {
+    const root = scrim.current;
+    if (!root) return;
+    const follow = new MutationObserver(() => {
+      root
+        .querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
+        ?.scrollIntoView({ block: "nearest" });
+    });
+    follow.observe(root, { subtree: true, attributeFilter: ["aria-selected"] });
+    return () => follow.disconnect();
+  }, []);
 
   const select = async (id: string) => {
     const target = paletteTarget(id, sessions, projects, lanes);
@@ -53,14 +69,16 @@ export function SearchPalette() {
     // the panel pushed toward the top like a command palette.
     // biome-ignore lint/a11y/noStaticElementInteractions: Escape closes it from the keyboard inside
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-scrim px-6 pt-[10vh]"
+      ref={scrim}
+      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center bg-scrim px-6 pt-[12vh]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) close();
       }}
     >
       <CommandPalette
+        className="overlay-panel"
         groups={groups}
-        placeholder="Search sessions, lanes and projects"
+        placeholder="Jump to a session, lane or project"
         autoFocus
         onSelect={(id) => void select(id)}
         onClose={close}

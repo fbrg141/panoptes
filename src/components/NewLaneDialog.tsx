@@ -43,6 +43,7 @@ export function NewLaneDialog({ projectId }: { projectId: number }) {
 
   return (
     <Dialog
+      className="overlay-panel"
       title={`New lane in ${project.name}`}
       onClose={cancel}
       actions={
@@ -50,7 +51,13 @@ export function NewLaneDialog({ projectId }: { projectId: number }) {
           <Button variant="secondary" onClick={cancel}>
             Cancel
           </Button>
-          <Button type="submit" form="new-lane" disabled={busy || !task.trim()}>
+          <Button
+            type="submit"
+            form="new-lane"
+            variant="primary"
+            kbd={busy ? undefined : ["↵"]}
+            disabled={busy || !task.trim()}
+          >
             {busy ? "Creating…" : "Create lane"}
           </Button>
         </>
@@ -66,7 +73,7 @@ export function NewLaneDialog({ projectId }: { projectId: number }) {
       >
         <Input
           label="Task"
-          hint="A worktree, branch and write lock for this line of work."
+          hint="Names the lane. It gets its own worktree, branch and write lock."
           placeholder="Fix login redirects"
           aria-label="Lane task"
           value={task}
@@ -76,14 +83,14 @@ export function NewLaneDialog({ projectId }: { projectId: number }) {
         />
         <Checkbox
           label="Use the main checkout"
-          hint="Explicit opt-in: share the project's checkout. No worktree, copied files or setup command; archiving never removes it."
+          hint="Share the project's checkout: no worktree, copied files or setup command. Archiving the lane never removes it."
           checked={mainCheckout}
           onChange={(event) => setMainCheckout(event.target.checked)}
           disabled={busy}
         />
         <Checkbox
           label="Start a session in this lane"
-          hint="Open a new chat in its worktree as soon as the lane is ready."
+          hint="Open a session in the lane as soon as it is ready."
           checked={startSession}
           onChange={(event) => setStartSession(event.target.checked)}
           disabled={busy}

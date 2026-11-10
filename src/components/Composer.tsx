@@ -1,4 +1,4 @@
-import { Button, Icon, Menu, type MenuItem } from "@panoptes/design-system";
+import { Button, Icon, Kbd, Menu, type MenuItem } from "@panoptes/design-system";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import {
@@ -605,10 +605,29 @@ function ModelPicker({ settings }: { settings: SessionSettings }) {
   const [picked, setPicked] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const rows = useMemo(
     () => filterModels(models ?? [], query, current?.id),
     [models, query, current],
   );
+
+  // Open on the current model, so the arrows step from where you are.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only when the menu opens or the list arrives
+  useEffect(() => {
+    if (open && !query)
+      setPicked(
+        Math.max(
+          0,
+          rows.findIndex((row) => row.current),
+        ),
+      );
+  }, [open, models]);
+
+  // Keep the highlighted row in view as the arrows walk past the list's edge.
+  useEffect(() => {
+    if (open)
+      list.current?.querySelector(`#model-row-${picked}`)?.scrollIntoView({ block: "nearest" });
+  }, [open, picked]);
 
   // Focus the search field when the menu opens, and close on an outside click.
   useEffect(() => {
@@ -670,37 +689,43 @@ function ModelPicker({ settings }: { settings: SessionSettings }) {
         <Icon name="chevron-down" size={12} />
       </ToolbarButton>
       {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-1 w-80 rounded-md bg-surface-raised p-1 shadow-[var(--shadow-pop)]">
-          <input
-            ref={search}
-            role="combobox"
-            aria-expanded
-            aria-controls="model-menu"
-            aria-activedescendant={rows.length > 0 ? `model-row-${picked}` : undefined}
-            aria-label="Search models"
-            placeholder="Search models"
-            value={query}
-            className="mb-1 box-border h-[var(--control)] w-full rounded-sm border border-line bg-surface-sunken px-2 text-body text-ink placeholder:text-ink-faint focus:outline-none"
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setPicked(0);
-            }}
-            onKeyDown={onKeyDown}
-          />
+        <div className="overlay-panel absolute bottom-full left-0 z-20 mb-1 w-[22rem] overflow-hidden rounded-md bg-surface-raised shadow-[var(--shadow-pop)]">
+          <div className="flex h-10 items-center gap-2 border-b border-line px-3 text-ink-muted">
+            <Icon name="search" size={16} className="flex-none" />
+            <input
+              ref={search}
+              role="combobox"
+              aria-expanded
+              aria-controls="model-menu"
+              aria-activedescendant={rows.length > 0 ? `model-row-${picked}` : undefined}
+              aria-label="Search models"
+              placeholder="Search models"
+              value={query}
+              className="menu-search min-w-0 flex-1 bg-transparent text-body text-ink placeholder:text-ink-faint"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPicked(0);
+              }}
+              onKeyDown={onKeyDown}
+            />
+          </div>
           <div
+            ref={list}
             id="model-menu"
             role="listbox"
             aria-label="Models"
-            className="max-h-72 overflow-y-auto"
+            className="max-h-72 overflow-y-auto p-1"
           >
             {rows.map((row, i) => {
               const heading = i === 0 || rows[i - 1].provider !== row.provider;
+              // The provider heads its group, so the row shows the id without it.
+              const shortId = row.id.startsWith(`${row.provider}/`)
+                ? row.id.slice(row.provider.length + 1)
+                : row.id;
               return (
                 <Fragment key={row.id}>
                   {heading && (
-                    <div className="px-2 pb-1 pt-2 text-caption font-medium uppercase tracking-[0.06em] text-ink-muted">
-                      {row.provider}
-                    </div>
+                    <div className="px-2 pb-1 pt-2 text-caption text-ink-muted">{row.provider}</div>
                   )}
                   {/* biome-ignore lint/a11y/useKeyWithClickEvents: the search field drives the list from the keyboard */}
                   <div
@@ -708,6 +733,7 @@ function ModelPicker({ settings }: { settings: SessionSettings }) {
                     role="option"
                     aria-selected={i === picked}
                     tabIndex={-1}
+                    title={row.id}
                     className={`flex h-[var(--control)] cursor-default items-center gap-2 rounded-sm px-2 ${
                       i === picked ? "bg-selection" : ""
                     }`}
@@ -716,21 +742,31 @@ function ModelPicker({ settings }: { settings: SessionSettings }) {
                     onClick={() => choose(row.id)}
                   >
                     {row.current ? (
-                      <Icon name="check" size={14} className="flex-none text-ink-muted" />
+                      <Icon name="check" size={14} className="flex-none text-ink" />
                     ) : (
                       <span className="w-3.5 flex-none" />
                     )}
-                    <span className="truncate">{row.name}</span>
-                    <span className="text-code-sm ml-auto truncate text-ink-muted">{row.id}</span>
+                    <span className="max-w-[60%] flex-none truncate text-ink">{row.name}</span>
+                    <span className="text-code-sm min-w-0 flex-1 truncate text-right text-ink-muted">
+                      {shortId}
+                    </span>
                   </div>
                 </Fragment>
               );
             })}
             {rows.length === 0 && (
-              <p className="px-2 py-1 text-caption text-ink-muted">
-                {models === undefined ? "Loading models" : "No models match."}
+              <p className="px-2 py-3 text-center text-ink-muted">
+                {models === undefined ? "Loading models…" : `No models match “${query.trim()}”.`}
               </p>
             )}
+          </div>
+          <div className="flex h-[var(--control)] items-center gap-4 border-t border-line px-3 text-label font-normal text-ink-muted">
+            <span className="inline-flex items-center gap-1.5">
+              <Kbd keys={["↑", "↓"]} /> to move
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <Kbd keys={["↵"]} /> to switch
+            </span>
           </div>
         </div>
       )}
