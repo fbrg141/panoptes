@@ -10,4 +10,9 @@ unset SDKROOT
 # cargo on PATH.
 [ -d "$HOME/.cargo/bin" ] && PATH="$HOME/.cargo/bin:$PATH"
 
+# During a push, git sets GIT_DIR (and friends) to the repository being pushed.
+# The Rust tests shell out to git inside temporary fixture repositories; a
+# leaked GIT_DIR would redirect those commands at the real repository instead.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+
 exec pnpm check
