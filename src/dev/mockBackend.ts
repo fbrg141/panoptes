@@ -767,7 +767,7 @@ export function installMockBackend() {
 
 /**
  * `?showcase`: every session status at once, plus a lock holder and a long
- * title, so the sidebar's session rows can be reviewed side by side.
+ * title (queued for the lock), so the sidebar's session rows can be reviewed side by side.
  */
 async function showcase(open: Set<string>) {
   sessions.push(
@@ -807,5 +807,9 @@ async function showcase(open: Set<string>) {
   await emit("session-event", {
     key: "panoptes:1",
     event: { type: "lockChanged", holder: true, queued: false },
+  });
+  await emit("session-event", {
+    key: "panoptes:90",
+    event: { type: "lockChanged", holder: false, queued: true },
   });
 }

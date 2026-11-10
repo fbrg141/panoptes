@@ -1,5 +1,5 @@
 import { Button, Menu, type MenuItem } from "@panoptes/design-system";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** The ellipsis trigger and popup shared by project, lane and session rows. */
 export function RowMenu({
@@ -7,13 +7,30 @@ export function RowMenu({
   items,
   onSelect,
   className = "",
+  triggerClassName = "bg-surface",
+  triggerTabIndex,
+  open: controlled,
+  onOpenChange,
 }: {
   label: string;
   items: MenuItem[];
   onSelect: (id: string) => void;
   className?: string;
+  triggerClassName?: string;
+  /** -1 when the row moves focus to the trigger itself (roving focus). */
+  triggerTabIndex?: number;
+  /** Lets the row open the menu from the keyboard (Shift+F10, the menu key). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolled, setUncontrolled] = useState(false);
+  const open = controlled ?? uncontrolled;
+  const notify = useRef(onOpenChange);
+  notify.current = onOpenChange;
+  const setOpen = useCallback((value: boolean) => {
+    setUncontrolled(value);
+    notify.current?.(value);
+  }, []);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,7 +41,7 @@ export function RowMenu({
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
-  }, [open]);
+  }, [open, setOpen]);
 
   const focusTrigger = () => root.current?.querySelector<HTMLButtonElement>("button")?.focus();
   const dismiss = () => {
@@ -54,8 +71,9 @@ export function RowMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         title={label}
-        className="bg-surface"
-        onClick={() => setOpen((shown) => !shown)}
+        className={triggerClassName}
+        tabIndex={triggerTabIndex}
+        onClick={() => setOpen(!open)}
       />
       {open && (
         <div className="absolute top-full right-0 z-30 mt-1 max-h-80 overflow-y-auto rounded-md">
