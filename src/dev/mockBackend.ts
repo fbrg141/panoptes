@@ -762,4 +762,54 @@ export function installMockBackend() {
     },
     { shouldMockEvents: true },
   );
+  if (new URLSearchParams(window.location.search).has("showcase")) void showcase(open);
+}
+
+/**
+ * `?showcase`: every session status at once, plus a lock holder and a long
+ * title (queued for the lock), so the sidebar's session rows can be reviewed side by side.
+ */
+async function showcase(open: Set<string>) {
+  sessions.push(
+    session({
+      name: "f",
+      key: "panoptes:90",
+      id: 90,
+      laneId: 1,
+      cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
+      title: "Wire the approval card into the composer and keep focus on the textarea",
+      updatedAt: now - 2 * 60_000,
+    }),
+    session({
+      name: "g",
+      key: "panoptes:91",
+      id: 91,
+      laneId: 1,
+      cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
+      title: "Run the migration tests",
+      updatedAt: now - 40 * 60_000,
+    }),
+  );
+  const statuses: [string, string][] = [
+    ["panoptes:1", "running"],
+    ["panoptes:90", "waiting"],
+    ["panoptes:91", "failed"],
+    ["pi:b", "done"],
+    ["pi:c", "running"],
+    ["pi:d", "waiting"],
+  ];
+  // Give the store a moment to subscribe before the events arrive.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  for (const [key, status] of statuses) {
+    open.add(key);
+    await emit("session-event", { key, event: { type: "statusChanged", status } });
+  }
+  await emit("session-event", {
+    key: "panoptes:1",
+    event: { type: "lockChanged", holder: true, queued: false },
+  });
+  await emit("session-event", {
+    key: "panoptes:90",
+    event: { type: "lockChanged", holder: false, queued: true },
+  });
 }

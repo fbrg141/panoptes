@@ -1,21 +1,12 @@
-import {
-  AgentRow,
-  Button,
-  Checkbox,
-  Dialog,
-  Icon,
-  Input,
-  LoopMark,
-  Tabs,
-} from "@panoptes/design-system";
+import { Button, Checkbox, Dialog, Input, LoopMark, Tabs } from "@panoptes/design-system";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
-import { filterSessions, relativeTime } from "../grouping";
-import { laneMenuItems, projectMenuItems, sessionMenuItems } from "../sidebarMenu";
+import { filterSessions } from "../grouping";
+import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
-import { ContextMenu } from "./ContextMenu";
 import { RowMenu } from "./RowMenu";
+import { SessionItem } from "./SessionItem";
 
 type NavigationTab = "lanes" | "all";
 
@@ -568,64 +559,6 @@ function AdoptSessionDialog({
         </ul>
       )}
     </Dialog>
-  );
-}
-
-function SessionItem({
-  session,
-  context,
-  onAdopt,
-  laneActions = false,
-  nested = false,
-}: {
-  session: Session;
-  context?: string;
-  onAdopt?: () => void;
-  laneActions?: boolean;
-  nested?: boolean;
-}) {
-  const active = useStore((s) => s.activeKey === session.key);
-  const status = useStore((s) => s.statuses[session.key] ?? "idle");
-  const open = useStore((s) => s.open);
-  const close = useStore((s) => s.close);
-  const setArchived = useStore((s) => s.setArchived);
-  const holder = useStore((s) => s.locks[session.key]?.holder ?? false);
-  const metadata = [session.archived ? "Archived" : null, context ?? basename(session.cwd)]
-    .filter(Boolean)
-    .join(" · ");
-
-  return (
-    <li className={`relative ${nested ? "ml-2" : ""}`}>
-      <ContextMenu
-        label={`Actions for session ${session.title}`}
-        items={sessionMenuItems(session, {
-          adoptable: onAdopt !== undefined,
-          laneActions,
-        })}
-        onSelect={(id) => {
-          if (id === "adopt") onAdopt?.();
-          if (id === "stop") void close(session.key);
-          if (id === "archive") void setArchived(session.key, !session.archived);
-        }}
-      >
-        <AgentRow
-          name={session.title}
-          task={metadata}
-          status={status}
-          time={relativeTime(session.updatedAt)}
-          selected={active}
-          onClick={() => void open(session)}
-        />
-        {holder && (
-          <span
-            className="absolute top-1/2 right-2 -translate-y-1/2 text-ink-muted"
-            title="Holds the lane's write lock"
-          >
-            <Icon name="lock" size={14} />
-          </span>
-        )}
-      </ContextMenu>
-    </li>
   );
 }
 

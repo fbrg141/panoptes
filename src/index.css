@@ -111,3 +111,120 @@ textarea:focus-visible {
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--line);
 }
+
+/*
+ * Session rows in the sidebar (SessionItem). One button fills the row; the
+ * actions sit over the meta column and cross-fade with it, so hovering or
+ * focusing a row never moves a pixel of its layout.
+ */
+.session-row {
+  position: relative;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.session-row:hover,
+.session-row:has(:focus-visible) {
+  background: var(--surface-raised);
+}
+.session-row[data-selected] {
+  background: var(--selection);
+}
+/* Selected: the fill plus a 2px inset bar in the pointing colour. */
+.session-row[data-selected]::before {
+  content: "";
+  position: absolute;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  left: 0;
+  width: 2px;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  background: var(--focus);
+  pointer-events: none;
+}
+.session-hit {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+/* Inset, so the ring is never clipped by the scrolling list. */
+.session-hit:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.session-row[data-archived] .session-title {
+  color: var(--ink-muted);
+}
+/* Wide enough for Stop and the menu button, so the cross-fade never reflows. */
+.session-meta {
+  display: flex;
+  min-width: 52px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+  font: 400 11.5px / 16px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+.session-actions {
+  position: absolute;
+  top: 0;
+  right: var(--space-2);
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  opacity: 0;
+  transform: translateX(var(--space-1));
+  pointer-events: none;
+}
+.session-meta,
+.session-actions {
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+/* Keyboard focus and an open menu count as hover; a mouse click's focus does not. */
+.session-row[data-actions]:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
+  .session-meta {
+  opacity: 0;
+}
+.session-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"])) .session-actions {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+/* Ghost buttons hover to surface-raised, which is the row's own hover fill. */
+.session-actions .px-btn-ghost:hover:not(:disabled),
+.session-actions .px-btn-ghost[aria-expanded="true"] {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.session-glyph {
+  animation: session-glyph-in var(--duration-base) var(--ease-out);
+}
+@keyframes session-glyph-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-row,
+  .session-meta,
+  .session-actions {
+    transition: none;
+  }
+  .session-actions {
+    transform: none;
+  }
+  .session-glyph {
+    animation: none;
+  }
+}
