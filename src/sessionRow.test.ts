@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   isLive,
   lockLabel,
-  lockQueueText,
   primaryAction,
   sessionDetail,
   sessionRowLabel,
@@ -29,13 +28,6 @@ describe("session row", () => {
     expect(lockLabel({ holder: false, queued: false })).toBeNull();
     expect(lockLabel({ holder: true, queued: false })).toBe("Holds the lane's write lock");
     expect(lockLabel({ holder: false, queued: true })).toMatch(/read-only/);
-  });
-
-  it("shows which sessions are waiting for the write lock", () => {
-    expect(lockQueueText(undefined)).toBeNull();
-    expect(lockQueueText({ holder: false, queued: false })).toBeNull();
-    expect(lockQueueText({ holder: true, queued: false })).toBeNull();
-    expect(lockQueueText({ holder: false, queued: true })).toBe("Waiting for write lock");
   });
 
   it("does not repeat the lane's project when nested", () => {

@@ -15,11 +15,6 @@ export function RowMenu({
   label: string;
   items: MenuItem[];
   onSelect: (id: string) => void;
-  /**
-   * Positioning and reveal classes for the trigger's wrapper. It must be
-   * positioned (`absolute` in a row, or the default `relative`) so the popup
-   * anchors to the trigger rather than the page.
-   */
   className?: string;
   triggerClassName?: string;
   /** -1 when the row moves focus to the trigger itself (roving focus). */
@@ -58,7 +53,7 @@ export function RowMenu({
     // biome-ignore lint/a11y/noStaticElementInteractions: the popup supports keyboard dismissal
     <div
       ref={root}
-      className={className || "relative"}
+      className={`relative ${className}`}
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
           event.preventDefault();

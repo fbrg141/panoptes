@@ -185,7 +185,7 @@ function ProjectItem({
         />
         <button
           type="button"
-          className="min-w-0 flex-1 truncate py-1 pr-8 text-left text-caption"
+          className="min-w-0 flex-1 truncate py-1 text-left text-caption"
           title={project.repo}
           onClick={() => setCollapsed((value) => !value)}
         >

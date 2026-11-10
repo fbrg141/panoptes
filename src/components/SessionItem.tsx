@@ -4,7 +4,6 @@ import { relativeTime } from "../grouping";
 import {
   isLive,
   lockLabel,
-  lockQueueText,
   primaryAction,
   sessionDetail,
   sessionRowLabel,
@@ -125,7 +124,6 @@ export function SessionItem({
   const now = useClock();
   const time = relativeTime(session.updatedAt, Math.max(now, session.updatedAt));
   const lockText = lockLabel(lock);
-  const queueText = lockQueueText(lock);
   const label = sessionRowLabel({ title: session.title, status, lock, detail, time });
 
   const select = (id: string) => {
@@ -223,7 +221,7 @@ export function SessionItem({
               {lockText && (
                 <span className="inline-flex items-center gap-1" title={lockText}>
                   <Icon name="lock" size={12} />
-                  {queueText}
+                  {lock?.queued && !lock.holder && "queued"}
                 </span>
               )}
             </span>
