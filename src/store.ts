@@ -7,6 +7,7 @@ import type {
   AppInfo,
   ArchiveLaneOutcome,
   ArchiveStrategy,
+  Draft,
   ErrorKind,
   ImageAttachment,
   Lane,
@@ -48,6 +49,8 @@ export interface State {
   settings: Record<string, SessionSettings>;
   /** Models each open session can switch to, once asked for. */
   models: Record<string, ModelInfo[]>;
+  /** Composer drafts kept for sessions the user switched away from. */
+  drafts: Record<string, Draft>;
   activeKey: string | null;
   /** Problems listing sessions, one line per harness. */
   listErrors: string[];
@@ -68,6 +71,8 @@ export interface State {
   /** Renames a lane session; an empty title falls back to the harness's. */
   rename: (key: string, title: string) => Promise<void>;
   send: (text: string, options?: SendOptions) => Promise<void>;
+  /** Keeps a composer draft under its session, or drops it once it is empty. */
+  saveDraft: (key: string, draft: Draft) => void;
   loadModels: () => Promise<void>;
   setModel: (modelId: string) => Promise<void>;
   setThinkingLevel: (level: string) => Promise<void>;
@@ -140,12 +145,14 @@ export function createAppStore(backend: typeof api) {
         const { [key]: _lock, ...locks } = s.locks;
         const { [key]: _settings, ...settings } = s.settings;
         const { [key]: _models, ...models } = s.models;
+        const { [key]: _draft, ...drafts } = s.drafts;
         return {
           conversations,
           statuses,
           locks,
           settings,
           models,
+          drafts,
           activeKey: s.activeKey === key ? null : s.activeKey,
         };
       });
@@ -192,6 +199,7 @@ export function createAppStore(backend: typeof api) {
       sending: {},
       settings: {},
       models: {},
+      drafts: {},
       activeKey: null,
       listErrors: [],
       error: null,
@@ -330,6 +338,15 @@ export function createAppStore(backend: typeof api) {
           set((s) => ({ sending: { ...s.sending, [key]: false } }));
         }
       },
+
+      saveDraft: (key, draft) =>
+        set((s) => {
+          if (!draft.text.trim() && draft.attachments.length === 0) {
+            const { [key]: _dropped, ...drafts } = s.drafts;
+            return { drafts };
+          }
+          return { drafts: { ...s.drafts, [key]: draft } };
+        }),
 
       loadModels: async () => {
         const key = get().activeKey;
