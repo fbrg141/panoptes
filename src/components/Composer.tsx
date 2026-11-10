@@ -77,15 +77,44 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
   const [picked, setPicked] = useState(0);
   const [files, setFiles] = useState<{ cwd: string; list: string[] } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const saveDraft = useStore((s) => s.saveDraft);
 
-  // A different session starts with an empty composer.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs per session
+  // What is typed now, kept so switching sessions can store it as a draft.
+  const live = useRef<{
+    text: string;
+    attachments: FileAttachment[];
+    mentioned: ReadonlySet<string>;
+  }>({
+    text: "",
+    attachments: [],
+    mentioned: new Set(),
+  });
+  const key = useRef(activeKey);
+
   useEffect(() => {
-    setText("");
-    setAttachments([]);
-    setMentioned(new Set());
-    setMention(null);
-  }, [activeKey]);
+    live.current = { text, attachments, mentioned };
+  });
+
+  // Switching sessions stores the old one's draft and loads the new one's.
+  useEffect(() => {
+    const previous = key.current;
+    if (previous !== activeKey) {
+      // A closed session has no draft to keep; `forget` already dropped it.
+      if (previous && useStore.getState().conversations[previous]) {
+        saveDraft(previous, {
+          text: live.current.text,
+          attachments: live.current.attachments,
+          mentioned: [...live.current.mentioned],
+        });
+      }
+      key.current = activeKey;
+      const draft = activeKey ? useStore.getState().drafts[activeKey] : undefined;
+      setText(draft?.text ?? "");
+      setAttachments(draft?.attachments ?? []);
+      setMentioned(new Set(draft?.mentioned ?? []));
+      setMention(null);
+    }
+  }, [activeKey, saveDraft]);
 
   // Size after the controlled value is rendered, so sending also collapses it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the text value drives the measurement
@@ -186,6 +215,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
     setAttachments([]);
     setMentioned(new Set());
     setMention(null);
+    if (activeKey) saveDraft(activeKey, { text: "", attachments: [], mentioned: [] });
     void send(prompt.text, { images: prompt.images, queue });
   };
 

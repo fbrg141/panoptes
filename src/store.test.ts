@@ -261,6 +261,28 @@ describe("store", () => {
     expect(store.getState().activeKey).toBeNull();
   });
 
+  it("keeps each session's draft, dropping it once it is empty", () => {
+    store.getState().saveDraft("pi:s1", {
+      text: "typed halfway",
+      attachments: [{ name: "a.txt", path: "/code/a.txt", mimeType: null, data: null }],
+      mentioned: [],
+    });
+    expect(store.getState().drafts["pi:s1"]?.text).toBe("typed halfway");
+
+    store.getState().saveDraft("pi:s2", { text: "", attachments: [], mentioned: [] });
+    expect(store.getState().drafts["pi:s2"]).toBeUndefined();
+
+    store.getState().saveDraft("pi:s1", { text: "", attachments: [], mentioned: [] });
+    expect(store.getState().drafts).toEqual({});
+  });
+
+  it("forgets a draft with its session", async () => {
+    await store.getState().open(session);
+    store.getState().saveDraft("pi:s1", { text: "typed halfway", attachments: [], mentioned: [] });
+    await store.getState().close("pi:s1");
+    expect(store.getState().drafts).toEqual({});
+  });
+
   it("shows backend errors", async () => {
     fake.backend.openSession.mockRejectedValueOnce({
       kind: "unavailable",

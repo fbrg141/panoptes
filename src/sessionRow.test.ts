@@ -30,6 +30,13 @@ describe("session row", () => {
     expect(lockLabel({ holder: false, queued: true })).toMatch(/read-only/);
   });
 
+  it("shows which sessions are waiting for the write lock", () => {
+    expect(lockQueueText(undefined)).toBeNull();
+    expect(lockQueueText({ holder: false, queued: false })).toBeNull();
+    expect(lockQueueText({ holder: true, queued: false })).toBeNull();
+    expect(lockQueueText({ holder: false, queued: true })).toBe("Waiting");
+  });
+
   it("does not repeat the lane's project when nested", () => {
     expect(sessionDetail({ archived: false, messageCount: 12 }, undefined)).toBe("12 messages");
     expect(sessionDetail({ archived: false, messageCount: 1 }, undefined)).toBe("1 message");
