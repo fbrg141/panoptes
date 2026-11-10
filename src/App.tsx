@@ -96,7 +96,9 @@ export default function App() {
       {overlay?.type === "search" && <SearchPalette />}
       {overlay?.type === "newSession" && <NewSessionDialog />}
       {overlay?.type === "shortcuts" && <ShortcutsDialog />}
-      {overlay?.type === "newLane" && <NewLaneDialog projectId={overlay.projectId} />}
+      {overlay?.type === "newLane" && (
+        <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
+      )}
     </div>
   );
 }

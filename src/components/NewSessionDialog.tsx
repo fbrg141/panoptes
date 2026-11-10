@@ -1,21 +1,32 @@
-import { Button, Dialog, Select } from "@panoptes/design-system";
-import { useEffect, useMemo, useState } from "react";
+import { Button, Icon, Kbd } from "@panoptes/design-system";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  DEFAULT_CHOICE,
+  defaultTarget,
+  firstLane,
+  laneGroups,
+  modelGroups,
+  NEW_LANE,
+  projectGroups,
+  shortModelId,
+  thinkingGroups,
+} from "../newSession";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
 import { useUi } from "../ui";
+import { Overlay, OverlayFooter, OverlayHeader } from "./Overlay";
+import { Picker } from "./Picker";
 
 /**
- * The ⌘T form: pick a lane, optionally a model and thinking level, and the
- * first prompt. The session is recorded, configured and started in one go;
- * anything left blank keeps the harness's own default.
+ * The ⌘T panel, shaped like the composer it leads to: where the session runs
+ * on top, the first prompt as the body, and the model and thinking level as
+ * chips beside the one action. Enter starts it, as Enter sends in the
+ * composer; anything left alone keeps the harness's own default.
  */
-/** The lane select's last option, which opens the new lane form instead. */
-const NEW_LANE = "new-lane";
-
 export function NewSessionDialog() {
   const projects = useStore((s) => s.projects);
-  const sessions = useStore((s) => s.sessions);
   const lanes = useStore((s) => s.lanes);
+  const sessions = useStore((s) => s.sessions);
   const activeKey = useStore((s) => s.activeKey);
   const modelsByKey = useStore((s) => s.models);
   const settingsByKey = useStore((s) => s.settings);
@@ -23,19 +34,19 @@ export function NewSessionDialog() {
   const loadModels = useStore((s) => s.loadModels);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
-  const activeLanes = useMemo(() => lanes.filter((lane) => lane.state === "active"), [lanes]);
-  const [projectId, setProjectId] = useState<number | null>(null);
-  const [laneId, setLaneId] = useState<number | null>(null);
-  const [model, setModel] = useState("");
-  const [thinking, setThinking] = useState("");
+  const [target, setTarget] = useState(() => defaultTarget(projects, lanes, sessions, activeKey));
+  const [model, setModel] = useState(DEFAULT_CHOICE);
+  const [thinking, setThinking] = useState(DEFAULT_CHOICE);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
+  const field = useRef<HTMLTextAreaElement>(null);
 
-  // Model and thinking choices come from an open session: listing them needs
-  // a harness process. Ask for the list if none is loaded yet.
+  // Model and thinking choices are read from an open session: listing them
+  // needs a harness process. Without one, the harness default is the only
+  // honest choice, and the composer offers the rest once the session runs.
   const models = useMemo(
     () =>
-      (activeKey && modelsByKey[activeKey]) ??
+      (activeKey ? modelsByKey[activeKey] : undefined) ??
       Object.values(modelsByKey).find((list) => list.length > 0),
     [activeKey, modelsByKey],
   );
@@ -45,68 +56,38 @@ export function NewSessionDialog() {
       Object.values(settingsByKey).find((item) => item && item.thinkingLevels.length > 0);
     return settings?.thinkingLevels ?? [];
   }, [activeKey, settingsByKey]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: asks once, when the form opens
+  // biome-ignore lint/correctness/useExhaustiveDependencies: asks once, when the panel opens
   useEffect(() => {
     if (!models && activeKey) void loadModels();
   }, []);
-  // Listing models needs an open session; without one the harness default is
-  // the only honest choice, and the composer offers the rest later.
-  const modelsUnavailable = !models && !activeKey;
 
-  // Default to the lane of the session on screen, else the first project
-  // with a lane to work in, and keep the choice valid as projects and lanes
-  // come and go. A project without lanes stays picked, with no lane.
-  const projectLanes = (id: number | null) => activeLanes.filter((lane) => lane.projectId === id);
+  // Keep the choice valid as projects and lanes come and go.
   useEffect(() => {
-    const projectThere = projects.some((item) => item.id === projectId);
-    const laneThere = laneId === null || activeLanes.some((lane) => lane.id === laneId);
-    if (projectThere && laneThere) return;
-    const current = sessions.find((session) => session.key === activeKey);
-    const lane =
-      activeLanes.find((item) => item.id === current?.laneId) ??
-      activeLanes.find((item) => projects.some((project) => project.id === item.projectId));
-    const project = projects.find((item) => item.id === lane?.projectId) ?? projects[0] ?? null;
-    setProjectId(project?.id ?? null);
-    setLaneId(lane && lane.projectId === project?.id ? lane.id : null);
-  }, [projects, activeLanes, sessions, activeKey, projectId, laneId]);
+    const projectThere = projects.some((item) => item.id === target.projectId);
+    const laneThere =
+      target.laneId === null ||
+      lanes.some((lane) => lane.state === "active" && lane.id === target.laneId);
+    if (!projectThere || !laneThere) setTarget(defaultTarget(projects, lanes, sessions, activeKey));
+  }, [projects, lanes, sessions, activeKey, target]);
 
-  if (activeLanes.length === 0) {
-    const first = projects[0];
-    return (
-      <Dialog
-        className="overlay-panel"
-        title="New session"
-        onClose={close}
-        actions={
-          <>
-            <Button variant="secondary" onClick={close}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              autoFocus
-              onClick={() =>
-                first ? show({ type: "newLane", projectId: first.id }) : void pickProjectFolder()
-              }
-            >
-              {first ? `New lane in ${first.name}` : "Add a project"}
-            </Button>
-          </>
-        }
-      >
-        <p>
-          {first
-            ? "Sessions run in lanes, and no lane is active yet. Create one to start working."
-            : "Sessions run in lanes, which belong to projects. Add a git repository to begin."}
-        </p>
-      </Dialog>
-    );
-  }
+  // The prompt grows with what is typed, up to a cap, then scrolls.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: measures after each change to the text
+  useLayoutEffect(() => {
+    const el = field.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [prompt]);
+
+  const project = projects.find((item) => item.id === target.projectId);
+  const lane = lanes.find((item) => item.id === target.laneId);
+  const chosenModel = models?.find((item) => item.id === model);
+  const focusPrompt = () => field.current?.focus();
 
   const submit = async () => {
-    if (laneId === null || busy) return;
+    if (target.laneId === null || busy) return;
     setBusy(true);
-    await create(laneId, {
+    await create(target.laneId, {
       model: model || undefined,
       thinking: thinking || undefined,
       prompt: prompt.trim() || undefined,
@@ -115,135 +96,151 @@ export function NewSessionDialog() {
     close();
   };
 
-  const lanesHere = projectLanes(projectId);
-  const modelOptions = models
-    ? [
-        { value: "", label: "Harness default" },
-        ...models.map((item) => ({ value: item.id, label: `${item.name} · ${item.provider}` })),
-      ]
-    : [{ value: "", label: modelsUnavailable ? "Harness default" : "Loading models…" }];
+  if (projects.length === 0 || !project) {
+    return (
+      <Overlay label="New session" width={480} onClose={close}>
+        <OverlayHeader onClose={close}>
+          <h2 className="text-heading">New session</h2>
+        </OverlayHeader>
+        <div className="flex flex-col items-center gap-3 px-6 pt-4 pb-8 text-center">
+          <Icon name="folder-open" size={24} className="text-ink-muted" />
+          <p className="max-w-80 text-ink-muted">
+            Sessions run in lanes, and lanes belong to projects. Add a git repository to begin.
+          </p>
+          <Button variant="primary" autoFocus onClick={() => void pickProjectFolder()}>
+            Add a project
+          </Button>
+        </div>
+      </Overlay>
+    );
+  }
 
   return (
-    <Dialog
-      className="overlay-panel"
-      title="New session"
-      width={520}
-      onClose={busy ? undefined : close}
-      actions={
-        <>
-          <Button variant="secondary" disabled={busy} onClick={close}>
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            form="new-session"
-            variant="primary"
-            kbd={busy ? undefined : ["↵"]}
-            disabled={busy || laneId === null}
-          >
-            {busy ? "Starting…" : "Start session"}
-          </Button>
-        </>
-      }
-    >
+    <Overlay label="New session" width={640} onClose={busy ? undefined : close}>
       <form
-        id="new-session"
-        className="flex flex-col gap-4"
+        className="flex min-h-0 flex-col"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <div className="grid grid-cols-2 gap-3">
-          <Select
+        <OverlayHeader onClose={busy ? undefined : close}>
+          <Picker
             label="Project"
             icon="folder"
-            value={projectId ?? ""}
-            options={projects.map((project) => ({
-              value: String(project.id),
-              label: project.name,
-            }))}
-            onChange={(event) => {
-              const id = Number(event.target.value);
-              setProjectId(id);
-              setLaneId(projectLanes(id)[0]?.id ?? null);
-            }}
+            value={project.name}
+            groups={projectGroups(projects, target.projectId)}
+            searchable={projects.length > 6}
             disabled={busy}
+            returnFocus={focusPrompt}
+            onSelect={(id) => {
+              const projectId = Number(id);
+              setTarget({ projectId, laneId: firstLane(lanes, projectId) });
+            }}
           />
-          <Select
+          <Icon name="chevron-right" size={12} className="flex-none text-ink-faint" />
+          <Picker
             label="Lane"
             icon="git-branch"
-            value={laneId ?? ""}
-            options={[
-              ...(lanesHere.length > 0
-                ? lanesHere.map((lane) => ({ value: String(lane.id), label: lane.task }))
-                : [{ value: "", label: "No active lanes", disabled: true }]),
-              { value: NEW_LANE, label: "New lane…" },
-            ]}
-            onChange={(event) => {
-              // The last option hands over to the new lane form for this project.
-              if (event.target.value === NEW_LANE) {
-                if (projectId !== null) show({ type: "newLane", projectId });
+            value={lane ? lane.task : "Choose a lane"}
+            groups={laneGroups(lanes, target.projectId, target.laneId)}
+            searchable={lanes.length > 6}
+            width={420}
+            disabled={busy}
+            returnFocus={focusPrompt}
+            onSelect={(id) => {
+              if (id === NEW_LANE) {
+                show({
+                  type: "newLane",
+                  projectId: project.id,
+                  prompt: prompt.trim() || undefined,
+                });
                 return;
               }
-              setLaneId(Number(event.target.value));
+              setTarget({ ...target, laneId: Number(id) });
             }}
-            disabled={busy}
           />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="new-session-prompt" className="text-label text-ink-muted">
-            First prompt
-          </label>
-          {/* No design-system textarea yet; this mirrors its Input on the same tokens. */}
-          <textarea
-            id="new-session-prompt"
-            aria-describedby="new-session-prompt-hint"
-            rows={3}
-            placeholder="What should the agent do first?"
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            onKeyDown={(event) => {
-              // Enter starts the session, as it sends in the composer; ⇧↵ breaks the line.
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-            disabled={busy}
-            autoFocus
-            className="box-border max-h-48 min-h-[68px] resize-y rounded-sm border border-line-strong bg-surface-raised px-2 py-1.5 text-body text-ink placeholder:text-ink-faint focus:border-focus focus:shadow-[0_0_0_1px_var(--focus)] disabled:text-ink-faint"
-          />
-          <p id="new-session-prompt-hint" className="text-label font-normal text-ink-muted">
-            Optional. ⇧↵ adds a line; the session runs in the lane's worktree.
-          </p>
-        </div>
-        <div className={levels.length > 0 ? "grid grid-cols-2 gap-3" : ""}>
-          <Select
+        </OverlayHeader>
+
+        <textarea
+          ref={field}
+          aria-label="First prompt"
+          aria-describedby="new-session-help"
+          rows={3}
+          placeholder={
+            lane ? "What should the agent do first?" : "Pick a lane, or make one, to start in"
+          }
+          value={prompt}
+          disabled={busy}
+          // biome-ignore lint/a11y/noAutofocus: the prompt is what this panel is for
+          autoFocus
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={(event) => {
+            // Enter starts the session, as it sends in the composer; ⇧↵ breaks the line.
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          className="block max-h-[40vh] min-h-24 w-full resize-none bg-transparent px-4 pt-1 pb-4 text-body text-ink placeholder:text-ink-faint focus:outline-none disabled:text-ink-muted"
+        />
+        <span id="new-session-help" className="sr-only">
+          Enter starts the session. Shift+Enter adds a line. Leave it empty to start without a
+          prompt.
+        </span>
+
+        <OverlayFooter>
+          <Picker
             label="Model"
             icon="agent"
-            hint={
-              modelsUnavailable
-                ? "Open a session to list models; you can switch in the composer."
-                : undefined
+            title={
+              models
+                ? undefined
+                : activeKey
+                  ? "Loading models"
+                  : "Models are listed from an open session; switch in the composer once this one runs"
             }
-            value={model}
-            options={modelOptions}
-            onChange={(event) => setModel(event.target.value)}
+            value={
+              chosenModel ? (
+                <span className="text-code-sm">{shortModelId(chosenModel)}</span>
+              ) : (
+                "Default model"
+              )
+            }
+            valueText={chosenModel?.name ?? "Default model"}
+            groups={models ? modelGroups(models, model) : []}
+            emptyText="Loading models…"
             disabled={busy || !models}
+            returnFocus={focusPrompt}
+            onSelect={setModel}
           />
           {levels.length > 0 && (
-            <Select
+            <Picker
               label="Thinking"
               icon="circle-dot"
-              value={thinking}
-              options={[{ value: "", label: "Model default" }, ...levels]}
-              onChange={(event) => setThinking(event.target.value)}
+              value={thinking ? `Thinking: ${thinking}` : "Default thinking"}
+              groups={thinkingGroups(levels, thinking)}
+              searchable={false}
+              width={200}
               disabled={busy}
+              returnFocus={focusPrompt}
+              onSelect={setThinking}
             />
           )}
-        </div>
+          <span className="ml-auto hidden items-center gap-1.5 text-label font-normal text-ink-muted sm:inline-flex">
+            <Kbd keys={["⇧", "↵"]} /> new line
+          </span>
+          <Button
+            type="submit"
+            variant="primary"
+            kbd={busy ? undefined : ["↵"]}
+            disabled={busy || target.laneId === null}
+            className="max-sm:ml-auto"
+          >
+            {busy ? "Starting…" : "Start session"}
+          </Button>
+        </OverlayFooter>
       </form>
-    </Dialog>
+    </Overlay>
   );
 }

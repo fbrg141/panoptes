@@ -11,7 +11,7 @@ export type Overlay =
   | { type: "newSession" }
   | { type: "newProject" }
   | { type: "shortcuts" }
-  | { type: "newLane"; projectId: number };
+  | { type: "newLane"; projectId: number; prompt?: string };
 
 export interface UiState {
   overlay: Overlay | null;

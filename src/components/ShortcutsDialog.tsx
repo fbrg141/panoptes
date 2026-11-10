@@ -1,11 +1,12 @@
-import { Dialog, Input, Kbd } from "@panoptes/design-system";
+import { Icon, Kbd } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
 import { filterShortcuts, SHORTCUT_GROUPS } from "../shortcuts";
 import { useUi } from "../ui";
+import { Overlay, OverlayHeader } from "./Overlay";
 
 /**
- * The ⌘/ cheatsheet: every shortcut the app responds to, in one dialog, with
- * a filter on top so a long list stays one keystroke from the row you want.
+ * The ⌘/ cheatsheet: every shortcut the app responds to, laid out in two
+ * columns so it reads at a glance, with a filter for when it doesn't.
  */
 export function ShortcutsDialog() {
   const close = useUi((s) => s.close);
@@ -13,38 +14,46 @@ export function ShortcutsDialog() {
   const groups = useMemo(() => filterShortcuts(SHORTCUT_GROUPS, query), [query]);
 
   return (
-    <Dialog className="overlay-panel" title="Keyboard shortcuts" width={520} onClose={close}>
-      <div className="flex flex-col gap-4">
-        <Input
-          icon="search"
-          placeholder="Filter shortcuts"
+    <Overlay label="Keyboard shortcuts" width={680} onClose={close}>
+      <OverlayHeader onClose={close}>
+        <h2 className="text-heading">Keyboard shortcuts</h2>
+      </OverlayHeader>
+      <div className="mx-4 flex h-[var(--control)] flex-none items-center gap-2 rounded-sm border border-line bg-surface-sunken px-2 text-ink-muted focus-within:border-line-strong">
+        <Icon name="search" size={14} className="flex-none" />
+        <input
           aria-label="Filter shortcuts"
+          placeholder="Filter shortcuts"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
+          // biome-ignore lint/a11y/noAutofocus: typing to filter is the quickest way in
           autoFocus
+          className="menu-search min-w-0 flex-1 bg-transparent text-body text-ink placeholder:text-ink-faint"
         />
-        <div className="-mx-4 max-h-[min(60vh,440px)] overflow-y-auto px-4">
-          {groups.map((group, index) => (
-            <section key={group.label} className={index > 0 ? "pt-4" : ""}>
-              <h3 className="pb-1 text-caption text-ink-muted">{group.label}</h3>
-              <ul>
-                {group.entries.map((entry) => (
-                  <li
-                    key={entry.label}
-                    className="flex h-8 items-center gap-3 border-b border-line text-ink last:border-b-0"
-                  >
-                    <span className="min-w-0 flex-1 truncate">{entry.label}</span>
-                    <Kbd keys={entry.keys} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-          {groups.length === 0 && (
-            <p className="py-6 text-center text-ink-muted">No shortcuts match “{query.trim()}”.</p>
-          )}
-        </div>
       </div>
-    </Dialog>
+      <div className="min-h-0 overflow-y-auto px-4 pt-3 pb-4">
+        {groups.length > 0 ? (
+          <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+            {groups.map((group) => (
+              <section key={group.label} aria-label={group.label}>
+                <h3 className="pb-1 text-label text-ink-muted">{group.label}</h3>
+                <ul>
+                  {group.entries.map((entry) => (
+                    <li
+                      key={entry.label}
+                      className="-mx-2 flex h-[var(--control)] items-center gap-3 rounded-sm px-2 hover:bg-selection"
+                    >
+                      <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+                      <Kbd keys={entry.keys} />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <p className="py-8 text-center text-ink-muted">No shortcut matches “{query.trim()}”</p>
+        )}
+      </div>
+    </Overlay>
   );
 }
