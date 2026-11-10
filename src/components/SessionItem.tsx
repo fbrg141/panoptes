@@ -221,7 +221,14 @@ export function SessionItem({
             <span className="session-meta">
               <span>{time}</span>
               {lockText && (
-                <span className="inline-flex items-center gap-1" title={lockText}>
+                <span
+                  className={`inline-flex items-center gap-1 ${
+                    queueText
+                      ? "rounded-sm bg-waiting-soft px-1.5 py-0.5 font-medium text-waiting"
+                      : ""
+                  }`}
+                  title={lockText}
+                >
                   <Icon name="lock" size={12} />
                   {queueText}
                 </span>
