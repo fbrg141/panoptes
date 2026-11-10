@@ -4,6 +4,7 @@ import { relativeTime } from "../grouping";
 import {
   isLive,
   lockLabel,
+  lockQueueText,
   primaryAction,
   sessionDetail,
   sessionRowLabel,
@@ -124,6 +125,7 @@ export function SessionItem({
   const now = useClock();
   const time = relativeTime(session.updatedAt, Math.max(now, session.updatedAt));
   const lockText = lockLabel(lock);
+  const queueText = lockQueueText(lock);
   const label = sessionRowLabel({ title: session.title, status, lock, detail, time });
 
   const select = (id: string) => {

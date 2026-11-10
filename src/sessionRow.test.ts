@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isLive,
   lockLabel,
+  lockQueueText,
   primaryAction,
   sessionDetail,
   sessionRowLabel,
