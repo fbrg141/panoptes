@@ -56,8 +56,11 @@ export interface State {
   init: () => Promise<void>;
   refresh: () => Promise<void>;
   open: (session: Session) => Promise<void>;
-  /** Starts a new session in a lane's worktree. */
-  create: (laneId: number) => Promise<void>;
+  /** Starts a new session in a lane's worktree, configured and prompted. */
+  create: (
+    laneId: number,
+    options?: { model?: string; thinking?: string; prompt?: string },
+  ) => Promise<void>;
   /** Adopts a discovered conversation into a matching or explicitly chosen lane. */
   adopt: (session: Session, laneId?: number | null) => Promise<AdoptionOutcome | null>;
   /** Hides a lane session (closing it first) or brings it back; its lane is untouched. */
@@ -227,11 +230,40 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      create: async (laneId) => {
+      create: async (laneId, options) => {
         try {
           // The session is recorded before it starts, so it is listed at once.
-          adopt(await backend.newSession(laneId, "pi"));
+          const opened = await backend.newSession(laneId, "pi");
+          adopt(opened);
           await get().refresh();
+          // Everything the form chose is applied to the new session by its own
+          // key, so it survives the user opening another session meanwhile.
+          const key = opened.key;
+          const keep = async (settings: SessionSettings) =>
+            set((s) => ({ settings: { ...s.settings, [key]: settings } }));
+          if (options?.model) {
+            try {
+              keep(await backend.setModel(key, options.model));
+            } catch (e) {
+              fail(e);
+            }
+          }
+          if (options?.thinking) {
+            try {
+              keep(await backend.setThinkingLevel(key, options.thinking));
+            } catch (e) {
+              fail(e);
+            }
+          }
+          if (options?.prompt) {
+            try {
+              const outcome = await backend.sendPrompt(key, options.prompt, [], "start");
+              if (outcome === "started") patch(key, (c) => ({ ...c, busy: true }));
+              if (outcome === "handled") void reloadHistory(key);
+            } catch (e) {
+              fail(e);
+            }
+          }
         } catch (e) {
           fail(e);
         }

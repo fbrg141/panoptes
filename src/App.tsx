@@ -2,8 +2,15 @@ import { Button, Icon } from "@panoptes/design-system";
 import { useEffect } from "react";
 import { api } from "./api";
 import { ChatPane } from "./components/ChatPane";
+import { NewLaneDialog } from "./components/NewLaneDialog";
+import { NewSessionDialog } from "./components/NewSessionDialog";
+import { SearchPalette } from "./components/SearchPalette";
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Sidebar } from "./components/Sidebar";
+import { pickProjectFolder } from "./pickProject";
+import { shortcutFor } from "./shortcuts";
 import { useStore } from "./store";
+import { useUi } from "./ui";
 import { nextZoom, zoomCommand } from "./zoom";
 
 export default function App() {
@@ -11,6 +18,7 @@ export default function App() {
   const info = useStore((s) => s.info);
   const error = useStore((s) => s.error);
   const dismissError = useStore((s) => s.dismissError);
+  const overlay = useUi((s) => s.overlay);
 
   useEffect(() => {
     void init();
@@ -25,6 +33,32 @@ export default function App() {
       e.preventDefault();
       zoom = nextZoom(zoom, command);
       void api.setZoom(zoom);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // The window shortcuts: ⌘P searches, ⌘T starts a session, ⌘N adds a
+  // project, ⌘/ shows the cheatsheet. An open overlay keeps the keyboard, so
+  // a second shortcut does not yank it away from under the user.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const id = shortcutFor(e);
+      if (!id || useUi.getState().overlay) return;
+      e.preventDefault();
+      if (id === "newProject") {
+        void pickProjectFolder();
+        return;
+      }
+      useUi
+        .getState()
+        .open(
+          id === "search"
+            ? { type: "search" }
+            : id === "newSession"
+              ? { type: "newSession" }
+              : { type: "shortcuts" },
+        );
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -59,6 +93,10 @@ export default function App() {
         <Sidebar />
         <ChatPane />
       </div>
+      {overlay?.type === "search" && <SearchPalette />}
+      {overlay?.type === "newSession" && <NewSessionDialog />}
+      {overlay?.type === "shortcuts" && <ShortcutsDialog />}
+      {overlay?.type === "newLane" && <NewLaneDialog projectId={overlay.projectId} />}
     </div>
   );
 }
