@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { paletteGroups, paletteTarget } from "./palette";
+import { paletteGroups, paletteTarget, recentSessions } from "./palette";
 import type { Lane, Project, Session } from "./types";
 
 const project: Project = {
@@ -44,40 +44,61 @@ const session: Session = {
 };
 
 describe("paletteGroups", () => {
-  it("lists actions, sessions, active lanes and projects with traceable ids", () => {
+  it("lists sessions, active lanes, projects and actions with traceable ids", () => {
     const groups = paletteGroups(
       [session],
       [project],
       [lane, { ...lane, id: 5, state: "archived" }],
     );
     expect(groups.map((group) => group.label)).toEqual([
-      "Actions",
       "Sessions",
       "Lanes",
       "Projects",
+      "Actions",
     ]);
-    expect(groups[0].items.map((item) => item.id)).toEqual([
+    expect(groups[3].items.map((item) => item.id)).toEqual([
       "action:newSession",
       "action:newProject",
       "action:shortcuts",
     ]);
     // Keys contain colons, so the id is split on the first one only.
-    expect(groups[1].items[0]).toMatchObject({ id: "session:pi:s1", label: "Release checklist" });
-    expect(groups[2].items).toHaveLength(1);
-    expect(groups[2].items[0]).toMatchObject({
+    expect(groups[0].items[0]).toMatchObject({ id: "session:pi:s1", label: "Release checklist" });
+    expect(groups[1].items).toHaveLength(1);
+    expect(groups[1].items[0]).toMatchObject({
       id: "lane:4",
       hint: "Web app · panoptes/fix-login",
     });
-    expect(groups[3].items[0]).toMatchObject({ id: "project:1", hint: "/code/web" });
+    expect(groups[2].items[0]).toMatchObject({ id: "project:1", hint: "New lane · /code/web" });
   });
 
   it("hints a lane session with its project and lane, an archived one first", () => {
     const owned = { ...session, laneId: 4 };
-    const [, sessions] = paletteGroups([owned], [project], [lane]);
+    const [sessions] = paletteGroups([owned], [project], [lane]);
     expect(sessions.items[0].hint).toBe("Web app · Fix login");
 
-    const [, archived] = paletteGroups([{ ...owned, archived: true }], [project], [lane]);
+    const [archived] = paletteGroups([{ ...owned, archived: true }], [project], [lane]);
     expect(archived.items[0].hint).toBe("Archived · Web app · Fix login");
+  });
+
+  it("marks the session on screen as current", () => {
+    const [sessions] = paletteGroups([session], [project], [lane], "pi:s1");
+    expect(sessions.items[0].hint).toBe("Current · Web app");
+  });
+});
+
+describe("recentSessions", () => {
+  it("puts recent live sessions first, archived after, and the current one last", () => {
+    const at = (key: string, updatedAt: number, archived = false) => ({
+      ...session,
+      key,
+      updatedAt,
+      archived,
+    });
+    const order = recentSessions(
+      [at("old", 1), at("current", 9), at("new", 5), at("archived", 8, true)],
+      "current",
+    ).map((item) => item.key);
+    expect(order).toEqual(["new", "old", "archived", "current"]);
   });
 });
 

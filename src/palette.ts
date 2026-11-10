@@ -28,16 +28,63 @@ function sessionHint(session: Session, projects: Project[], lanes: Lane[]): stri
 }
 
 /**
- * The search palette's rows, grouped as the palette shows them. Ids carry the
- * kind and the key or id of the thing they stand for, so a pick can be traced
- * back without closing over the data.
+ * Sessions in the order a switcher wants them: live ones before archived,
+ * most recently updated first, and the one already on screen last, so Enter
+ * on an empty query jumps to the session you were in before.
+ */
+export function recentSessions(sessions: Session[], activeKey: string | null = null): Session[] {
+  const rank = (session: Session) => (session.key === activeKey ? 2 : session.archived ? 1 : 0);
+  return [...sessions].sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
+}
+
+/**
+ * The search palette's rows, grouped as the palette shows them. Sessions lead,
+ * because jumping between them is what the palette is for; the actions follow
+ * the things you can jump to. Ids carry the kind and the key or id of the
+ * thing they stand for, so a pick can be traced back without closing over the
+ * data.
  */
 export function paletteGroups(
   sessions: Session[],
   projects: Project[],
   lanes: Lane[],
+  activeKey: string | null = null,
 ): { label: string; items: CommandItem[] }[] {
+  const projectName = (id: number) =>
+    projects.find((project) => project.id === id)?.name ?? "Project";
   return [
+    {
+      label: "Sessions",
+      items: recentSessions(sessions, activeKey).map((session) => {
+        const hint = sessionHint(session, projects, lanes);
+        return {
+          id: `session:${session.key}`,
+          label: session.title,
+          hint: session.key === activeKey ? `Current · ${hint}` : hint,
+          icon: "session",
+        };
+      }),
+    },
+    {
+      label: "Lanes",
+      items: lanes
+        .filter((lane) => lane.state === "active")
+        .map((lane) => ({
+          id: `lane:${lane.id}`,
+          label: lane.task,
+          hint: `${projectName(lane.projectId)} · ${lane.branch}`,
+          icon: "git-branch",
+        })),
+    },
+    {
+      label: "Projects",
+      items: projects.map((project) => ({
+        id: `project:${project.id}`,
+        label: project.name,
+        hint: `New lane · ${project.repo}`,
+        icon: "folder",
+      })),
+    },
     {
       label: "Actions",
       items: [
@@ -50,35 +97,6 @@ export function paletteGroups(
           kbd: ["⌘", "/"],
         },
       ],
-    },
-    {
-      label: "Sessions",
-      items: sessions.map((session) => ({
-        id: `session:${session.key}`,
-        label: session.title,
-        hint: sessionHint(session, projects, lanes),
-        icon: "session",
-      })),
-    },
-    {
-      label: "Lanes",
-      items: lanes
-        .filter((lane) => lane.state === "active")
-        .map((lane) => ({
-          id: `lane:${lane.id}`,
-          label: lane.task,
-          hint: `${projects.find((project) => project.id === lane.projectId)?.name ?? "Project"} · ${lane.branch}`,
-          icon: "git-branch",
-        })),
-    },
-    {
-      label: "Projects",
-      items: projects.map((project) => ({
-        id: `project:${project.id}`,
-        label: project.name,
-        hint: project.repo,
-        icon: "folder",
-      })),
     },
   ];
 }

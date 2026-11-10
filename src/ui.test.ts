@@ -21,4 +21,13 @@ describe("ui overlays", () => {
     useUi.getState().open({ type: "newLane", projectId: 3 });
     expect(useUi.getState().overlay).toEqual({ type: "newLane", projectId: 3 });
   });
+
+  it("carries a prompt typed before the lane form took over", () => {
+    useUi.getState().open({ type: "newLane", projectId: 3, prompt: "Fix login" });
+    expect(useUi.getState().overlay).toEqual({
+      type: "newLane",
+      projectId: 3,
+      prompt: "Fix login",
+    });
+  });
 });

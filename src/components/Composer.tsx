@@ -1,5 +1,5 @@
 import { Button, Icon, Menu, type MenuItem } from "@panoptes/design-system";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import {
   composePrompt,
@@ -11,9 +11,10 @@ import {
   nextLevel,
   segments,
 } from "../composer";
-import { filterModels } from "../modelMenu";
+import { modelGroups, shortModelId } from "../newSession";
 import { useStore } from "../store";
 import type { FileAttachment, QueuedPrompt, SessionSettings } from "../types";
+import { Picker } from "./Picker";
 
 /** Mentions offered at once; typing narrows them. */
 const MENTION_ROWS = 8;
@@ -591,152 +592,41 @@ function MenuButton({
 }
 
 /**
- * The model menu: a toolbar button opening a list you can search. Typing
- * narrows the rows by name, id or provider; arrows and Enter drive the list
- * from the search field, as the mention list is driven from the composer.
+ * The model menu: the shared searchable picker, opening upward from the
+ * toolbar. Typing narrows the rows by name, id or provider.
  */
 function ModelPicker({ settings }: { settings: SessionSettings }) {
   const models = useStore((s) => (s.activeKey ? s.models[s.activeKey] : undefined));
   const loadModels = useStore((s) => s.loadModels);
   const setModel = useStore((s) => s.setModel);
   const current = settings.model;
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [picked, setPicked] = useState(0);
-  const root = useRef<HTMLDivElement>(null);
-  const search = useRef<HTMLInputElement>(null);
-  const rows = useMemo(
-    () => filterModels(models ?? [], query, current?.id),
-    [models, query, current],
+  const groups = useMemo(
+    () => modelGroups(models ?? [], current?.id ?? "").slice(1),
+    [models, current],
   );
-
-  // Focus the search field when the menu opens, and close on an outside click.
-  useEffect(() => {
-    if (!open) return;
-    search.current?.focus();
-    const close = (e: MouseEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-
-  const back = () => {
-    setOpen(false);
-    setQuery("");
-    document.querySelector<HTMLTextAreaElement>("textarea[aria-label=Message]")?.focus();
-  };
-
-  const choose = (id: string) => {
-    if (id !== current?.id) void setModel(id);
-    back();
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.nativeEvent.isComposing) return;
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      if (rows.length === 0) return;
-      e.preventDefault();
-      const step = e.key === "ArrowDown" ? 1 : -1;
-      setPicked((i) => (i + step + rows.length) % rows.length);
-      return;
-    }
-    if (e.key === "Enter") {
-      e.preventDefault();
-      if (rows.length > 0) choose(rows[Math.min(picked, rows.length - 1)].id);
-      return;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      back();
-    }
-  };
 
   return (
-    <div ref={root} className="relative">
-      <ToolbarButton
-        title={current ? `Model: ${current.name} (${current.provider})` : "Choose a model"}
-        label="Model"
-        expanded={open}
-        onClick={() => {
-          if (!open) void loadModels();
-          setOpen(!open);
-        }}
-      >
-        <span className="text-code-sm max-w-48 truncate">
-          {current ? current.id.slice(current.provider.length + 1) : "No model"}
-        </span>
-        <Icon name="chevron-down" size={12} />
-      </ToolbarButton>
-      {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-1 w-80 rounded-md bg-surface-raised p-1 shadow-[var(--shadow-pop)]">
-          <input
-            ref={search}
-            role="combobox"
-            aria-expanded
-            aria-controls="model-menu"
-            aria-activedescendant={rows.length > 0 ? `model-row-${picked}` : undefined}
-            aria-label="Search models"
-            placeholder="Search models"
-            value={query}
-            className="mb-1 box-border h-[var(--control)] w-full rounded-sm border border-line bg-surface-sunken px-2 text-body text-ink placeholder:text-ink-faint focus:outline-none"
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setPicked(0);
-            }}
-            onKeyDown={onKeyDown}
-          />
-          <div
-            id="model-menu"
-            role="listbox"
-            aria-label="Models"
-            className="max-h-72 overflow-y-auto"
-          >
-            {rows.map((row, i) => {
-              const heading = i === 0 || rows[i - 1].provider !== row.provider;
-              return (
-                <Fragment key={row.id}>
-                  {heading && (
-                    <div className="px-2 pb-1 pt-2 text-caption font-medium uppercase tracking-[0.06em] text-ink-muted">
-                      {row.provider}
-                    </div>
-                  )}
-                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: the search field drives the list from the keyboard */}
-                  <div
-                    id={`model-row-${i}`}
-                    role="option"
-                    aria-selected={i === picked}
-                    tabIndex={-1}
-                    className={`flex h-[var(--control)] cursor-default items-center gap-2 rounded-sm px-2 ${
-                      i === picked ? "bg-selection" : ""
-                    }`}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseMove={() => setPicked(i)}
-                    onClick={() => choose(row.id)}
-                  >
-                    {row.current ? (
-                      <Icon name="check" size={14} className="flex-none text-ink-muted" />
-                    ) : (
-                      <span className="w-3.5 flex-none" />
-                    )}
-                    <span className="truncate">{row.name}</span>
-                    <span className="text-code-sm ml-auto truncate text-ink-muted">{row.id}</span>
-                  </div>
-                </Fragment>
-              );
-            })}
-            {rows.length === 0 && (
-              <p className="px-2 py-1 text-caption text-ink-muted">
-                {models === undefined ? "Loading models" : "No models match."}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
+    <Picker
+      label="Model"
+      title={current ? `Model: ${current.name} (${current.provider})` : "Choose a model"}
+      value={<span className="text-code-sm">{current ? shortModelId(current) : "No model"}</span>}
+      valueText={current?.name ?? "No model"}
+      groups={groups}
+      variant="ghost"
+      placement="up"
+      width={352}
+      emptyText="Loading models…"
+      onOpen={() => void loadModels()}
+      returnFocus={focusComposer}
+      onSelect={(id) => {
+        if (id !== current?.id) void setModel(id);
+      }}
+    />
   );
 }
+
+const focusComposer = () =>
+  document.querySelector<HTMLTextAreaElement>("textarea[aria-label=Message]")?.focus();
 
 function ThinkingPicker({ settings }: { settings: SessionSettings }) {
   const setThinkingLevel = useStore((s) => s.setThinkingLevel);
