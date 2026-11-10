@@ -331,3 +331,11 @@ export interface FileAttachment {
   mimeType: string | null;
   data: string | null;
 }
+
+/** What the composer holds for a session the user switched away from. */
+export interface Draft {
+  text: string;
+  attachments: FileAttachment[];
+  /** Paths picked from the mention list, to keep drawing them as chips. */
+  mentioned: string[];
+}
