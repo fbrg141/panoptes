@@ -25,9 +25,9 @@ export function lockLabel(lock: LockState | undefined): string | null {
   return null;
 }
 
-/** The visible queue marker in the row's metadata. */
+/** The compact, visible queue marker in the row's metadata. */
 export function lockQueueText(lock: LockState | undefined): string | null {
-  return lock?.queued && !lock.holder ? "Waiting for write lock" : null;
+  return lock?.queued && !lock.holder ? "Waiting" : null;
 }
 
 /**

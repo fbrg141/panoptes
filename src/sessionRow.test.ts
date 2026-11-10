@@ -35,7 +35,7 @@ describe("session row", () => {
     expect(lockQueueText(undefined)).toBeNull();
     expect(lockQueueText({ holder: false, queued: false })).toBeNull();
     expect(lockQueueText({ holder: true, queued: false })).toBeNull();
-    expect(lockQueueText({ holder: false, queued: true })).toBe("Waiting for write lock");
+    expect(lockQueueText({ holder: false, queued: true })).toBe("Waiting");
   });
 
   it("does not repeat the lane's project when nested", () => {
