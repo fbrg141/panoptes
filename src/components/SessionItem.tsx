@@ -1,7 +1,8 @@
 import { Button, Icon, LoopMark } from "@panoptes/design-system";
-import { type KeyboardEvent, useRef, useState } from "react";
+import { type KeyboardEvent, useRef, useState, useSyncExternalStore } from "react";
 import { relativeTime } from "../grouping";
 import {
+  isLive,
   lockLabel,
   primaryAction,
   sessionDetail,
@@ -16,9 +17,9 @@ import { RowMenu } from "./RowMenu";
 
 const WORD_TONE: Record<SessionStatus, string> = {
   running: "text-running",
-  waiting: "text-waiting",
-  failed: "text-error",
-  done: "text-ink-muted",
+  waiting: "font-medium text-waiting",
+  failed: "font-medium text-error",
+  done: "text-done",
   idle: "text-ink-muted",
 };
 
@@ -43,6 +44,27 @@ function StatusGlyph({ status }: { status: SessionStatus }) {
     </span>
   );
 }
+
+// One shared clock for every row's relative time, so "2m ago" keeps up
+// without a timer per row.
+const TICK_MS = 30_000;
+const ticking = new Set<() => void>();
+let timer: ReturnType<typeof setInterval> | undefined;
+function subscribeToClock(onTick: () => void) {
+  ticking.add(onTick);
+  timer ??= setInterval(() => {
+    for (const tick of ticking) tick();
+  }, TICK_MS);
+  return () => {
+    ticking.delete(onTick);
+    if (ticking.size === 0) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+  };
+}
+const useClock = () =>
+  useSyncExternalStore(subscribeToClock, () => Math.floor(Date.now() / TICK_MS) * TICK_MS);
 
 /** Moves focus to the previous or next session row in the same list. */
 function moveBetweenRows(from: HTMLElement, key: string) {
@@ -92,13 +114,15 @@ export function SessionItem({
   const titleRef = useRef<HTMLSpanElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const fromKeyboard = useRef(false);
+  const menuFromKeyboard = useRef(false);
 
   const items = sessionMenuItems(session, { adoptable: onAdopt !== undefined, laneActions });
   const primary = primaryAction(session, status);
   const hasActions = items.length > 0 || primary !== null;
   const word = statusWord(status);
   const detail = sessionDetail(session, context);
-  const time = relativeTime(session.updatedAt);
+  const now = useClock();
+  const time = relativeTime(session.updatedAt, Math.max(now, session.updatedAt));
   const lockText = lockLabel(lock);
   const label = sessionRowLabel({ title: session.title, status, lock, detail, time });
 
@@ -129,6 +153,7 @@ export function SessionItem({
       if (items.length === 0) return;
       event.preventDefault();
       fromKeyboard.current = true;
+      menuFromKeyboard.current = true;
       setMenuOpen(true);
     }
   };
@@ -175,7 +200,10 @@ export function SessionItem({
           >
             <StatusGlyph status={status} />
             <span className="flex min-w-0 flex-col">
-              <span ref={titleRef} className="session-title truncate text-body-strong">
+              <span
+                ref={titleRef}
+                className={`session-title truncate ${isLive(status) ? "text-body-strong" : "text-body"}`}
+              >
                 {session.title}
               </span>
               <span className="truncate text-xs text-ink-muted">
@@ -223,7 +251,14 @@ export function SessionItem({
                   triggerClassName=""
                   triggerTabIndex={-1}
                   open={menuOpen}
-                  onOpenChange={setMenuOpen}
+                  onOpenChange={(shown) => {
+                    setMenuOpen(shown);
+                    // A menu opened from the row hands focus back to the row.
+                    if (!shown && menuFromKeyboard.current) {
+                      menuFromKeyboard.current = false;
+                      requestAnimationFrame(() => hit.current?.focus());
+                    }
+                  }}
                 />
               )}
             </div>

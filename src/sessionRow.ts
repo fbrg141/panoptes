@@ -11,6 +11,13 @@ export const STATUS_WORDS: Record<Exclude<SessionStatus, "idle">, string> = {
 export const statusWord = (status: SessionStatus): string | null =>
   status === "idle" ? null : STATUS_WORDS[status];
 
+/**
+ * Whether the row should carry weight: an agent at work or one that needs
+ * you. Done and idle rows recede to a regular-weight title.
+ */
+export const isLive = (status: SessionStatus): boolean =>
+  status === "running" || status === "waiting" || status === "failed";
+
 /** What the lock means for this session, in words, or null when it has no say. */
 export function lockLabel(lock: LockState | undefined): string | null {
   if (lock?.holder) return "Holds the lane's write lock";

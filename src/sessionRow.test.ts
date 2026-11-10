@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { lockLabel, primaryAction, sessionDetail, sessionRowLabel, statusWord } from "./sessionRow";
+import {
+  isLive,
+  lockLabel,
+  primaryAction,
+  sessionDetail,
+  sessionRowLabel,
+  statusWord,
+} from "./sessionRow";
 
 describe("session row", () => {
+  it("gives weight only to sessions at work or waiting on you", () => {
+    expect(["running", "waiting", "failed"].every((s) => isLive(s as never))).toBe(true);
+    expect(isLive("done")).toBe(false);
+    expect(isLive("idle")).toBe(false);
+  });
+
   it("uses the guide's status words and none for idle", () => {
     expect(statusWord("running")).toBe("Running");
     expect(statusWord("waiting")).toBe("Waiting");
