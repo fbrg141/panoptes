@@ -1,4 +1,4 @@
-import { Button, Dialog, Input, Select } from "@panoptes/design-system";
+import { Button, Dialog, Select } from "@panoptes/design-system";
 import { useEffect, useMemo, useState } from "react";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
@@ -9,6 +9,9 @@ import { useUi } from "../ui";
  * first prompt. The session is recorded, configured and started in one go;
  * anything left blank keeps the harness's own default.
  */
+/** The lane select's last option, which opens the new lane form instead. */
+const NEW_LANE = "new-lane";
+
 export function NewSessionDialog() {
   const projects = useStore((s) => s.projects);
   const sessions = useStore((s) => s.sessions);
@@ -171,25 +174,50 @@ export function NewSessionDialog() {
             label="Lane"
             icon="git-branch"
             value={laneId ?? ""}
-            options={
-              lanesHere.length > 0
+            options={[
+              ...(lanesHere.length > 0
                 ? lanesHere.map((lane) => ({ value: String(lane.id), label: lane.task }))
-                : [{ value: "", label: "No active lanes" }]
-            }
-            onChange={(event) => setLaneId(Number(event.target.value))}
-            disabled={busy || lanesHere.length === 0}
+                : [{ value: "", label: "No active lanes", disabled: true }]),
+              { value: NEW_LANE, label: "New lane…" },
+            ]}
+            onChange={(event) => {
+              // The last option hands over to the new lane form for this project.
+              if (event.target.value === NEW_LANE) {
+                if (projectId !== null) show({ type: "newLane", projectId });
+                return;
+              }
+              setLaneId(Number(event.target.value));
+            }}
+            disabled={busy}
           />
         </div>
-        <Input
-          label="First prompt"
-          hint="Optional. The session runs in the lane's worktree, behind its write lock."
-          placeholder="What should the agent do first?"
-          aria-label="First prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          disabled={busy}
-          autoFocus
-        />
+        <div className="flex flex-col gap-1">
+          <label htmlFor="new-session-prompt" className="text-label text-ink-muted">
+            First prompt
+          </label>
+          {/* No design-system textarea yet; this mirrors its Input on the same tokens. */}
+          <textarea
+            id="new-session-prompt"
+            aria-describedby="new-session-prompt-hint"
+            rows={3}
+            placeholder="What should the agent do first?"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            onKeyDown={(event) => {
+              // Enter starts the session, as it sends in the composer; ⇧↵ breaks the line.
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+            disabled={busy}
+            autoFocus
+            className="box-border max-h-48 min-h-[68px] resize-y rounded-sm border border-line-strong bg-surface-raised px-2 py-1.5 text-body text-ink placeholder:text-ink-faint focus:border-focus focus:shadow-[0_0_0_1px_var(--focus)] disabled:text-ink-faint"
+          />
+          <p id="new-session-prompt-hint" className="text-label font-normal text-ink-muted">
+            Optional. ⇧↵ adds a line; the session runs in the lane's worktree.
+          </p>
+        </div>
         <div className={levels.length > 0 ? "grid grid-cols-2 gap-3" : ""}>
           <Select
             label="Model"
