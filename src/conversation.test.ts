@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyEvent, emptyConversation, removeQuestion } from "./conversation";
-import { filterSessions, relativeTime } from "./grouping";
-import type { Approval, HarnessEvent, Session, ToolCall } from "./types";
+import { relativeTime } from "./grouping";
+import type { Approval, HarnessEvent, ToolCall } from "./types";
 
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
 
@@ -139,80 +139,6 @@ describe("applyEvent", () => {
     });
     expect(c.thinking).toBeNull();
     expect(c.thoughtFor).toEqual({ "Hmm.": 8000 });
-  });
-});
-
-const session = (over: Partial<Session>): Session => ({
-  key: "pi:x",
-  id: null,
-  laneId: null,
-  harness: "pi",
-  harnessRef: { harness: "pi", id: "x", locator: "", cwd: "/r" },
-  cwd: "/r",
-  title: "t",
-  tags: [],
-  createdAt: 0,
-  updatedAt: 0,
-  messageCount: 0,
-  parentLocator: null,
-  projectRoot: "/r",
-  checkout: null,
-  projectId: null,
-  pinned: false,
-  archived: false,
-  open: false,
-  ...over,
-});
-
-describe("filterSessions", () => {
-  it("filters the flat list by session, project, lane and tags without reordering it", () => {
-    const project = {
-      id: 1,
-      repo: "/code/web",
-      name: "Web app",
-      baseBranch: "main",
-      copyFiles: [".env"],
-      setup: null,
-    };
-    const lane = {
-      id: 1,
-      projectId: 1,
-      name: "fix-login",
-      task: "Fix login",
-      branch: "panoptes/fix-login",
-      state: "active" as const,
-      worktrees: [],
-      writeLock: { holder: null, queue: [] },
-    };
-    const sessions = [
-      session({ key: "new", title: "First", updatedAt: 3 }),
-      session({
-        key: "owned",
-        laneId: 1,
-        projectId: 1,
-        title: "Investigate",
-        tags: ["auth"],
-        archived: true,
-        updatedAt: 2,
-      }),
-      session({ key: "old", title: "Last", updatedAt: 1 }),
-    ];
-
-    expect(filterSessions(sessions, [project], [lane], "web app").map((s) => s.key)).toEqual([
-      "owned",
-    ]);
-    expect(filterSessions(sessions, [project], [lane], "fix login").map((s) => s.key)).toEqual([
-      "owned",
-    ]);
-    expect(filterSessions(sessions, [project], [lane], "auth").map((s) => s.key)).toEqual([
-      "owned",
-    ]);
-    // All sessions includes archived sessions and preserves backend order.
-    expect(filterSessions(sessions, [project], [lane]).map((s) => s.key)).toEqual([
-      "new",
-      "owned",
-      "old",
-    ]);
   });
 });
 

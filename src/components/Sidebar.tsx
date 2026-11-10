@@ -1,31 +1,16 @@
-import { Button, Checkbox, Dialog, Input, LoopMark, Tabs } from "@panoptes/design-system";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { Button, Dialog, LoopMark, Tabs } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
-import { filterSessions } from "../grouping";
+import { pickProjectFolder } from "../pickProject";
 import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
+import { useUi } from "../ui";
 import { RowMenu } from "./RowMenu";
 import { SessionItem } from "./SessionItem";
 
 type NavigationTab = "lanes" | "all";
 
-async function pickFolder(title: string): Promise<string | null> {
-  const folder = await openDialog({ directory: true, title });
-  return typeof folder === "string" ? folder : null;
-}
-
 const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
-const includes = (text: string, query: string) => text.toLowerCase().includes(query);
-const laneMatches = (lane: Lane, query: string) =>
-  [lane.name, lane.task, lane.branch].some((text) => includes(text, query));
-const sessionMatches = (session: Session, query: string) =>
-  [session.title, session.cwd, ...session.tags].some((text) => includes(text, query));
-const navigationMatches = (navigation: LaneNavigation | undefined, query: string) =>
-  navigation !== undefined &&
-  [...navigation.sessions, ...navigation.archivedSessions].some((session) =>
-    sessionMatches(session, query),
-  );
 
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
@@ -34,36 +19,19 @@ export function Sidebar() {
   const lanes = useStore((s) => s.lanes);
   const navigation = useStore((s) => s.navigation);
   const create = useStore((s) => s.create);
-  const addProject = useStore((s) => s.addProject);
   const archiveLane = useStore((s) => s.archiveLane);
   const adopt = useStore((s) => s.adopt);
+  const show = useUi((s) => s.open);
   const [tab, setTab] = useState<NavigationTab>("lanes");
-  const [newLaneProject, setNewLaneProject] = useState<Project | null>(null);
   const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
   const [adopting, setAdopting] = useState<Session | null>(null);
-  const [query, setQuery] = useState("");
   const navigationByLane = useMemo(
     () => new Map(navigation.map((entry) => [entry.laneId, entry])),
     [navigation],
   );
-  const visibleSessions = useMemo(
-    () => filterSessions(sessions, projects, lanes, query),
-    [sessions, projects, lanes, query],
-  );
-  const needle = query.trim().toLowerCase();
-  const visibleProjects = projects.filter((project) => {
-    if (!needle || includes(project.name, needle) || includes(project.repo, needle)) return true;
-    return lanes
-      .filter((lane) => lane.projectId === project.id)
-      .some(
-        (lane) =>
-          laneMatches(lane, needle) || navigationMatches(navigationByLane.get(lane.id), needle),
-      );
-  });
 
   const register = async () => {
-    const folder = await pickFolder("Add a git repository as a project");
-    if (folder) await addProject(folder);
+    await pickProjectFolder();
   };
 
   const requestArchive = async (lane: Lane) => {
@@ -84,9 +52,25 @@ export function Sidebar() {
         <Button
           variant="ghost"
           size="sm"
+          icon="search"
+          aria-label="Search"
+          title="Search projects, lanes and sessions (⌘P)"
+          onClick={() => show({ type: "search" })}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="command"
+          aria-label="Keyboard shortcuts"
+          title="Keyboard shortcuts (⌘/)"
+          onClick={() => show({ type: "shortcuts" })}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
           icon="folder"
           aria-label="Add project"
-          title="Add a git repository as a project"
+          title="Add a git repository as a project (⌘N)"
           onClick={() => void register()}
         />
       </header>
@@ -100,19 +84,8 @@ export function Sidebar() {
           onChange={(id) => setTab(id as NavigationTab)}
         />
       </div>
-      <div className="p-3">
-        <Input
-          icon="search"
-          placeholder={
-            tab === "lanes" ? "Filter projects, lanes and sessions" : "Filter all sessions"
-          }
-          aria-label="Filter sessions"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </div>
       {listErrors.map((error) => (
-        <p key={error} className="px-3 pb-2 text-error">
+        <p key={error} className="px-3 pb-2 pt-2 text-error">
           {error}
         </p>
       ))}
@@ -122,28 +95,27 @@ export function Sidebar() {
       >
         {tab === "lanes" ? (
           <>
-            {visibleProjects.map((project) => (
+            {projects.map((project) => (
               <ProjectItem
                 key={project.id}
                 project={project}
                 lanes={lanes.filter((lane) => lane.projectId === project.id)}
                 navigationByLane={navigationByLane}
-                query={needle}
-                onNewLane={() => setNewLaneProject(project)}
+                onNewLane={() => show({ type: "newLane", projectId: project.id })}
                 onWork={(lane) => void create(lane.id)}
                 onArchive={(lane) => void requestArchive(lane)}
               />
             ))}
-            {visibleProjects.length === 0 && (
+            {projects.length === 0 && (
               <p className="px-3 text-ink-muted">
-                {needle ? "No lanes match." : "No projects yet. Add one with the folder button."}
+                No projects yet. Add one with the folder button.
               </p>
             )}
           </>
         ) : (
           <>
             <ul>
-              {visibleSessions.map((session) => (
+              {sessions.map((session) => (
                 <SessionItem
                   key={session.key}
                   session={session}
@@ -154,17 +126,12 @@ export function Sidebar() {
                 />
               ))}
             </ul>
-            {visibleSessions.length === 0 && (
-              <p className="px-3 text-ink-muted">
-                {needle ? "No sessions match." : "No harness sessions found."}
-              </p>
+            {sessions.length === 0 && (
+              <p className="px-3 text-ink-muted">No harness sessions found.</p>
             )}
           </>
         )}
       </nav>
-      {newLaneProject && (
-        <NewLaneDialog project={newLaneProject} onClose={() => setNewLaneProject(null)} />
-      )}
       {dirtyLane && (
         <ArchiveLaneDialog
           lane={dirtyLane}
@@ -188,7 +155,6 @@ function ProjectItem({
   project,
   lanes,
   navigationByLane,
-  query,
   onNewLane,
   onWork,
   onArchive,
@@ -196,7 +162,6 @@ function ProjectItem({
   project: Project;
   lanes: Lane[];
   navigationByLane: Map<number, LaneNavigation>;
-  query: string;
   onNewLane: () => void;
   onWork: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
@@ -207,13 +172,6 @@ function ProjectItem({
   const [showArchived, setShowArchived] = useState(false);
   const active = lanes.filter((lane) => lane.state === "active");
   const archived = lanes.filter((lane) => lane.state === "archived");
-  const projectMatches =
-    query !== "" && (includes(project.name, query) || includes(project.repo, query));
-  const visible = (lane: Lane) =>
-    !query ||
-    projectMatches ||
-    laneMatches(lane, query) ||
-    navigationMatches(navigationByLane.get(lane.id), query);
 
   return (
     <section className="group/project mt-2">
@@ -221,7 +179,7 @@ function ProjectItem({
         <Button
           variant="ghost"
           size="sm"
-          icon={collapsed && !query ? "chevron-right" : "chevron-down"}
+          icon={collapsed ? "chevron-right" : "chevron-down"}
           aria-label={`${collapsed ? "Expand" : "Collapse"} project ${project.name}`}
           onClick={() => setCollapsed((value) => !value)}
         />
@@ -243,33 +201,27 @@ function ProjectItem({
           }}
         />
       </header>
-      {(!collapsed || query) && (
+      {!collapsed && (
         <div className="ml-3 border-l border-line pl-1">
           <ul>
-            {active.filter(visible).map((lane) => (
+            {active.map((lane) => (
               <LaneItem
                 key={lane.id}
                 lane={lane}
                 navigation={navigationByLane.get(lane.id)}
-                query={query}
-                projectMatches={projectMatches}
                 onWork={() => onWork(lane)}
                 onAction={() => onArchive(lane)}
               />
             ))}
             {showArchived &&
-              archived
-                .filter(visible)
-                .map((lane) => (
-                  <LaneItem
-                    key={lane.id}
-                    lane={lane}
-                    navigation={navigationByLane.get(lane.id)}
-                    query={query}
-                    projectMatches={projectMatches}
-                    onAction={() => void restoreLane(lane.id)}
-                  />
-                ))}
+              archived.map((lane) => (
+                <LaneItem
+                  key={lane.id}
+                  lane={lane}
+                  navigation={navigationByLane.get(lane.id)}
+                  onAction={() => void restoreLane(lane.id)}
+                />
+              ))}
           </ul>
           {active.length === 0 && <p className="px-3 py-1 text-ink-muted">No active lanes.</p>}
           {archived.length > 0 && (
@@ -292,15 +244,11 @@ function ProjectItem({
 function LaneItem({
   lane,
   navigation,
-  query,
-  projectMatches,
   onWork,
   onAction,
 }: {
   lane: Lane;
   navigation?: LaneNavigation;
-  query: string;
-  projectMatches: boolean;
   onWork?: () => void;
   onAction: () => void;
 }) {
@@ -309,11 +257,8 @@ function LaneItem({
   const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
   const archived = lane.state === "archived";
   const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
-  const directMatch = projectMatches || (query !== "" && laneMatches(lane, query));
   const sessions = navigation?.sessions ?? [];
   const archivedSessions = navigation?.archivedSessions ?? [];
-  const visibleSessions = (items: Session[]) =>
-    !query || directMatch ? items : items.filter((session) => sessionMatches(session, query));
 
   return (
     <li className={archived ? "text-ink-muted" : ""}>
@@ -321,7 +266,7 @@ function LaneItem({
         <Button
           variant="ghost"
           size="sm"
-          icon={collapsed && !query ? "chevron-right" : "chevron-down"}
+          icon={collapsed ? "chevron-right" : "chevron-down"}
           aria-label={`${collapsed ? "Expand" : "Collapse"} lane ${lane.name}`}
           onClick={() => setCollapsed((value) => !value)}
         />
@@ -351,14 +296,12 @@ function LaneItem({
           }}
         />
       </div>
-      {(!collapsed || query) && (
+      {!collapsed && (
         <div className="ml-4">
           <ul>
-            {visibleSessions(archived ? [...sessions, ...archivedSessions] : sessions).map(
-              (session) => (
-                <SessionItem key={session.key} session={session} laneActions nested />
-              ),
-            )}
+            {(archived ? [...sessions, ...archivedSessions] : sessions).map((session) => (
+              <SessionItem key={session.key} session={session} laneActions nested />
+            ))}
           </ul>
           {!archived && archivedSessions.length > 0 && (
             <>
@@ -369,7 +312,7 @@ function LaneItem({
               </Button>
               {showArchived && (
                 <ul>
-                  {visibleSessions(archivedSessions).map((session) => (
+                  {archivedSessions.map((session) => (
                     <SessionItem key={session.key} session={session} laneActions nested />
                   ))}
                 </ul>
@@ -382,83 +325,6 @@ function LaneItem({
         </div>
       )}
     </li>
-  );
-}
-
-function NewLaneDialog({ project, onClose }: { project: Project; onClose: () => void }) {
-  const createLane = useStore((s) => s.createLane);
-  const createSession = useStore((s) => s.create);
-  const cancelLaneCreation = useStore((s) => s.cancelLaneCreation);
-  const [task, setTask] = useState("");
-  const [mainCheckout, setMainCheckout] = useState(false);
-  const [startSession, setStartSession] = useState(true);
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    if (!task.trim() || busy) return;
-    setBusy(true);
-    const lane = await createLane(project.id, task, mainCheckout);
-    setBusy(false);
-    if (lane) {
-      onClose();
-      if (startSession) await createSession(lane.id);
-    }
-  };
-
-  const close = () => {
-    if (busy) void cancelLaneCreation(project.id);
-    onClose();
-  };
-
-  return (
-    <Dialog
-      title={`New lane in ${project.name}`}
-      onClose={close}
-      actions={
-        <>
-          <Button variant="secondary" onClick={close}>
-            Cancel
-          </Button>
-          <Button type="submit" form="new-lane" disabled={busy || !task.trim()}>
-            {busy ? "Creating…" : "Create lane"}
-          </Button>
-        </>
-      }
-    >
-      <form
-        id="new-lane"
-        className="flex flex-col gap-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <Input
-          label="Task"
-          hint="A worktree, branch and write lock for this line of work."
-          placeholder="Fix login redirects"
-          aria-label="Lane task"
-          value={task}
-          onChange={(event) => setTask(event.target.value)}
-          disabled={busy}
-          autoFocus
-        />
-        <Checkbox
-          label="Use the main checkout"
-          hint="Explicit opt-in: share the project's checkout. No worktree, copied files or setup command; archiving never removes it."
-          checked={mainCheckout}
-          onChange={(event) => setMainCheckout(event.target.checked)}
-          disabled={busy}
-        />
-        <Checkbox
-          label="Start a session in this lane"
-          hint="Open a new chat in its worktree as soon as the lane is ready."
-          checked={startSession}
-          onChange={(event) => setStartSession(event.target.checked)}
-          disabled={busy}
-        />
-      </form>
-    </Dialog>
   );
 }
 

@@ -24,6 +24,7 @@
   --color-focus: var(--focus);
   --color-link: var(--link);
   --color-selection: var(--selection);
+  --color-scrim: var(--scrim);
   --color-running: var(--running);
   --color-running-soft: var(--running-soft);
   --color-waiting: var(--waiting);

@@ -359,6 +359,49 @@ describe("store", () => {
     expect(store.getState().navigation[0].sessions).toEqual([laneSession]);
   });
 
+  it("starts a session with the chosen model, thinking level and first prompt", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    await store.getState().create(lane.id, {
+      model: "p/small",
+      thinking: "high",
+      prompt: "Fix the login redirect",
+    });
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:9", "p/small");
+    expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:9", "high");
+    expect(fake.backend.sendPrompt).toHaveBeenCalledWith(
+      "panoptes:9",
+      "Fix the login redirect",
+      [],
+      "start",
+    );
+    expect(store.getState().activeKey).toBe("panoptes:9");
+    expect(store.getState().conversations["panoptes:9"].busy).toBe(true);
+  });
+
+  it("starts a bare session when no launch options are given", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    await store.getState().create(lane.id);
+    expect(fake.backend.setModel).not.toHaveBeenCalled();
+    expect(fake.backend.setThinkingLevel).not.toHaveBeenCalled();
+    expect(fake.backend.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("starts the session even when a launch choice is refused", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.setModel.mockRejectedValueOnce({ kind: "rejected", message: "No such model" });
+    await store.getState().create(lane.id, { model: "p/missing", prompt: "Go" });
+    expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:9", "Go", [], "start");
+    expect(store.getState().error).toBe("No such model");
+  });
+
+  it("reloads history when the launch prompt was handled synchronously", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.sendPrompt.mockResolvedValueOnce("handled");
+    await store.getState().create(lane.id, { prompt: "Go" });
+    expect(fake.backend.history).toHaveBeenCalledWith("panoptes:9");
+  });
+
   it("adopts a raw session after the backend asks for a lane", async () => {
     fake.backend.adoptSession.mockResolvedValueOnce({ type: "chooseLane" });
     const choice = await store.getState().adopt(session);

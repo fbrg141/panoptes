@@ -1,0 +1,112 @@
+import { describe, expect, it } from "vitest";
+import { paletteGroups, paletteTarget } from "./palette";
+import type { Lane, Project, Session } from "./types";
+
+const project: Project = {
+  id: 1,
+  repo: "/code/web",
+  name: "Web app",
+  baseBranch: "main",
+  copyFiles: [],
+  setup: null,
+};
+
+const lane: Lane = {
+  id: 4,
+  projectId: 1,
+  name: "fix-login",
+  task: "Fix login",
+  branch: "panoptes/fix-login",
+  state: "active",
+  worktrees: [],
+  writeLock: { holder: null, queue: [] },
+};
+
+const session: Session = {
+  key: "pi:s1",
+  id: null,
+  laneId: null,
+  harness: "pi",
+  harnessRef: null,
+  cwd: "/code/web",
+  title: "Release checklist",
+  tags: [],
+  createdAt: 0,
+  updatedAt: 0,
+  messageCount: 0,
+  parentLocator: null,
+  projectRoot: "/code/web",
+  checkout: "/code/web",
+  projectId: 1,
+  pinned: false,
+  archived: false,
+  open: false,
+};
+
+describe("paletteGroups", () => {
+  it("lists actions, sessions, active lanes and projects with traceable ids", () => {
+    const groups = paletteGroups(
+      [session],
+      [project],
+      [lane, { ...lane, id: 5, state: "archived" }],
+    );
+    expect(groups.map((group) => group.label)).toEqual([
+      "Actions",
+      "Sessions",
+      "Lanes",
+      "Projects",
+    ]);
+    expect(groups[0].items.map((item) => item.id)).toEqual([
+      "action:newSession",
+      "action:newProject",
+      "action:shortcuts",
+    ]);
+    // Keys contain colons, so the id is split on the first one only.
+    expect(groups[1].items[0]).toMatchObject({ id: "session:pi:s1", label: "Release checklist" });
+    expect(groups[2].items).toHaveLength(1);
+    expect(groups[2].items[0]).toMatchObject({
+      id: "lane:4",
+      hint: "Web app · panoptes/fix-login",
+    });
+    expect(groups[3].items[0]).toMatchObject({ id: "project:1", hint: "/code/web" });
+  });
+
+  it("hints a lane session with its project and lane, an archived one first", () => {
+    const owned = { ...session, laneId: 4 };
+    const [, sessions] = paletteGroups([owned], [project], [lane]);
+    expect(sessions.items[0].hint).toBe("Web app · Fix login");
+
+    const [, archived] = paletteGroups([{ ...owned, archived: true }], [project], [lane]);
+    expect(archived.items[0].hint).toBe("Archived · Web app · Fix login");
+  });
+});
+
+describe("paletteTarget", () => {
+  it("traces ids back to the thing they stand for", () => {
+    expect(paletteTarget("session:pi:s1", [session], [project], [lane])).toEqual({
+      kind: "session",
+      session,
+    });
+    expect(paletteTarget("lane:4", [session], [project], [lane])).toEqual({ kind: "lane", lane });
+    expect(paletteTarget("project:1", [session], [project], [lane])).toEqual({
+      kind: "project",
+      project,
+    });
+    expect(paletteTarget("action:newSession", [session], [project], [lane])).toEqual({
+      kind: "newSession",
+    });
+    expect(paletteTarget("action:newProject", [session], [project], [lane])).toEqual({
+      kind: "newProject",
+    });
+    expect(paletteTarget("action:shortcuts", [session], [project], [lane])).toEqual({
+      kind: "shortcuts",
+    });
+  });
+
+  it("returns null for ids that no longer match anything", () => {
+    expect(paletteTarget("session:pi:gone", [session], [project], [lane])).toBeNull();
+    expect(paletteTarget("lane:99", [session], [project], [lane])).toBeNull();
+    expect(paletteTarget("action:nope", [session], [project], [lane])).toBeNull();
+    expect(paletteTarget("nonsense", [session], [project], [lane])).toBeNull();
+  });
+});
