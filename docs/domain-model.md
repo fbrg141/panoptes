@@ -80,7 +80,8 @@ Zed and Cargo.
   `panoptes/<lane>` branch. Files listed in `copyFiles` are **copied**, not
   linked, from the main checkout, because git never puts
   untracked files into a new worktree and each worktree may need its own
-  values (ports, database names).
+  values (ports, database names). Their current lane values are preserved
+  across archive and restore, rather than copied back from the main checkout.
 - **The main checkout, on purpose.** For big repos where a fresh worktree is
   too slow or too large, a lane can point at the project's own checkout. It
   is an explicit opt-in, marked clearly wherever the lane is shown. Panoptes
@@ -179,6 +180,11 @@ The sidebar has two tabs (#57):
      [decisions.md](decisions.md#per-turn-checkpoints-on-plain-git-not-jujutsu)).
    - A main-checkout lane: only the lane record is archived; the checkout is
      left as it is.
+   - Before any worktree is removed, the current contents of `copyFiles` are
+     saved under `refs/panoptes/lanes/<lane>/copy-files`. Restore writes them
+     back without staging them, before the normal copy and setup steps.
+   - Other ignored files are not captured and may be deleted with the
+     worktree. Local state that must survive archive belongs in `copyFiles`.
 
 ### Session
 

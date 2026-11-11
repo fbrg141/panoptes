@@ -274,6 +274,7 @@ pub fn archive(
             }
         }
     }
+    preserve_copy_files(project, lane, &path)?;
     remove_worktree(repo, &path)?;
     Ok(ArchiveResult::Archived { checkpoint_ref })
 }
@@ -341,6 +342,7 @@ pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
             &lane.branch,
         ],
     )?;
+    restore_copy_files(project, lane, &path)?;
     copy_files(project, &path)?;
     run_setup(project, &path, None)?;
     cleanup.armed = false;
@@ -408,6 +410,81 @@ fn ensure_on_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<()> {
 
 fn current_branch(repo: &Path) -> Option<String> {
     run(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok()
+}
+
+fn copy_files_reference(lane: &Lane) -> String {
+    format!("refs/panoptes/lanes/{}/copy-files", lane.name)
+}
+
+/// Saves the lane's current configured copies outside the branch and index.
+/// These files are often ignored, so the tracked checkpoint cannot retain
+/// them. A tree ref keeps them without making them tracked on restore.
+fn preserve_copy_files(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<()> {
+    let repo = Path::new(&project.repo);
+    let reference = copy_files_reference(lane);
+    let index = git_path(path, "index")?;
+    let temporary = index.with_file_name(format!(
+        "panoptes-copy-files-{}-{}",
+        std::process::id(),
+        lane.id
+    ));
+    let _temporary = TemporaryFile(temporary.clone());
+    run_index(path, &temporary, &["read-tree", "--empty"])?;
+    let mut any = false;
+    for relative in &project.settings.copy_files {
+        let source = path.join(relative);
+        match std::fs::metadata(&source) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => bail!("{} is not a file", source.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("Could not read {}", source.display()));
+            }
+        }
+        run_index(path, &temporary, &["add", "-f", "--", relative])?;
+        any = true;
+    }
+    if !any {
+        if ref_exists(repo, &reference)? {
+            run(repo, &["update-ref", "-d", &reference])?;
+        }
+        return Ok(());
+    }
+    let tree = run_index(path, &temporary, &["write-tree"])?;
+    run(repo, &["update-ref", &reference, &tree])?;
+    Ok(())
+}
+
+/// Restores configured copies without adding them to the new worktree's
+/// index. A tracked file supplied by Git still wins over a preserved copy.
+fn restore_copy_files(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<()> {
+    let repo = Path::new(&project.repo);
+    let reference = copy_files_reference(lane);
+    if !ref_exists(repo, &reference)? {
+        return Ok(());
+    }
+    let entries = run(repo, &["ls-tree", "-r", "-z", "--name-only", &reference])?;
+    let entries = entries.split('\0').collect::<Vec<_>>();
+    for relative in &project.settings.copy_files {
+        if !entries.contains(&relative.as_str()) {
+            continue;
+        }
+        let target = path.join(relative);
+        if target.exists() {
+            continue;
+        }
+        let object = format!("{reference}:{relative}");
+        let output = git(repo, &["show", &object])?;
+        if !output.status.success() {
+            return Err(command_failed("git show", &output));
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, output.stdout)
+            .with_context(|| format!("Could not restore {}", target.display()))?;
+    }
+    Ok(())
 }
 
 fn copy_files(project: &Project, destination: &Path) -> anyhow::Result<()> {
@@ -769,7 +846,7 @@ mod tests {
         git(&repo, &["config", "user.name", "Test"]);
         git(&repo, &["config", "user.email", "test@example.com"]);
         std::fs::write(repo.join("tracked.txt"), "start\n").unwrap();
-        std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), ".env\nscratch.log\n").unwrap();
         std::fs::write(repo.join(".env"), "secret\n").unwrap();
         git(&repo, &["add", "tracked.txt", ".gitignore"]);
         git(&repo, &["commit", "--quiet", "-m", "start"]);
@@ -896,6 +973,61 @@ mod tests {
             git(&path, &["branch", "--show-current"]),
             "panoptes/fix-login"
         );
+    }
+
+    #[test]
+    fn archive_restores_lane_copy_files_for_every_strategy() {
+        for strategy in [
+            None,
+            Some(ArchiveStrategy::Commit),
+            Some(ArchiveStrategy::Stash),
+            Some(ArchiveStrategy::Checkpoint),
+        ] {
+            let f = fixture(None);
+            let new = create_lane(&f);
+            let mut lane = lane(&f, 1, &new);
+            let path = PathBuf::from(&new.worktrees[0].path);
+            std::fs::write(path.join(".env"), "lane secret\n").unwrap();
+            if strategy.is_some() {
+                std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
+            }
+
+            let ArchiveResult::Archived { checkpoint_ref } =
+                archive(&f.project, &lane, strategy).unwrap()
+            else {
+                panic!("archive should finish")
+            };
+            lane.worktrees[0].checkpoint_ref = checkpoint_ref;
+            lane.state = LaneState::Archived;
+            std::fs::write(f.repo.join(".env"), "replacement secret\n").unwrap();
+            restore(&f.project, &lane).unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(path.join(".env")).unwrap(),
+                "lane secret\n",
+                "{strategy:?}"
+            );
+            assert!(
+                ref_exists(&f.repo, "refs/panoptes/lanes/fix-login/copy-files").unwrap(),
+                "{strategy:?}"
+            );
+            assert_eq!(git(&path, &["status", "--porcelain"]), "", "{strategy:?}");
+        }
+    }
+
+    #[test]
+    fn unconfigured_ignored_files_are_not_preserved() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let mut lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("scratch.log"), "temporary\n").unwrap();
+        archive(&f.project, &lane, None).unwrap();
+        lane.state = LaneState::Archived;
+
+        restore(&f.project, &lane).unwrap();
+
+        assert!(!path.join("scratch.log").exists());
     }
 
     #[test]
