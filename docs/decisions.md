@@ -123,23 +123,42 @@ SQLite gives transactions and integrity checks for free.
   folder, so a migration that has not shipped never touches the installed
   app's data.
 
+## Observe Pi; do not orchestrate agents
+
+*Decided 2026-11-11 (#225).*
+
+Panoptes is a minimal desktop app for Pi. It owns no agent sessions and no
+parallel version-control system: sessions stay in Pi's files, and lanes are
+plain git worktrees and branches. Panoptes' own store holds only the app
+metadata it adds. The app observes what the agent does and presents that work
+rather than planning, delegating or coordinating a team of agents.
+
+This keeps the core small and trustworthy, preserves compatibility with Pi's
+CLI, and avoids multiplying process, lock and cleanup failure modes. Value
+comes from making the agent's work easier to understand, not from adding
+autonomy.
+
+**Triage.** Applying this direction closed #6, #8, #21, #44, #45, #58, #207,
+#208, #209, #210, #212, #213, #214, #215, #216, #217, #218, #219, #220, #221,
+#222, #223 and #224. Until the open fix issues are closed, feature ideas go to
+the [observation log](bets.md#observation-log), not to new GitHub issues.
+
 ## Lanes are the unit of work
 
 *Decided 2026-11-07.* The full model is in
 [domain-model.md](domain-model.md); this records the choices behind it.
 
 A project wraps a git repository (#19). A project has **lanes**. A lane owns
-a worktree, a branch, a task and a write lock, and sessions run inside it.
-The lane is the durable unit and a session is disposable: a lane exists
-without a session, and keeps its worktree, branch and task when a session
-closes, so a stale conversation can be replaced with a fresh one on the same
-diff.
+a worktree, a branch, a task and one session (#228). The lane is the durable
+unit: it keeps its worktree, branch and task when that session closes. There
+is no replacement conversation on the same lane; an old conversation can be
+discarded, and a new task gets a new lane.
 
-1. **Concurrent writes are serialised.** Several sessions can attach to a
-   lane and read, but only the one holding the lane's write lock edits files.
-   The others queue and show as Waiting. True parallelism means two lanes.
-   Letting two agents edit one tree at once trades a simple guarantee for
-   merge problems inside a single folder.
+1. **One session, one writer.** A lane holds exactly one session, so there is
+   one writer by construction. The write lock, read-only non-holder sessions
+   and lock queue go away. Parallel work still means separate lanes, but
+   Panoptes does not coordinate them. The schema may continue to allow several
+   sessions; the core will enforce one.
 2. **One worktree now, room for more.** The schema lets a lane hold several
    worktrees, so multi-repo lanes (#21) need no migration, but the UI only
    ever creates one. Room without complexity.
@@ -152,8 +171,9 @@ diff.
    `panoptes/<lane>` branch; the central folder stays fixed until Settings
    exists. For big repos it can point at the main checkout instead, as an
    explicit opt-in that is clearly marked.
-5. **Subsessions** get their own transcript, share the lane's worktree, and
-   hand their result back to the parent. There is no shared history.
+5. **Pi subagents stay nested.** Pi's own subagents will appear under the
+   lane's session, read-only (#227). The proposed Panoptes subsessions that
+   shared the parent's worktree and returned a result were dropped (#58).
 6. **The word is "lane".** "Workspace" was the working name, but it already
    means something different in VS Code, Zed and Cargo, and the clash would
    confuse both users and agents reading the code.
@@ -166,12 +186,13 @@ every harness session found on disk appears in a flat **All sessions** list
 that you can adopt from.
 
 All of this follows the standing rule that decisions live in Rust and the UI
-only renders: the lock, the queue, lane state and what appears where are
+only renders: the one-session rule, lane state and what appears where are
 worked out in the core.
 
-**Build order.** Lanes with worktree create and archive (#20), then sessions
-belonging to a lane (#22), then the split sidebar (#57), then subsessions
-(#58), then groups (#21) last.
+**Implementation status.** The current code still contains #22's multi-session
+write lock and queue. #228 replaces them with the one-session rule before P1
+step 3, so the lock and process-race issues do not get fixed just to be removed.
+The original build order ending in subsessions (#58) and groups (#21) is closed.
 
 **Deferred on purpose.** What happens when the base branch moves underneath
 a lane, and remote or cloud execution. The harness adapter boundary keeps the
@@ -191,13 +212,13 @@ anyway.
 
 ## Per-turn checkpoints on plain git, not Jujutsu
 
-*Decided 2026-11-07.*
+*Decided 2026-11-07; not built yet (#204).*
 
-A lane keeps a checkpoint of its worktree at every turn, so each prompt has
+A lane will keep a checkpoint of its worktree at every turn, so each prompt has
 its own diff, any turn can be undone and nothing an agent writes is lost.
 The repository stays plain git and Panoptes does not use Jujutsu (jj).
 
-**How a checkpoint is taken.** When the write-lock holder's run settles,
+**How a checkpoint is taken.** When the lane session's run settles,
 the core copies the worktree's index to a private index file, runs
 `git add -A` against that copy, then `write-tree` and `commit-tree` with the
 previous checkpoint as parent, and points
@@ -212,11 +233,10 @@ the agent.
 - **`.gitignore` is respected.** Ignored files (`.env`, `target/`,
   `node_modules/`) are never captured. Files larger than a set limit are
   skipped and the checkpoint says which.
-- **The write lock (#22) is what makes it sound.** A turn is one
-  lock-holder's run, so a checkpoint never mixes two agents, and an undo
-  needs the lock and an idle lane. Starting from a copy of the real index
-  keeps git's stat cache, so a checkpoint costs about as much as
-  `git status`.
+- **One session per lane (#228) is what makes it sound.** A turn is that
+  session's run, so a checkpoint never mixes two agents, and an undo needs an
+  idle lane. Starting from a copy of the real index keeps git's stat cache, so
+  a checkpoint costs about as much as `git status`.
 - **The main checkout is the weak case.** You may be editing the same tree,
   so diffs per turn are approximate there and undo asks first.
 - **Finishing needs no squash.** Checkpoints sit beside the branch, not on
@@ -239,34 +259,27 @@ replaces moving the tree aside to a holding area, which answers where the
 holding area lives. #20 reserves the `refs/panoptes/lanes/` namespace,
 keyed by lane name (`refs/panoptes/lanes/<lane>/archive`) rather than store
 id, because debug and release builds keep separate stores that can reuse an
-id in the same repository; taking checkpoints each turn is built with #22.
+id in the same repository. Per-turn checkpoints are tracked by #204 and use
+the one-session boundary from #228, not #22's removed write lock.
 
-## The write lock is enforced by starting non-holders read-only
+## One session per lane
 
-*Decided 2026-11-07 (#22).* Only the lane session holding the write lock is
-started with every tool. Every other session in the lane is started with
-the harness's reading tools only (for Pi, `--tools read,grep,find,ls`; `bash`
-can write, so it is left out). The harness enforces it, not Panoptes catching
-tool calls, and the flag is neutral: `StartSession::read_only`.
+*Decided 2026-11-11 (#228); implementation pending.* A lane holds exactly one
+session. Clicking `+` on a project asks for a prompt and creates a lane with
+it, with the existing clearly marked option to use the main checkout when a
+worktree is unnecessary.
 
-- **Opening a session** in a lane with no holder makes it the holder.
-  Opening never queues.
-- **Starting a run** claims the lock. It passes straight to a session whose
-  holder is idle, since that holder has finished its run. While the holder
-  runs, the new run goes ahead read-only and the session joins the queue,
-  showing Waiting when it is not running.
-- **The lock passes** to the first queued session when the holder's run
-  settles, or when the holder closes or crashes.
-- **Tools change by restart.** A session whose process has the wrong tools
-  for its next run is closed and resumed with the right ones before the
-  prompt is sent. Runs start only from prompts, so no process with every
-  tool runs without the lock.
-- The lock lives in memory: only an open session can hold it, and nothing
-  is open when Panoptes starts. Reading does not need it.
+- One session means one writer by construction. The write lock, read-only
+  non-holder sessions and lock queue are removed rather than repaired.
+- There is no "replace session" flow. An old conversation can be discarded;
+  a new task is a new lane.
+- Pi's own subagents appear nested under that session and are read-only (#227).
+- The store schema does not need to forbid multiple sessions; the core enforces
+  the rule.
 
-Gating edit tools through the approvals extension would have kept processes
-running across a handoff, but it relies on catching every tool that can
-write, including `bash`, inside one harness's extension.
+This supersedes #22's write-lock decision and the earlier subsession proposal.
+It is intentionally simpler than worker fan-out: Panoptes observes one agent's
+work in each lane.
 
 ## The design system lives in the repo as a package
 

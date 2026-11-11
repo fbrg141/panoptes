@@ -25,6 +25,13 @@ this way.
 | `src/dev/mockBackend.ts` | Fixture backend used when the UI runs in a plain browser |
 | `packages/design-system` | Tokens, fonts, logos, app icons and React components; its `GUIDE.md` is the brand and usage guide |
 
+## Issue intake
+
+Until every open fix issue (P1 to P4) is closed, file GitHub issues for bugs
+only. Do not file feature or enhancement issues. Put feature ideas in the
+[observation log](docs/bets.md#observation-log) instead. Parked features wait
+for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md#observe-pi-do-not-orchestrate-agents).
+
 ## Rules
 
 - **Harness details stay inside their adapter.** Nothing Pi-specific (its
