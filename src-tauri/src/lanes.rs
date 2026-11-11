@@ -212,6 +212,7 @@ pub fn archive(
             checkpoint_ref: None,
         });
     }
+    ensure_on_lane_branch(&path, lane)?;
     let before = worktree_status(&path)?;
     let is_dirty = !before.is_empty();
     if is_dirty && strategy.is_none() {
@@ -352,8 +353,56 @@ fn sole_worktree(lane: &Lane) -> anyhow::Result<&LaneWorktree> {
     Ok(&lane.worktrees[0])
 }
 
+/// Every change in the tree, whatever the user's status settings say: with
+/// `status.showUntrackedFiles=no` a plain `git status` hides new files, and
+/// removing the worktree would then delete them.
 fn worktree_status(path: &Path) -> anyhow::Result<String> {
-    run(path, &["status", "--porcelain"])
+    run(
+        path,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    )
+}
+
+/// Archiving keeps the lane's branch, so it is only safe when the worktree
+/// is on that branch. Commits made on a detached HEAD or another branch would
+/// otherwise become unreachable once the worktree is removed, and so would a
+/// commit the Commit strategy makes there. A merge, rebase, cherry-pick,
+/// revert or bisect in progress is refused for the same reason.
+fn ensure_on_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<()> {
+    const IN_PROGRESS: [(&str, &str); 6] = [
+        ("MERGE_HEAD", "a merge"),
+        ("rebase-merge", "a rebase"),
+        ("rebase-apply", "a rebase"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick"),
+        ("REVERT_HEAD", "a revert"),
+        ("BISECT_LOG", "a bisect"),
+    ];
+    for (name, operation) in IN_PROGRESS {
+        if git_path(path, name)?.exists() {
+            bail!(
+                "The lane's worktree is in the middle of {operation}; finish or abort it before archiving. The worktree was left in place"
+            );
+        }
+    }
+    let expected = format!("refs/heads/{}", lane.branch);
+    match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
+        Ok(head) if head == expected => Ok(()),
+        Ok(head) => bail!(
+            "The lane's worktree is on {} instead of {}; switch back to {} before archiving so no commits are lost. The worktree was left in place",
+            head.trim_start_matches("refs/heads/"),
+            lane.branch,
+            lane.branch
+        ),
+        Err(_) => bail!(
+            "The lane's worktree has a detached HEAD; switch back to {} before archiving so no commits are lost. The worktree was left in place",
+            lane.branch
+        ),
+    }
 }
 
 fn current_branch(repo: &Path) -> Option<String> {
@@ -942,6 +991,67 @@ mod tests {
         ));
         assert!(!PathBuf::from(&new.worktrees[0].path).exists());
         assert!(ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
+    }
+
+    #[test]
+    fn untracked_files_count_as_changes_whatever_the_status_settings() {
+        let f = fixture(None);
+        git(&f.repo, &["config", "status.showUntrackedFiles", "no"]);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("agent-wrote.txt"), "work\n").unwrap();
+        std::fs::create_dir(path.join("nested")).unwrap();
+        std::fs::write(path.join("nested/deep.txt"), "work\n").unwrap();
+
+        let result = archive(&f.project, &lane(&f, 1, &new), None).unwrap();
+        assert!(matches!(result, ArchiveResult::Dirty));
+        assert!(path.join("agent-wrote.txt").exists());
+        assert!(path.join("nested/deep.txt").exists());
+    }
+
+    #[test]
+    fn a_detached_head_is_refused_so_its_commits_are_kept() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+        std::fs::write(path.join("tracked.txt"), "detached work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "detached work"]);
+        let commit = git(&path, &["rev-parse", "HEAD"]);
+
+        for strategy in [None, Some(ArchiveStrategy::Commit)] {
+            let error = archive(&f.project, &lane(&f, 1, &new), strategy).unwrap_err();
+            assert!(format!("{error:#}").contains("detached HEAD"), "{error:#}");
+        }
+        assert!(path.exists());
+        assert_eq!(git(&path, &["rev-parse", "HEAD"]), commit);
+    }
+
+    #[test]
+    fn another_branch_is_refused_so_its_commits_are_kept() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "-b", "side"]);
+        std::fs::write(path.join("tracked.txt"), "side work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "side work"]);
+
+        let error = archive(&f.project, &lane(&f, 1, &new), None).unwrap_err();
+        assert!(format!("{error:#}").contains("is on side instead of panoptes/fix-login"));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn an_operation_in_progress_is_refused() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        let head = git(&path, &["rev-parse", "HEAD"]);
+        std::fs::write(git_path(&path, "MERGE_HEAD").unwrap(), format!("{head}\n")).unwrap();
+
+        let error = archive(&f.project, &lane(&f, 1, &new), None).unwrap_err();
+        assert!(format!("{error:#}").contains("in the middle of a merge"));
+        assert!(path.exists());
     }
 
     #[test]

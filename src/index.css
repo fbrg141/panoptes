@@ -1,12 +1,18 @@
 @import "tailwindcss";
-@import "@panoptes/design-system/styles.css";
+/*
+ * The design system goes in Tailwind's components layer. Unlayered, its
+ * component rules would beat every utility, so a class such as `bg-surface`
+ * or `font-normal` on a design-system component would be silently ignored.
+ */
+@import "@panoptes/design-system/styles.css" layer(components);
 
 /*
  * Design-system tokens as Tailwind colours, so markup can say `bg-surface`,
  * `text-ink-muted` or `border-line`. The values stay CSS variables, so the
  * theme switch on <html data-theme> reaches every utility. Spacing, radii and
- * fonts need no mapping: the design system's unlayered variables (--radius-sm,
- * --font-sans, ...) override Tailwind's defaults of the same name, and
+ * fonts need no mapping: the design system's variables (--radius-sm,
+ * --font-sans, ...) sit in a later layer than Tailwind's theme, so they
+ * override its defaults of the same name, and
  * Tailwind's 4px spacing step already matches the 4px grid.
  */
 @theme inline {
