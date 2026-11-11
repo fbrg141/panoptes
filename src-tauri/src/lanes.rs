@@ -1010,6 +1010,39 @@ mod tests {
     }
 
     #[test]
+    fn worktree_status_sees_submodule_changes_hidden_by_config() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        let source = f.repo.parent().unwrap().join("submodule-source");
+        std::fs::create_dir(&source).unwrap();
+        git(&source, &["init", "--quiet", "--initial-branch", "trunk"]);
+        std::fs::write(source.join("tracked.txt"), "start\n").unwrap();
+        git(&source, &["add", "tracked.txt"]);
+        git(&source, &["commit", "--quiet", "-m", "start"]);
+        git(
+            &path,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &source.to_string_lossy(),
+                "dependency",
+            ],
+        );
+        git(&path, &["commit", "--quiet", "-m", "add dependency"]);
+        let dependency = path.join("dependency");
+        std::fs::write(dependency.join("new.txt"), "new\n").unwrap();
+        git(&dependency, &["add", "new.txt"]);
+        git(&dependency, &["commit", "--quiet", "-m", "new commit"]);
+        git(&path, &["config", "diff.ignoreSubmodules", "all"]);
+        assert_eq!(git(&path, &["status", "--porcelain"]), "");
+
+        assert!(!worktree_status(&path).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_detached_head_is_refused_so_its_commits_are_kept() {
         let f = fixture(None);
         let new = create_lane(&f);
@@ -1099,6 +1132,7 @@ mod tests {
         let new = create_lane(&f);
         let path = PathBuf::from(&new.worktrees[0].path);
         std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
+        git(&path, &["config", "status.showUntrackedFiles", "no"]);
         let hook = f.repo.join(".git/hooks/post-commit");
         std::fs::write(&hook, "#!/bin/sh\ntouch from-hook.txt\n").unwrap();
         let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
