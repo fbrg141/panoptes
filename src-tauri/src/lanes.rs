@@ -225,6 +225,7 @@ pub fn archive(
         match strategy {
             Some(ArchiveStrategy::Commit) => {
                 run(&path, &["add", "-A"])?;
+                reject_new_gitlinks(&path, None)?;
                 run(
                     &path,
                     &["commit", "-m", &format!("Panoptes: archive {}", lane.name)],
@@ -605,6 +606,38 @@ fn checkpoint(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<(St
     Ok((reference, tree))
 }
 
+/// An untracked nested repository becomes a gitlink with no commits in the
+/// outer repository. Removing the worktree would then delete its contents.
+/// Gitlinks already present in HEAD are real submodules and are allowed.
+fn reject_new_gitlinks(path: &Path, index: Option<&Path>) -> anyhow::Result<()> {
+    let staged = match index {
+        Some(index) => run_index(path, index, &["ls-files", "--stage", "-z"])?,
+        None => run(path, &["ls-files", "--stage", "-z"])?,
+    };
+    let head = run(path, &["ls-tree", "-r", "-z", "HEAD"])?;
+    let existing = head
+        .split('\0')
+        .filter_map(gitlink_path)
+        .collect::<Vec<_>>();
+    for entry in staged.split('\0') {
+        if let Some(repository) = gitlink_path(entry)
+            && !existing.contains(&repository)
+        {
+            bail!(
+                "Nested repository at {repository} is not a gitlink in HEAD; archiving was stopped to keep its contents"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn gitlink_path(entry: &str) -> Option<&str> {
+    entry
+        .strip_prefix("160000 ")?
+        .split_once('\t')
+        .map(|(_, path)| path)
+}
+
 /// The tree of the worktree as it is on disk, tracked and untracked files
 /// alike, written through a private copy of the index.
 fn snapshot_tree(path: &Path, lane: &Lane) -> anyhow::Result<String> {
@@ -623,6 +656,7 @@ fn snapshot_tree(path: &Path, lane: &Lane) -> anyhow::Result<String> {
         Err(error) => return Err(error).context("Could not copy the worktree index"),
     }
     run_index(path, &temporary, &["add", "-A"])?;
+    reject_new_gitlinks(path, Some(&temporary))?;
     run_index(path, &temporary, &["write-tree"])
 }
 
@@ -790,6 +824,14 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap()
+    }
+
+    fn nested_repository(path: &Path) {
+        std::fs::create_dir(path).unwrap();
+        git(path, &["init", "--quiet", "--initial-branch", "trunk"]);
+        std::fs::write(path.join("inner.txt"), "inner work\n").unwrap();
+        git(path, &["add", "inner.txt"]);
+        git(path, &["commit", "--quiet", "-m", "inner work"]);
     }
 
     #[test]
@@ -1099,6 +1141,78 @@ mod tests {
         assert!(matches!(result, ArchiveResult::Dirty));
         assert!(path.exists());
         assert_eq!(git(&path, &["status", "--porcelain"]), before);
+    }
+
+    #[test]
+    fn commit_archive_refuses_a_nested_repository() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        nested_repository(&path.join("inner"));
+
+        let error = archive(
+            &f.project,
+            &lane(&f, 1, &new),
+            Some(ArchiveStrategy::Commit),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("inner"));
+        assert!(path.join("inner/.git").exists());
+        assert_eq!(
+            std::fs::read_to_string(path.join("inner/inner.txt")).unwrap(),
+            "inner work\n"
+        );
+        assert_eq!(
+            git(&f.repo, &["ls-tree", "panoptes/fix-login", "inner"]),
+            ""
+        );
+    }
+
+    #[test]
+    fn checkpoint_archive_refuses_a_nested_repository() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        nested_repository(&path.join("inner"));
+
+        let error = archive(&f.project, &lane, Some(ArchiveStrategy::Checkpoint)).unwrap_err();
+
+        assert!(format!("{error:#}").contains("inner"));
+        assert!(path.join("inner/.git").exists());
+        assert_eq!(
+            std::fs::read_to_string(path.join("inner/inner.txt")).unwrap(),
+            "inner work\n"
+        );
+        assert!(!ref_exists(&f.repo, "refs/panoptes/lanes/fix-login/archive").unwrap());
+    }
+
+    #[test]
+    fn snapshots_allow_a_gitlink_already_in_head() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        let source = f.repo.parent().unwrap().join("submodule-source");
+        nested_repository(&source);
+        git(
+            &path,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &source.to_string_lossy(),
+                "dependency",
+            ],
+        );
+        git(&path, &["commit", "--quiet", "-m", "add dependency"]);
+
+        let tree = snapshot_tree(&path, &lane).unwrap();
+
+        assert!(git(&path, &["cat-file", "-e", &tree]).is_empty());
+        assert!(git(&path, &["ls-tree", &tree, "dependency"]).starts_with("160000 "));
     }
 
     #[test]
