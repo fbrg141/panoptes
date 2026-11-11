@@ -151,6 +151,13 @@ export function Sidebar() {
   );
 }
 
+/**
+ * A row's menu trigger stays in the layout and in the tab order, and shows on
+ * hover, on keyboard focus within the row, and while its menu is open.
+ */
+const REVEAL_ON_HOVER =
+  "opacity-0 transition-opacity duration-[var(--duration-fast)] has-[[aria-expanded=true]]:opacity-100";
+
 function ProjectItem({
   project,
   lanes,
@@ -175,7 +182,7 @@ function ProjectItem({
 
   return (
     <section className="group/project mt-2">
-      <header className="relative flex min-h-8 items-center px-2 text-ink-muted">
+      <header className="flex min-h-8 items-center px-2 text-ink-muted">
         <Button
           variant="ghost"
           size="sm"
@@ -193,7 +200,7 @@ function ProjectItem({
         </button>
         <RowMenu
           label={`Actions for project ${project.name}`}
-          className="absolute top-1/2 right-2 hidden -translate-y-1/2 group-hover/project:block group-focus-within/project:block"
+          className={`ml-1 flex flex-none ${REVEAL_ON_HOVER} group-hover/project:opacity-100 group-focus-within/project:opacity-100`}
           items={projectMenuItems()}
           onSelect={(id) => {
             if (id === "new-lane") onNewLane();
@@ -288,7 +295,7 @@ function LaneItem({
         </button>
         <RowMenu
           label={`Actions for lane ${lane.name}`}
-          className="absolute top-1/2 right-1 hidden -translate-y-1/2 group-hover/lane:block group-focus-within/lane:block"
+          className={`absolute inset-y-0 right-1 flex items-center ${REVEAL_ON_HOVER} group-hover/lane:opacity-100 group-focus-within/lane:opacity-100`}
           items={laneMenuItems(lane)}
           onSelect={(id) => {
             if (id === "new-session") onWork?.();
