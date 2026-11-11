@@ -25,9 +25,10 @@ properly. Two half-built bets are worth less than one finished one.
   whatever has been used by then.
 - **Input:** the observation log below, filled in during those two weeks,
   not memory.
-- **Output:** one bet chosen, with a first slice small enough to ship in a
-  week, recorded in [decisions.md](decisions.md). "None yet, extend by two
-  weeks" is allowed once, with a reason.
+- **Output:** decide whether bet 1 is chosen, with a first slice small enough
+  to ship in a week, recorded in [decisions.md](decisions.md). "None yet,
+  extend by two weeks" is allowed once, with a reason. Bets 2 to 4 were dropped
+  on 2026-11-11 because Panoptes observes Pi rather than orchestrating agents.
 - **Until then:** no work on any bet beyond what the spine needs anyway.
 
 ## The candidates
@@ -36,7 +37,9 @@ properly. Two half-built bets are worth less than one finished one.
 
 A lane becomes something you can review the way you review a pull request,
 but with the story behind it: what changed, which prompt caused each change,
-what was tried and abandoned, and which tests ran and how they ended.
+what was tried and abandoned, and which tests ran and how they ended. Evaluate
+the agent's work from recorded facts—the tree diff, tool calls and command exit
+codes—not from the agent's own account of what it did.
 
 - **Builds on** what already exists: the typed event store, tool calls as one
   entity with their output (#24), approvals (#25) and stable message ids
@@ -50,10 +53,10 @@ what was tried and abandoned, and which tests ran and how they ended.
 - **Risk:** it is only as good as the attribution of edits to tool calls,
   which gets harder when the agent edits through a shell command.
 
-### 2. Honest multi-agent at the lane level
+### 2. Honest multi-agent at the lane level *(dropped 2026-11-11)*
 
-Fan one task out to several agents, each in its own lane and tree, then
-merge the results with the disagreements shown rather than hidden.
+Dropped because Panoptes observes one agent per lane rather than coordinating
+multiple agents. Kept here only as a record of the rejected direction.
 
 - **Builds on** lanes, and on several lanes per task.
 - **Points here if** you often run the same task twice to compare, or wish
@@ -63,11 +66,10 @@ merge the results with the disagreements shown rather than hidden.
 - **Risk:** cost and attention. Most tasks don't need two attempts, and
   comparing them is real work for the person.
 
-### 3. Unattended runs with a deferred approval queue
+### 3. Unattended runs with a deferred approval queue *(dropped 2026-11-11)*
 
-Let lanes run while you are away. Approvals that would block are queued
-instead of stopping the run where possible, and you clear them in one pass
-when you are back.
+Dropped because deferred approvals and unattended coordination add autonomy and
+permission complexity outside the minimal observer direction.
 
 - **Builds on** approvals (#25), the Waiting status, and #47 (permissions and
   security boundaries).
@@ -78,10 +80,10 @@ when you are back.
 - **Risk:** safety. Deferring an approval means the agent keeps going on an
   assumption, which needs the boundaries in #47 first.
 
-### 4. Cross-lane awareness
+### 4. Cross-lane awareness *(dropped 2026-11-11)*
 
-Show which lanes touch the same files and are heading for a conflict, before
-anyone tries to merge.
+Dropped because coordinating relationships between concurrent lanes belongs to
+the orchestration direction that Panoptes is not pursuing.
 
 - **Builds on** lanes and their diffs against the base branch. It brushes
   against the deferred question of the base branch moving underneath a lane.
@@ -94,16 +96,19 @@ anyone tries to merge.
 
 ## Recommendation
 
-Bet 1. It builds on the typed store that already exists rather than on new
-machinery, it helps from the first lane rather than only when many run at
-once, and it turns the transcript, which Panoptes already renders well, into
-something that answers a reviewer's question. The review can overturn this;
-the log below is what would.
+Bet 1 is the only remaining candidate. It builds on the typed store that
+already exists rather than on new machinery, it helps from the first lane rather
+than only when many run at once, and it turns the transcript, which Panoptes
+already renders well, into something that answers a reviewer's question. Its
+facts come from the recorded tree and command results, not from trusting the
+agent's summary. The review can still overturn this; the log below is what
+would.
 
 ## Observation log
 
-Fill in during the two weeks. One line per moment worth remembering, with
-the date and the bet it points to.
+Fill in during the two weeks. One line per moment worth remembering, with the
+date and the bet it points to. While bug-only intake is active, record feature
+ideas here too instead of opening GitHub issues; they wait for the review above.
 
 | Date | What happened | Points to |
 |---|---|---|
