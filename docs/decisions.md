@@ -162,10 +162,13 @@ discarded, and a new task gets a new lane.
 2. **One worktree now, room for more.** The schema lets a lane hold several
    worktrees, so multi-repo lanes (#21) need no migration, but the UI only
    ever creates one. Room without complexity.
-3. **Archiving never destroys work.** A dirty tree is never removed as it
-   is: Panoptes offers commit, stash onto the branch, or keeping it as a
-   checkpoint (see the checkpoint decision below). Archive leaves the branch
-   alone.
+3. **Archiving never destroys tracked or configured work.** A dirty tree is
+   never removed as it is: Panoptes offers commit, stash onto the branch, or
+   keeping it as a checkpoint (see the checkpoint decision below). Archive
+   leaves the branch alone. Current `copyFiles` values are preserved separately
+   under `refs/panoptes/lanes/<lane>/copy-files` and restored without staging
+   them. Other ignored files are not captured and may be removed with the
+   worktree.
 4. **A fresh worktree by default, the main checkout on purpose.** A lane
    normally gets its own worktree at `~/Panoptes/lanes/<lane>/<repo>`, on a
    `panoptes/<lane>` branch; the central folder stays fixed until Settings
@@ -231,8 +234,10 @@ the agent.
   in the worktree behave as before. The refs are not branches, so a normal
   push never sends them.
 - **`.gitignore` is respected.** Ignored files (`.env`, `target/`,
-  `node_modules/`) are never captured. Files larger than a set limit are
-  skipped and the checkpoint says which.
+  `node_modules/`) are never captured in turn snapshots. Files larger than a
+  set limit are skipped and the checkpoint says which. Configured `copyFiles`
+  are preserved separately during archive and restore; they are not added to
+  tracked checkpoints.
 - **One session per lane (#228) is what makes it sound.** A turn is that
   session's run, so a checkpoint never mixes two agents, and an undo needs an
   idle lane. Starting from a copy of the real index keeps git's stat cache, so
