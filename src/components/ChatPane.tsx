@@ -5,6 +5,7 @@ import { buildTurns, looseApprovals } from "../turns";
 import type { Session } from "../types";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
+import { ComposerRunningIndicator } from "./ComposerRunningIndicator";
 import { QuestionCard } from "./QuestionCard";
 import { TurnView } from "./Turn";
 
@@ -202,6 +203,7 @@ export function ChatPane() {
               <ApprovalCard approval={a} />
             </div>
           ))}
+        <ComposerRunningIndicator status={status} />
         <Composer busy={conversation?.busy ?? false} sending={sending} />
       </div>
     </main>
