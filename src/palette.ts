@@ -69,12 +69,18 @@ export function paletteGroups(
       label: "Lanes",
       items: lanes
         .filter((lane) => lane.state === "active")
-        .map((lane) => ({
-          id: `lane:${lane.id}`,
-          label: lane.task,
-          hint: `${projectName(lane.projectId)} · ${lane.branch}`,
-          icon: "git-branch",
-        })),
+        .map((lane) => {
+          // A lane with no session yet starts one when picked; say so, since
+          // the palette otherwise only jumps.
+          const where = `${projectName(lane.projectId)} · ${lane.branch}`;
+          const started = sessions.some((session) => session.laneId === lane.id);
+          return {
+            id: `lane:${lane.id}`,
+            label: lane.task,
+            hint: started ? where : `Start a session · ${where}`,
+            icon: "git-branch",
+          };
+        }),
     },
     {
       label: "Projects",

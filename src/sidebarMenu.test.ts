@@ -14,6 +14,15 @@ const session: Pick<Session, "laneId" | "archived" | "open"> = {
 describe("sidebar row menus", () => {
   it("offers lane creation and removal for a project", () => {
     expect(ids(projectMenuItems())).toEqual(["new-lane", "remove-project"]);
+    expect(projectMenuItems(0)[2]).toMatchObject({ disabled: false });
+  });
+
+  it("only lets a project without lanes be removed", () => {
+    expect(projectMenuItems(2)[2]).toMatchObject({
+      id: "remove-project",
+      disabled: true,
+      label: "Remove project (delete its lanes first)",
+    });
   });
 
   it("offers the actions appropriate to the lane state", () => {

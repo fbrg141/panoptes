@@ -79,7 +79,8 @@ export interface State {
   close: (key: string) => Promise<void>;
   /** Registers the git repository `folder` is in. */
   addProject: (folder: string) => Promise<void>;
-  removeProject: (id: number) => Promise<void>;
+  /** Removes a project after explicit confirmation in the UI. */
+  removeProject: (id: number) => Promise<boolean>;
   createLane: (projectId: number, task: string, mainCheckout: boolean) => Promise<Lane | null>;
   createFromPrompt: (projectId: number, task: string, mainCheckout: boolean) => Promise<boolean>;
   cancelLaneCreation: (projectId: number) => Promise<void>;
@@ -91,7 +92,7 @@ export interface State {
 }
 
 /** Commands reject with a `ServiceError`; anything else is shown as it is. */
-function describe(error: unknown): string {
+export function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "object" && error && "message" in error) return String(error.message);
   return String(error);
@@ -111,7 +112,7 @@ export function createAppStore(backend: typeof api) {
   let listening = false;
 
   return create<State>((set, get) => {
-    const fail = (error: unknown) => set({ error: describe(error) });
+    const fail = (error: unknown) => set({ error: describeError(error) });
 
     const patch = (key: string, update: (c: Conversation) => Conversation) =>
       set((s) => ({
@@ -461,8 +462,10 @@ export function createAppStore(backend: typeof api) {
         try {
           await backend.removeProject(id);
           await get().refresh();
+          return true;
         } catch (e) {
           fail(e);
+          return false;
         }
       },
 

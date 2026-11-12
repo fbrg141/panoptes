@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { api } from "./api";
-import { createAppStore } from "./store";
+import { createAppStore, describeError } from "./store";
 import type {
   AdoptionOutcome,
   ArchiveLaneOutcome,
@@ -133,6 +133,16 @@ function fakeBackend() {
   };
   return { backend, emit: (event: SessionEvent) => emit(event) };
 }
+
+describe("describeError", () => {
+  it("shows a service error's message, never [object Object]", () => {
+    expect(describeError({ kind: "exited", message: "Pi is not running" })).toBe(
+      "Pi is not running",
+    );
+    expect(describeError(new Error("boom"))).toBe("boom");
+    expect(describeError("plain")).toBe("plain");
+  });
+});
 
 describe("store", () => {
   let fake: ReturnType<typeof fakeBackend>;
@@ -388,9 +398,18 @@ describe("store", () => {
     expect(store.getState().projects).toEqual([project]);
     expect(store.getState().sessions[0].projectId).toBe(1);
 
-    await store.getState().removeProject(1);
+    expect(await store.getState().removeProject(1)).toBe(true);
     expect(fake.backend.removeProject).toHaveBeenCalledWith(1);
     expect(store.getState().projects).toEqual([]);
+  });
+
+  it("keeps the removal dialog open when a project cannot be removed", async () => {
+    fake.backend.removeProject.mockRejectedValueOnce({
+      kind: "other",
+      message: "That project still has lanes and cannot be removed",
+    });
+    expect(await store.getState().removeProject(1)).toBe(false);
+    expect(store.getState().error).toBe("That project still has lanes and cannot be removed");
   });
 
   it("shows why a folder could not be registered", async () => {

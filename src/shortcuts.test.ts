@@ -1,28 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { filterShortcuts, SHORTCUT_GROUPS, shortcutFor } from "./shortcuts";
 
-const key = (k: string, mods: { meta?: boolean; ctrl?: boolean } = {}) =>
-  shortcutFor({ key: k, metaKey: mods.meta ?? false, ctrlKey: mods.ctrl ?? false });
+const key = (
+  k: string,
+  mods: { meta?: boolean; ctrl?: boolean; alt?: boolean; shift?: boolean } = {},
+) =>
+  shortcutFor({
+    key: k,
+    metaKey: mods.meta ?? false,
+    ctrlKey: mods.ctrl ?? false,
+    altKey: mods.alt ?? false,
+    shiftKey: mods.shift ?? false,
+  });
 
 describe("shortcutFor", () => {
-  it("maps the window shortcuts with either command key", () => {
+  it("maps the window shortcuts on ⌘", () => {
     expect(key("p", { meta: true })).toBe("search");
-    expect(key("P", { ctrl: true })).toBe("search");
     expect(key("t", { meta: true })).toBe("newSession");
-    expect(key("T", { ctrl: true })).toBe("newSession");
     expect(key("n", { meta: true })).toBe("newProject");
-    expect(key("N", { ctrl: true })).toBe("newProject");
+  });
+
+  it("leaves Ctrl to text editing, as macOS does", () => {
+    expect(key("p", { ctrl: true })).toBeNull();
+    expect(key("t", { ctrl: true })).toBeNull();
+    expect(key("n", { ctrl: true })).toBeNull();
+    expect(key("p", { meta: true, ctrl: true })).toBeNull();
+  });
+
+  it("does not take ⌘ with shift or option on a letter", () => {
+    expect(key("P", { meta: true, shift: true })).toBeNull();
+    expect(key("t", { meta: true, alt: true })).toBeNull();
   });
 
   it("takes the cheatsheet with or without shift", () => {
     expect(key("/", { meta: true })).toBe("shortcuts");
-    expect(key("?", { ctrl: true })).toBe("shortcuts");
+    expect(key("?", { meta: true, shift: true })).toBe("shortcuts");
   });
 
   it("ignores everything else", () => {
     expect(key("p")).toBeNull();
     expect(key("x", { meta: true })).toBeNull();
-    expect(key("p", { meta: true, ctrl: true })).toBe("search");
   });
 });
 

@@ -13,7 +13,7 @@ import {
   segments,
 } from "../composer";
 import { modelGroups, shortModelId } from "../newSession";
-import { useStore } from "../store";
+import { describeError, useStore } from "../store";
 import type { FileAttachment, QueuedPrompt, SessionSettings } from "../types";
 import { Picker } from "./Picker";
 
@@ -46,9 +46,8 @@ function readImage(file: File): Promise<FileAttachment> {
   });
 }
 
-/** Shows a failure in the window's error banner. */
-const fail = (error: unknown) =>
-  useStore.setState({ error: error instanceof Error ? error.message : String(error) });
+/** Shows a failure in the window's error banner, as the store does. */
+const fail = (error: unknown) => useStore.setState({ error: describeError(error) });
 
 const isTauri = () => "__TAURI_INTERNALS__" in window && "metadata" in window.__TAURI_INTERNALS__;
 
@@ -623,10 +622,13 @@ function MenuButton({
         <Icon name="chevron-down" size={12} />
       </ToolbarButton>
       {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-1 max-h-80 overflow-y-auto rounded-md">
+        // The scroll box is the menu itself: a scrolling wrapper would clip
+        // the menu's shadow, which also draws its 1px edge.
+        <div className="absolute bottom-full left-0 z-20 mb-1">
           <Menu
             label={label}
             items={items}
+            className="max-h-80 overflow-y-auto"
             activeId={activeId}
             onSelect={(id) => {
               onSelect(id);
