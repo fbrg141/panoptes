@@ -1,7 +1,8 @@
 # Domain model
 
 *Proposed 2026-11-06, revised for one session per lane 2026-11-11 (#228).
-Projects (#19), lanes (#20) and their sessions are built; groups are not.*
+Projects (#19), lanes (#20) and their sessions are built; groups were dropped
+(#21).*
 
 What Panoptes works with, how the pieces relate, and how they live and die.
 It answers the "domain model" parts of #8 and #9 and sets up the tool-call
@@ -127,8 +128,11 @@ can be reopened.
 
 ### Group
 
+*Not built, and not planned: #21 was closed with the observer direction on
+2026-11-11. The section stays as the record of what was designed.*
+
 A named folder for projects, for example "Panoptes" holding the app and the
-design system. Groups come last in the build order (#21).
+design system.
 
 - Groups nest: a group has at most one parent group, so groups form a tree.
 - A group references projects. A project can be referenced by several groups,

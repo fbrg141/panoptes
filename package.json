@@ -14,6 +14,7 @@
     "format": "biome check --write .",
     "typecheck": "tsc --noEmit",
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+    "smoke": "cargo run --quiet -p panoptes-pi --example smoke",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:rust",
     "prepare": "git config core.hooksPath .githooks"
   },

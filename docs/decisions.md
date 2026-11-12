@@ -252,7 +252,7 @@ the agent.
 colocated repo git sees a detached `HEAD`, the agents (trained on git) run
 git commands that jj only picks up on its next command, extra jj workspaces
 are not git worktrees so git tooling inside them fails, bookmarks must be
-moved by hand before `lane/<slug>` can be pushed, git hooks don't run, and
+moved by hand before `panoptes/<lane>` can be pushed, git hooks don't run, and
 the jj binary (or the unstable `jj-lib` crate) becomes a dependency. All of
 that buys what a few git plumbing calls already give. The two don't
 compose: with jj the checkpoints would be redundant.
@@ -340,5 +340,7 @@ commands over RPC.
 
 - No automated test drives the real app window; the UI is tested through its
   store and reducer, and the backend through the service and a fake Pi.
+- The real Pi is only exercised by `pnpm smoke`, by hand. It is not part of
+  `pnpm check` because it needs a logged-in Pi and makes a model call.
 - Pi is not bundled yet. The app uses the installed `pi` and looks for a
   bundled one first, so shipping one later means adding files, not code.
