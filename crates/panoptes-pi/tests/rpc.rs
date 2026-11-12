@@ -70,6 +70,39 @@ fn text_of(events: &[HarnessEvent]) -> String {
 }
 
 #[tokio::test]
+async fn a_new_session_requires_an_existing_working_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("not-a-directory");
+    std::fs::write(&file, "file\n").unwrap();
+    for cwd in [dir.path().join("missing"), file] {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = fake_harness()
+            .start_session(StartSession::new(&cwd), tx)
+            .await
+            .err()
+            .expect("a new session must not fall back to the filesystem root");
+        assert!(format!("{error:#}").contains(&cwd.to_string_lossy().into_owned()));
+    }
+}
+
+#[tokio::test]
+async fn resuming_without_the_working_directory_is_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut request = StartSession::new(dir.path().join("missing"));
+    request.resume = Some("old-session.jsonl".into());
+    let (session, mut rx) = start_with(request).await;
+    assert_eq!(session.harness_ref().cwd, "/");
+
+    session
+        .prompt("tools".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert_eq!(text_of(&events), "tools=read,grep,find,ls");
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_read_only_session_gets_only_reading_tools() {
     for (read_only, expected) in [(false, "tools=all"), (true, "tools=read,grep,find,ls")] {
         let mut request = StartSession::new(std::env::temp_dir());

@@ -62,13 +62,22 @@ impl Harness for PiHarness {
     ) -> anyhow::Result<Box<dyn AgentSession>> {
         let cwd = request.cwd.as_path();
         let file = request.resume.as_deref();
-        // A session whose folder has since been deleted still opens, from
-        // the root, so its history stays readable.
-        let cwd = if cwd.is_dir() { cwd } else { Path::new("/") };
+        // Old history stays readable if its folder has since been deleted,
+        // but a fallback session can never write. A new session needs a real
+        // working directory rather than silently starting at the root.
+        let (cwd, read_only) = if cwd.is_dir() {
+            (cwd, request.read_only)
+        } else if file.is_some() {
+            (Path::new("/"), true)
+        } else {
+            anyhow::bail!(
+                "Working directory {} does not exist or is not a directory",
+                cwd.display()
+            );
+        };
         let shared = map::Shared::default();
         let mapper = map::EventMapper::new(shared.clone());
-        let process =
-            rpc::RpcProcess::spawn(&self.install, cwd, file, request.read_only, events, mapper)?;
+        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, read_only, events, mapper)?;
 
         let state = match process.call(json!({"type": "get_state"})).await {
             Ok(state) => state,
