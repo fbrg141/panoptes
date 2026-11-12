@@ -81,7 +81,7 @@
     "primary-hover": {
      "$type": "color",
      "$value": "#235CB8",
-     "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.8:1."
+     "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.7:1."
     },
     "on-primary": {
      "$type": "color",
@@ -263,7 +263,7 @@
     "primary-hover": {
      "$type": "color",
      "$value": "#235CB8",
-     "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.8:1."
+     "$description": "Hover and pressed fill for primary buttons; on-primary keeps 4.7:1."
     },
     "on-primary": {
      "$type": "color",
