@@ -348,6 +348,7 @@ pub struct OpenedSession {
 }
 
 type Tracker = Arc<std::sync::Mutex<StatusTracker>>;
+type EarlyExit = Arc<std::sync::Mutex<Option<String>>>;
 
 struct OpenSession {
     /// Distinguishes this process from earlier ones for the same session, so
@@ -379,6 +380,9 @@ struct Forwarder {
     status: Tracker,
     emit: Emit,
     writes: WriteWatch,
+    /// Set if the process ended before `start` had listed the session as
+    /// open, with what it last wrote to stderr.
+    early_exit: EarlyExit,
 }
 
 /// Lanes other than its own that each open session has edited, by lane.
@@ -443,13 +447,16 @@ impl Forwarder {
     async fn run(self, mut events: tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>) {
         while let Some(event) = events.recv().await {
             self.watch(&event).await;
-            if matches!(event, HarnessEvent::Exited { .. }) {
+            if let HarnessEvent::Exited { stderr_tail, .. } = &event {
                 let mut open = self.open.lock().await;
                 let current = open
                     .get(&self.key)
                     .is_some_and(|o| o.generation == self.generation);
                 if !current {
-                    // Closed on purpose or replaced: not news.
+                    // Closed on purpose or replaced: not news. If `start`
+                    // has not listed the session yet, it reads this under
+                    // the same lock and refuses to list a dead process.
+                    *self.early_exit.lock().unwrap() = Some(stderr_tail.clone());
                     continue;
                 }
                 open.remove(&self.key);
@@ -995,6 +1002,7 @@ impl Service {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HarnessEvent>();
         let fresh = status.is_none();
         let status = status.unwrap_or_default();
+        let early_exit = EarlyExit::default();
         if fresh {
             (self.emit)(SessionEvent {
                 key: key.to_string(),
@@ -1016,6 +1024,7 @@ impl Service {
                     own: launch.lane,
                     cwd: launch.cwd.clone(),
                 },
+                early_exit: early_exit.clone(),
             }
             .run(rx),
         );
@@ -1054,15 +1063,32 @@ impl Service {
                 return Err(error);
             }
         };
-        self.open.lock().await.insert(
-            key.to_string(),
-            OpenSession {
-                generation,
-                session,
-                status,
-                lane: launch.lane,
-            },
-        );
+        {
+            let mut open = self.open.lock().await;
+            let died = early_exit.lock().unwrap().take();
+            if let Some(stderr_tail) = died {
+                drop(open);
+                session.shutdown().await;
+                let detail = stderr_tail.trim();
+                return Err(ServiceError::new(
+                    ErrorKind::Exited,
+                    if detail.is_empty() {
+                        "The agent process ended while it was starting".to_string()
+                    } else {
+                        format!("The agent process ended while it was starting: {detail}")
+                    },
+                ));
+            }
+            open.insert(
+                key.to_string(),
+                OpenSession {
+                    generation,
+                    session,
+                    status,
+                    lane: launch.lane,
+                },
+            );
+        }
         Ok(OpenedSession {
             key: key.to_string(),
             history,
@@ -1535,6 +1561,8 @@ mod tests {
         sinks: std::sync::Mutex<Vec<EventSink>>,
         /// Every start it was asked for, in order.
         requests: std::sync::Mutex<Vec<StartSession>>,
+        /// Its process ends right after it reports its session.
+        dies_on_start: bool,
     }
 
     impl FakeHarness {
@@ -1603,6 +1631,15 @@ mod tests {
                 payload: serde_json::json!("early"),
             });
             self.sinks.lock().unwrap().push(events.clone());
+            if self.dies_on_start {
+                let _ = events.send(HarnessEvent::Exited {
+                    code: Some(1),
+                    stderr_tail: "no model configured\n".into(),
+                });
+                // Long enough for the exit to be seen before the session
+                // would be listed as open.
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
             Ok(Box::new(FakeSession { id, cwd, events }))
         }
     }
@@ -1990,6 +2027,24 @@ mod tests {
         settle().await;
         assert_eq!(exits(&f), 0);
         assert!(!f.service.list().await.sessions[0].open);
+    }
+
+    #[tokio::test]
+    async fn a_process_that_dies_while_starting_is_not_left_open() {
+        let f = fixture(FakeHarness {
+            dies_on_start: true,
+            ..FakeHarness::default()
+        });
+        let error = f
+            .service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Exited);
+        assert!(error.message.contains("no model configured"), "{error}");
+        assert!(!f.service.list().await.sessions[0].open);
+        let error = f.service.history("fake:s1").await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotOpen);
     }
 
     #[tokio::test]
