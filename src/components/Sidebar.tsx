@@ -24,6 +24,7 @@ export function Sidebar() {
   const show = useUi((s) => s.open);
   const [tab, setTab] = useState<NavigationTab>("lanes");
   const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
+  const [deletingLane, setDeletingLane] = useState<Lane | null>(null);
   const [adopting, setAdopting] = useState<Session | null>(null);
   const navigationByLane = useMemo(
     () => new Map(navigation.map((entry) => [entry.laneId, entry])),
@@ -104,6 +105,7 @@ export function Sidebar() {
                 onNewLane={() => show({ type: "newLane", projectId: project.id })}
                 onWork={(lane) => void create(lane.id)}
                 onArchive={(lane) => void requestArchive(lane)}
+                onDelete={setDeletingLane}
               />
             ))}
             {projects.length === 0 && (
@@ -139,6 +141,9 @@ export function Sidebar() {
           onArchived={() => setDirtyLane(null)}
         />
       )}
+      {deletingLane && (
+        <DeleteLaneDialog lane={deletingLane} onClose={() => setDeletingLane(null)} />
+      )}
       {adopting && (
         <AdoptSessionDialog
           session={adopting}
@@ -169,6 +174,7 @@ function ProjectItem({
   onNewLane,
   onWork,
   onArchive,
+  onDelete,
 }: {
   project: Project;
   lanes: Lane[];
@@ -176,6 +182,7 @@ function ProjectItem({
   onNewLane: () => void;
   onWork: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
+  onDelete: (lane: Lane) => void;
 }) {
   const removeProject = useStore((s) => s.removeProject);
   const restoreLane = useStore((s) => s.restoreLane);
@@ -231,6 +238,7 @@ function ProjectItem({
                 navigation={navigationByLane.get(lane.id)}
                 onWork={() => onWork(lane)}
                 onAction={() => onArchive(lane)}
+                onDelete={() => onDelete(lane)}
               />
             ))}
             {showArchived &&
@@ -240,6 +248,7 @@ function ProjectItem({
                   lane={lane}
                   navigation={navigationByLane.get(lane.id)}
                   onAction={() => void restoreLane(lane.id)}
+                  onDelete={() => onDelete(lane)}
                 />
               ))}
           </ul>
@@ -266,11 +275,13 @@ function LaneItem({
   navigation,
   onWork,
   onAction,
+  onDelete,
 }: {
   lane: Lane;
   navigation?: LaneNavigation;
   onWork?: () => void;
   onAction: () => void;
+  onDelete: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -312,6 +323,7 @@ function LaneItem({
           items={laneMenuItems(lane)}
           onSelect={(id) => {
             if (id === "archive-lane" || id === "restore-lane") onAction();
+            if (id === "delete-lane") onDelete();
           }}
         />
       </div>
@@ -346,6 +358,51 @@ function LaneItem({
         </div>
       )}
     </li>
+  );
+}
+
+function DeleteLaneDialog({ lane, onClose }: { lane: Lane; onClose: () => void }) {
+  const deleteLane = useStore((s) => s.deleteLane);
+  const [busy, setBusy] = useState(false);
+  const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
+
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    if (await deleteLane(lane.id)) onClose();
+    else setBusy(false);
+  };
+
+  return (
+    <Dialog
+      title={`Delete ${lane.name}?`}
+      width={540}
+      onClose={busy ? undefined : onClose}
+      actions={
+        <>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="danger" disabled={busy} onClick={() => void remove()}>
+            Delete permanently
+          </Button>
+        </>
+      }
+    >
+      {main ? (
+        <p>
+          This removes the lane and its Panoptes session records. The main checkout, its branch and
+          your files are not changed. Pi conversation files are kept.
+        </p>
+      ) : (
+        <p>
+          This permanently deletes the local worktree, including uncommitted changes, the local
+          branch <code>{lane.branch}</code>, and this lane's recovery refs. Commits that exist only
+          on this branch will be lost. The main repository, remote branches and Pi conversation
+          files are kept.
+        </p>
+      )}
+    </Dialog>
   );
 }
 

@@ -404,7 +404,7 @@ pub struct Service {
     lanes_root: PathBuf,
     /// Cancellation flags for setup commands, keyed by their project.
     lane_cancellations: Arc<std::sync::Mutex<HashMap<i64, Arc<AtomicBool>>>>,
-    /// Lanes with an archive or restore in progress.
+    /// Lanes with an archive, restore or delete in progress.
     busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
@@ -1253,12 +1253,45 @@ impl Service {
         .map_err(err)
     }
 
-    /// Marks a lane as being archived or restored until the guard drops.
+    /// Permanently deletes a lane after the UI's explicit confirmation.
+    /// Open sessions are refused rather than killed underneath their user.
+    pub async fn delete_lane(&self, id: i64) -> ServiceResult<()> {
+        let _busy = self.lane_busy(id)?;
+        if self
+            .open
+            .lock()
+            .await
+            .values()
+            .any(|open| open.lane == Some(id))
+        {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "Close this lane's session before deleting it",
+            ));
+        }
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || {
+            let (lane, project) = {
+                let store = store.lock().unwrap();
+                let lane = store.lane(id)?;
+                let project = store.project(lane.project_id)?;
+                (lane, project)
+            };
+            lanes::delete(&project, &lane)?;
+            store.lock().unwrap().delete_lane(id)
+        })
+        .await
+        .context("The lane deletion stopped")
+        .and_then(|result| result)
+        .map_err(err)
+    }
+
+    /// Marks a lane as being archived, restored or deleted until the guard drops.
     fn lane_busy(&self, id: i64) -> ServiceResult<LaneBusy> {
         if !self.busy_lanes.lock().unwrap().insert(id) {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
-                "That lane is already being archived or restored",
+                "That lane is already being archived, restored or deleted",
             ));
         }
         Ok(LaneBusy {
@@ -2303,6 +2336,41 @@ mod tests {
                 .contains("already has an active main-checkout"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_lane_requires_a_closed_session_and_frees_the_project() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let repo = PathBuf::from(&lane.worktrees[0].path);
+        std::fs::write(repo.join("keep.txt"), "main checkout work").unwrap();
+        let opened = f.service.create(lane.id, "fake").await.unwrap();
+
+        let error = f.service.delete_lane(lane.id).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Rejected);
+        assert!(
+            error.message.contains("Close this lane's session"),
+            "{error}"
+        );
+        assert_eq!(f.service.list().await.lanes.len(), 1);
+
+        f.service.close(&opened.key).await;
+        f.service.delete_lane(lane.id).await.unwrap();
+        let listing = f.service.list().await;
+        assert!(listing.lanes.is_empty());
+        assert!(
+            listing
+                .sessions
+                .iter()
+                .all(|session| session.key != opened.key && session.lane_id.is_none())
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("keep.txt")).unwrap(),
+            "main checkout work"
+        );
+
+        f.service.remove_project(lane.project_id).await.unwrap();
+        assert!(f.service.list().await.projects.is_empty());
     }
 
     #[tokio::test]

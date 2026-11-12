@@ -19,8 +19,12 @@ describe("sidebar row menus", () => {
   it("offers the actions appropriate to the lane state", () => {
     expect(ids(laneMenuItems({ state: "active" } satisfies Pick<Lane, "state">))).toEqual([
       "archive-lane",
+      "delete-lane",
     ]);
-    expect(ids(laneMenuItems({ state: "archived" }))).toEqual(["restore-lane"]);
+    expect(ids(laneMenuItems({ state: "archived" }))).toEqual(["restore-lane", "delete-lane"]);
+    expect(
+      laneMenuItems({ state: "active" }).find((item) => "id" in item && item.id === "delete-lane"),
+    ).toMatchObject({ label: "Delete lane", danger: true });
   });
 
   it("lists session actions by name only, without icons", () => {

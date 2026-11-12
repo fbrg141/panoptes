@@ -184,6 +184,12 @@ The sidebar has two tabs (#57):
      back without staging them, before the normal copy and setup steps.
    - Other ignored files are not captured and may be deleted with the
      worktree. Local state that must survive archive belongs in `copyFiles`.
+   - **Delete**, after explicit confirmation, is separate from archive. Close
+     the lane's session first. Deleting a worktree lane permanently removes
+     its worktree (including uncommitted changes), local branch and recovery
+     refs, then its lane and Panoptes session records. A main-checkout lane
+     deletes only those records. Harness conversation files are never
+     deleted. Once its last lane is deleted, the project can be removed.
 
 ### Session
 

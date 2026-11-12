@@ -550,6 +550,25 @@ impl Store {
         self.lane(id)
     }
 
+    /// Permanently forgets a lane and its Panoptes session records. The
+    /// harness conversations remain in the harness's own files. Git cleanup
+    /// is completed by the service before this transaction starts.
+    pub fn delete_lane(&self, id: i64) -> anyhow::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM lanes WHERE id = ?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            bail!("That lane no longer exists");
+        }
+        tx.execute("DELETE FROM sessions WHERE lane_id = ?1", [id])?;
+        tx.execute("DELETE FROM lanes WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Forgets a project with no lanes. Its repository and worktrees on disk
     /// are not touched. A project with lanes stays registered so their records
     /// and recovery refs cannot silently lose the repository they refer to.
@@ -1428,6 +1447,27 @@ mod tests {
 
         let error = store.remove_project(project.id).unwrap_err().to_string();
         assert!(error.contains("still has lanes"), "{error}");
+    }
+
+    #[test]
+    fn deleting_a_lane_drops_its_sessions_and_frees_its_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let lane = lane_in(&store);
+        let session = store.add_session(lane.id, "pi").unwrap();
+        store
+            .set_session_tags(session.id, &["keep".into(), "local".into()])
+            .unwrap();
+        assert_eq!(count(&store, "session_tags"), 2);
+
+        store.delete_lane(lane.id).unwrap();
+
+        assert!(store.lanes().unwrap().is_empty());
+        assert!(store.sessions().unwrap().is_empty());
+        assert_eq!(count(&store, "lane_worktrees"), 0);
+        assert_eq!(count(&store, "session_tags"), 0);
+        store.remove_project(lane.project_id).unwrap();
+        assert!(store.projects().unwrap().is_empty());
     }
 
     fn lane_in(store: &Store) -> Lane {

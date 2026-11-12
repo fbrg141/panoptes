@@ -355,6 +355,36 @@ pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Permanently removes a lane's worktree, local branch and recovery refs.
+/// The caller has already obtained explicit confirmation. A main-checkout
+/// lane owns none of those things, so deletion only removes its store row.
+pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<()> {
+    let worktree = sole_worktree(lane)?;
+    if worktree.main_checkout {
+        return Ok(());
+    }
+    let path = PathBuf::from(&worktree.path);
+    let repo = Path::new(&project.repo);
+    if std::fs::symlink_metadata(&path).is_ok() {
+        ensure_on_lane_branch(&path, lane)?;
+        // Deletion is explicitly destructive, including uncommitted files.
+        remove_worktree(repo, &path, true)?;
+    } else {
+        run(repo, &["worktree", "prune"])?;
+    }
+
+    let branch = format!("refs/heads/{}", lane.branch);
+    if ref_exists(repo, &branch)? {
+        run(repo, &["branch", "-D", &lane.branch])?;
+    }
+    let prefix = format!("refs/panoptes/lanes/{}/", lane.name);
+    let references = run(repo, &["for-each-ref", "--format=%(refname)", &prefix])?;
+    for reference in references.lines().filter(|line| !line.is_empty()) {
+        run(repo, &["update-ref", "-d", reference])?;
+    }
+    Ok(())
+}
+
 fn sole_worktree(lane: &Lane) -> anyhow::Result<&LaneWorktree> {
     if lane.worktrees.len() != 1 {
         bail!("This operation needs exactly one worktree");
@@ -394,7 +424,7 @@ fn ensure_on_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<()> {
     for (name, operation) in IN_PROGRESS {
         if git_path(path, name)?.exists() {
             bail!(
-                "The lane's worktree is in the middle of {operation}; finish or abort it before archiving. The worktree was left in place"
+                "The lane's worktree is in the middle of {operation}; finish or abort it before archiving or deleting the lane. The worktree was left in place"
             );
         }
     }
@@ -402,13 +432,13 @@ fn ensure_on_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<()> {
     match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
         Ok(head) if head == expected => Ok(()),
         Ok(head) => bail!(
-            "The lane's worktree is on {} instead of {}; switch back to {} before archiving so no commits are lost. The worktree was left in place",
+            "The lane's worktree is on {} instead of {}; switch back to {} before archiving or deleting the lane so its branch is unambiguous. The worktree was left in place",
             head.trim_start_matches("refs/heads/"),
             lane.branch,
             lane.branch
         ),
         Err(_) => bail!(
-            "The lane's worktree has a detached HEAD; switch back to {} before archiving so no commits are lost. The worktree was left in place",
+            "The lane's worktree has a detached HEAD; switch back to {} before archiving or deleting the lane so its branch is unambiguous. The worktree was left in place",
             lane.branch
         ),
     }
@@ -1189,6 +1219,73 @@ mod tests {
         ));
         assert!(!PathBuf::from(&new.worktrees[0].path).exists());
         assert!(ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
+    }
+
+    #[test]
+    fn deleting_a_lane_removes_its_dirty_worktree_branch_and_recovery_refs() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let mut lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "checkpoint work\n").unwrap();
+        let ArchiveResult::Archived { checkpoint_ref } =
+            archive(&f.project, &lane, Some(ArchiveStrategy::Checkpoint)).unwrap()
+        else {
+            panic!("checkpoint archive should finish")
+        };
+        lane.state = LaneState::Archived;
+        lane.worktrees[0].checkpoint_ref = checkpoint_ref;
+        restore(&f.project, &lane).unwrap();
+        std::fs::write(path.join("uncommitted.txt"), "delete me\n").unwrap();
+
+        delete(&f.project, &lane).unwrap();
+
+        assert!(!path.exists());
+        assert!(!ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
+        assert!(!ref_exists(&f.repo, "refs/panoptes/lanes/fix-login/archive").unwrap());
+        assert!(!ref_exists(&f.repo, "refs/panoptes/lanes/fix-login/copy-files").unwrap());
+        assert_eq!(git(&f.repo, &["branch", "--show-current"]), "trunk");
+    }
+
+    #[test]
+    fn deleting_a_main_checkout_lane_leaves_the_checkout_and_branch_alone() {
+        let f = fixture(None);
+        let new = create(
+            &f.root,
+            &f.project,
+            "quick",
+            &[],
+            "Quick question",
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let lane = lane(&f, 1, &new);
+        std::fs::write(f.repo.join("uncommitted.txt"), "keep me").unwrap();
+
+        delete(&f.project, &lane).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(f.repo.join("uncommitted.txt")).unwrap(),
+            "keep me"
+        );
+        assert!(ref_exists(&f.repo, "refs/heads/trunk").unwrap());
+    }
+
+    #[test]
+    fn deleting_a_lane_on_another_branch_leaves_everything_in_place() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "-b", "somewhere-else"]);
+
+        let error = delete(&f.project, &lane).unwrap_err();
+
+        assert!(format!("{error:#}").contains("somewhere-else"), "{error:#}");
+        assert!(path.exists());
+        assert!(ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
+        assert!(ref_exists(&f.repo, "refs/heads/somewhere-else").unwrap());
     }
 
     #[test]

@@ -595,6 +595,12 @@ export function installMockBackend() {
         }
         case "remove_project": {
           const id = (args as { id: number }).id;
+          if (lanes.some((lane) => lane.projectId === id)) {
+            throw {
+              kind: "rejected",
+              message: "That project still has lanes and cannot be removed",
+            };
+          }
           projects = projects.filter((p) => p.id !== id);
           return null;
         }
@@ -646,6 +652,21 @@ export function installMockBackend() {
             item.id === id ? { ...item, state: "active" as const } : item,
           );
           return lane;
+        }
+        case "delete_lane": {
+          const id = (args as { id: number }).id;
+          if (!lanes.some((lane) => lane.id === id)) {
+            throw { kind: "other", message: "That lane no longer exists" };
+          }
+          if (sessions.some((session) => session.laneId === id && open.has(session.key))) {
+            throw { kind: "rejected", message: "Close this lane's session before deleting it" };
+          }
+          for (const session of sessions.filter((session) => session.laneId === id)) {
+            open.delete(session.key);
+          }
+          sessions = sessions.filter((session) => session.laneId !== id);
+          lanes = lanes.filter((lane) => lane.id !== id);
+          return null;
         }
         case "open_session":
           if (!open.has(a.key)) {

@@ -266,6 +266,11 @@ async fn restore_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<Lane
     state.service.restore_lane(id).await
 }
 
+#[tauri::command]
+async fn delete_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
+    state.service.delete_lane(id).await
+}
+
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app
         .path()
@@ -392,6 +397,7 @@ pub fn run() {
             cancel_lane_creation,
             archive_lane,
             restore_lane,
+            delete_lane,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

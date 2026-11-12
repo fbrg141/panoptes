@@ -7,10 +7,13 @@ export const projectMenuItems = (): MenuItem[] => [
   { id: "remove-project", label: "Remove project", icon: "trash-2", danger: true },
 ];
 
-export const laneMenuItems = (lane: Pick<Lane, "state">): MenuItem[] =>
+export const laneMenuItems = (lane: Pick<Lane, "state">): MenuItem[] => [
   lane.state === "active"
-    ? [{ id: "archive-lane", label: "Archive lane", icon: "x" }]
-    : [{ id: "restore-lane", label: "Restore lane", icon: "rotate-ccw" }];
+    ? { id: "archive-lane", label: "Archive lane", icon: "x" }
+    : { id: "restore-lane", label: "Restore lane", icon: "rotate-ccw" },
+  { separator: true },
+  { id: "delete-lane", label: "Delete lane", icon: "trash-2", danger: true },
+];
 
 /** The items in a session row's right-click menu: adopt, stop, archive. */
 export const sessionMenuItems = (

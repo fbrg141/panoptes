@@ -84,6 +84,8 @@ export interface State {
   cancelLaneCreation: (projectId: number) => Promise<void>;
   archiveLane: (id: number, strategy: ArchiveStrategy | null) => Promise<ArchiveLaneOutcome | null>;
   restoreLane: (id: number) => Promise<void>;
+  /** Permanently deletes a lane after explicit confirmation in the UI. */
+  deleteLane: (id: number) => Promise<boolean>;
   dismissError: () => void;
 }
 
@@ -446,6 +448,20 @@ export function createAppStore(backend: typeof api) {
           await get().refresh();
         } catch (e) {
           fail(e);
+        }
+      },
+
+      deleteLane: async (id) => {
+        try {
+          await backend.deleteLane(id);
+          for (const session of get().sessions.filter((session) => session.laneId === id)) {
+            forget(session.key);
+          }
+          await get().refresh();
+          return true;
+        } catch (e) {
+          fail(e);
+          return false;
         }
       },
 
