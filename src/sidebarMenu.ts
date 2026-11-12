@@ -9,11 +9,7 @@ export const projectMenuItems = (): MenuItem[] => [
 
 export const laneMenuItems = (lane: Pick<Lane, "state">): MenuItem[] =>
   lane.state === "active"
-    ? [
-        { id: "new-session", label: "New session", icon: "plus" },
-        { separator: true },
-        { id: "archive-lane", label: "Archive lane", icon: "x" },
-      ]
+    ? [{ id: "archive-lane", label: "Archive lane", icon: "x" }]
     : [{ id: "restore-lane", label: "Restore lane", icon: "rotate-ccw" }];
 
 /** The items in a session row's right-click menu: adopt, stop, archive. */

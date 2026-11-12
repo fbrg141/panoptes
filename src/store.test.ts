@@ -59,7 +59,6 @@ const lane: Lane = {
       checkpointRef: null,
     },
   ],
-  writeLock: { holder: null, queue: [] },
 };
 
 const opened: OpenedSession = { key: "pi:s1", history: [] };
@@ -102,7 +101,6 @@ function fakeBackend() {
     adoptSession: vi.fn(
       async (): Promise<AdoptionOutcome> => ({ type: "adopted", key: "panoptes:7" }),
     ),
-    replaceSession: vi.fn(async (): Promise<OpenedSession> => opened),
     archiveSession: vi.fn(async () => {}),
     renameSession: vi.fn(async () => {}),
     history: vi.fn(async () => []),
@@ -337,6 +335,15 @@ describe("store", () => {
     expect(store.getState().lanes).toEqual([lane]);
   });
 
+  it("creates a lane and its only session from the project prompt", async () => {
+    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    const created = await store.getState().createFromPrompt(1, "Fix login", true);
+    expect(created).toBe(true);
+    expect(fake.backend.createLane).toHaveBeenCalledWith(1, "Fix login", true);
+    expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi");
+    expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:7", "Fix login", [], "start");
+  });
+
   it("treats lane creation cancellation as a choice, not an error", async () => {
     fake.backend.createLane.mockRejectedValueOnce({ kind: "cancelled", message: "Cancelled" });
     const created = await store.getState().createLane(1, "Slow setup", false);
@@ -462,10 +469,5 @@ describe("store", () => {
     await store.getState().setArchived("panoptes:7", true);
     expect(fake.backend.archiveSession).toHaveBeenCalledWith("panoptes:7", true);
     expect(store.getState().activeKey).toBeNull();
-  });
-
-  it("keeps each session's standing with its lane's write lock", () => {
-    fake.emit({ key: "panoptes:7", event: { type: "lockChanged", holder: false, queued: true } });
-    expect(store.getState().locks["panoptes:7"]).toEqual({ holder: false, queued: true });
   });
 });

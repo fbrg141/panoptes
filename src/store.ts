@@ -12,7 +12,6 @@ import type {
   ImageAttachment,
   Lane,
   LaneNavigation,
-  LockState,
   ModelInfo,
   OpenedSession,
   Project,
@@ -41,8 +40,6 @@ export interface State {
   conversations: Record<string, Conversation>;
   /** Each open session's status, as the backend reports it. */
   statuses: Record<string, SessionStatus>;
-  /** How each open lane session stands with its lane's write lock. */
-  locks: Record<string, LockState>;
   /** Keys with a prompt on its way to the harness. */
   sending: Record<string, boolean>;
   /** Model, thinking level and context use, per open session. */
@@ -83,6 +80,7 @@ export interface State {
   addProject: (folder: string) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
   createLane: (projectId: number, task: string, mainCheckout: boolean) => Promise<Lane | null>;
+  createFromPrompt: (projectId: number, task: string, mainCheckout: boolean) => Promise<boolean>;
   cancelLaneCreation: (projectId: number) => Promise<void>;
   archiveLane: (id: number, strategy: ArchiveStrategy | null) => Promise<ArchiveLaneOutcome | null>;
   restoreLane: (id: number) => Promise<void>;
@@ -142,14 +140,12 @@ export function createAppStore(backend: typeof api) {
       set((s) => {
         const { [key]: _closed, ...conversations } = s.conversations;
         const { [key]: _status, ...statuses } = s.statuses;
-        const { [key]: _lock, ...locks } = s.locks;
         const { [key]: _settings, ...settings } = s.settings;
         const { [key]: _models, ...models } = s.models;
         const { [key]: _draft, ...drafts } = s.drafts;
         return {
           conversations,
           statuses,
-          locks,
           settings,
           models,
           drafts,
@@ -171,11 +167,6 @@ export function createAppStore(backend: typeof api) {
         set((s) => ({ statuses: { ...s.statuses, [key]: event.status } }));
         return;
       }
-      if (event.type === "lockChanged") {
-        const { holder, queued } = event;
-        set((s) => ({ locks: { ...s.locks, [key]: { holder, queued } } }));
-        return;
-      }
       patch(key, (c) => applyEvent(c, event));
       if (event.type === "runSettled") {
         // The history is authoritative; it keeps the ids the run streamed under.
@@ -195,7 +186,6 @@ export function createAppStore(backend: typeof api) {
       navigation: [],
       conversations: {},
       statuses: {},
-      locks: {},
       sending: {},
       settings: {},
       models: {},
@@ -426,6 +416,13 @@ export function createAppStore(backend: typeof api) {
           if (errorKind(e) !== "cancelled") fail(e);
           return null;
         }
+      },
+
+      createFromPrompt: async (projectId, task, mainCheckout) => {
+        const lane = await get().createLane(projectId, task, mainCheckout);
+        if (!lane) return false;
+        await get().create(lane.id, { prompt: task });
+        return true;
       },
 
       cancelLaneCreation: async (projectId) => {

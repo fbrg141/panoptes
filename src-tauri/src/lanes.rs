@@ -819,7 +819,7 @@ fn command_failed(description: &str, output: &Output) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{LaneState, ProjectSettings, WriteLock};
+    use crate::store::{LaneState, ProjectSettings};
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -896,7 +896,6 @@ mod tests {
                     checkpoint_ref: None,
                 })
                 .collect(),
-            write_lock: WriteLock::default(),
         }
     }
 

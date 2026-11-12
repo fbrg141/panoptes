@@ -114,7 +114,6 @@ let lanes: Lane[] = [
         checkpointRef: null,
       },
     ],
-    writeLock: { holder: null, queue: [] },
   },
 ];
 let nextLaneId = 2;
@@ -125,6 +124,9 @@ const recordSession = (laneId: number): Session => {
   const lane = lanes.find((item) => item.id === laneId);
   if (lane?.state !== "active") {
     throw { kind: "other", message: "That lane is archived; restore it to start a session" };
+  }
+  if (sessions.some((item) => item.laneId === laneId)) {
+    throw { kind: "rejected", message: "That lane already has a session" };
   }
   const id = nextSessionId++;
   const cwd = lane.worktrees[0].path;
@@ -621,7 +623,6 @@ export function installMockBackend() {
                 checkpointRef: null,
               },
             ],
-            writeLock: { holder: null, queue: [] },
           };
           lanes.push(lane);
           return lane;
@@ -679,6 +680,9 @@ export function installMockBackend() {
             if (matches.length !== 1) return { type: "chooseLane" };
             laneId = matches[0].id;
           }
+          if (sessions.some((item) => item.laneId === laneId)) {
+            throw { kind: "rejected", message: "That lane already has a session" };
+          }
           const id = nextSessionId++;
           sessions = sessions.map((s) =>
             s.key === request.key
@@ -686,15 +690,6 @@ export function installMockBackend() {
               : s,
           );
           return { type: "adopted", key: `panoptes:${id}` };
-        }
-        case "replace_session": {
-          const old = sessions.find((s) => s.key === a.key);
-          if (old?.laneId == null) throw { kind: "rejected", message: "Not in a lane" };
-          sessions = sessions.map((s) => (s.key === a.key ? { ...s, archived: true } : s));
-          open.delete(a.key);
-          const recorded = recordSession(old.laneId);
-          open.add(recorded.key);
-          return { key: recorded.key, history: [] };
         }
         case "archive_session": {
           const archived = (args as { archived: boolean }).archived;
@@ -766,25 +761,19 @@ export function installMockBackend() {
 }
 
 /**
- * `?showcase`: every session status at once, plus a lock holder and a long
- * title (queued for the lock), so the sidebar's session rows can be reviewed side by side.
+ * `?showcase`: every session status at once, plus a long title, so the
+ * sidebar's session rows can be reviewed side by side.
  */
 async function showcase(open: Set<string>) {
   sessions.push(
     session({
       name: "f",
-      key: "panoptes:90",
-      id: 90,
-      laneId: 1,
       cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
       title: "Wire the approval card into the composer and keep focus on the textarea",
       updatedAt: now - 2 * 60_000,
     }),
     session({
       name: "g",
-      key: "panoptes:91",
-      id: 91,
-      laneId: 1,
       cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
       title: "Run the migration tests",
       updatedAt: now - 40 * 60_000,
@@ -792,8 +781,8 @@ async function showcase(open: Set<string>) {
   );
   const statuses: [string, string][] = [
     ["panoptes:1", "running"],
-    ["panoptes:90", "waiting"],
-    ["panoptes:91", "failed"],
+    ["pi:f", "waiting"],
+    ["pi:g", "failed"],
     ["pi:b", "done"],
     ["pi:c", "running"],
     ["pi:d", "waiting"],
@@ -804,12 +793,4 @@ async function showcase(open: Set<string>) {
     open.add(key);
     await emit("session-event", { key, event: { type: "statusChanged", status } });
   }
-  await emit("session-event", {
-    key: "panoptes:1",
-    event: { type: "lockChanged", holder: true, queued: false },
-  });
-  await emit("session-event", {
-    key: "panoptes:90",
-    event: { type: "lockChanged", holder: false, queued: true },
-  });
 }

@@ -1,7 +1,7 @@
 # Domain model
 
-*Proposed 2026-11-06, revised for lanes 2026-11-07. Projects (#19) and
-lanes (#20) are built; sessions and groups are not built yet.*
+*Proposed 2026-11-06, revised for one session per lane 2026-11-11 (#228).
+Projects (#19), lanes (#20) and their sessions are built; groups are not.*
 
 What Panoptes works with, how the pieces relate, and how they live and die.
 It answers the "domain model" parts of #8 and #9 and sets up the tool-call
@@ -16,12 +16,13 @@ Why the model is shaped this way is recorded in
   Messages stay in each harness's own storage (Pi's session files). Projects,
   lanes, groups, titles, tags and archiving live in Panoptes, because they
   must work the same across every harness.
-- **The lane is the durable unit; a session is disposable.** A lane owns a
-  worktree, a branch, a task and a write lock, and exists with or without a
-  session. Closing or replacing a session never touches the lane's work.
-- **Decisions live in Rust; the UI only renders.** Lane state, the write
-  lock, queueing and what appears where in the sidebar are worked out in the
-  core and sent to the UI.
+- **The lane is the durable unit with one session.** A lane owns a worktree,
+  a branch, a task and exactly one session. Closing that session never touches
+  the lane's work; reopening resumes the same conversation. A new task is a new
+  lane, not a replacement session on the old one.
+- **Decisions live in Rust; the UI only renders.** Lane state, session
+  membership and what appears where in the sidebar are worked out in the core
+  and sent to the UI.
 - **Harness-neutral, not protocol-shaped.** The model follows what Panoptes
   needs. It borrows from other protocols where they fit, and copies none.
 
@@ -33,8 +34,7 @@ graph TD
   G -->|references| P[Project]
   P -->|has| L[Lane]
   L -->|owns| W[Worktree]
-  L -->|runs| S[Session]
-  S -->|parent of| S2[Subsession]
+  L -->|runs one| S[Session]
   S -->|references| H[(Harness session)]
   S -->|labelled by| T[Tag]
 ```
@@ -58,9 +58,8 @@ behaves the same whichever group it is used from.
 ### Lane
 
 One line of work on a project: a task, the branch it happens on, the
-worktree it happens in, and the lock that decides who may edit it. The name
-was chosen over "workspace", which already means something else in VS Code,
-Zed and Cargo.
+worktree it happens in, and its one session. The name was chosen over
+"workspace", which already means something else in VS Code, Zed and Cargo.
 
 | Field | Meaning |
 |---|---|
@@ -69,7 +68,6 @@ Zed and Cargo.
 | `task` | What the lane is for, in your words |
 | `branch` | The branch its worktree is on |
 | `worktrees` | For each worktree: project id, path, and whether it is the main checkout |
-| `writeLock` | The session that may edit files now, and the queue waiting for it |
 | `state` | `active` or `archived` |
 
 - **One worktree, room for more.** The schema lets a lane hold several
@@ -86,11 +84,10 @@ Zed and Cargo.
   too slow or too large, a lane can point at the project's own checkout. It
   is an explicit opt-in, marked clearly wherever the lane is shown. Panoptes
   neither creates nor removes that folder.
-- **Writes are serialised.** Several sessions can attach to a lane and read
-  it, but only the session holding the write lock edits files. The others
-  queue and show as Waiting until the lock passes to them. Two agents working
-  truly in parallel means two lanes. How the lock is enforced is in
-  [decisions.md](decisions.md#the-write-lock-is-enforced-by-starting-non-holders-read-only).
+- **One session, one writer.** The store refuses a second session record for
+  a lane, including after the first is archived. There is no write lock,
+  read-only non-holder session or lock queue. Parallel work means separate
+  lanes.
 
 ### Session
 
@@ -101,19 +98,19 @@ One conversation, run by one harness, inside one lane.
 | `id` | Panoptes' own id, assigned before the harness starts |
 | `harnessRef` | Harness name, the harness's session id, and its locator (for Pi, the session file) |
 | `lane` | The lane it runs in |
-| `parent` | For a subsession, the session that started it |
+| `parent` | For a nested Pi subagent, its parent conversation; not a Panoptes subsession |
 | `title` | Set by you in Panoptes; when empty, the harness's title or first message |
 | `tags`, `pinned`, `archived` | Panoptes' organisation |
 
 - **A Panoptes session is its own record.** It references a harness session
   through `harnessRef` and is never the Pi session itself. Pi sessions stay
   an implementation detail of the adapter.
-- **Replaceable.** When a conversation goes stale (its context is full, or it
-  went the wrong way), you close it and start a fresh session in the same
-  lane, on the same diff. The lane keeps its worktree, branch and task.
-- **Subsessions** have their own transcript, share the lane's worktree (and
-  its write lock), and hand their result back to the parent. They share no
-  history: nothing of the parent's conversation is copied into the child.
+- **One conversation per lane.** Close and reopen the same session rather
+  than replacing it. A stale conversation can be discarded; a new task gets a
+  new lane.
+- **Pi subagents, when exposed (#227),** will appear nested under this session
+  as read-only activity owned by Pi. They are not additional Panoptes sessions
+  and have no composer or independent lifecycle.
 
 **Status** is sent by the backend, not worked out in the UI, using the design
 system's words:
@@ -121,7 +118,7 @@ system's words:
 | Status | Meaning |
 |---|---|
 | Running | The agent is working |
-| Waiting | The agent needs you (a question or an approval), or it is queued for the lane's write lock |
+| Waiting | The agent needs you (a question or an approval) |
 | Failed | The process ended unexpectedly, or the last run errored |
 | Done | Idle and ready for the next prompt |
 
@@ -149,27 +146,29 @@ A flat label on sessions, for organising work inside a project ("auth",
 The sidebar has two tabs (#57):
 
 - **Lanes** is the primary, collapsible hierarchy: projects, their active
-  lanes, and each lane's sessions, with subsessions under their parent.
-  Sessions stay in their lane while running or pinned; there are no separate
-  Open or Pinned sections. Archived lanes and sessions have expandable
-  archive views.
+  lanes, and each lane's one session. Pi subagents will nest under that
+  session when #227 lands. Sessions stay in their lane while running or pinned;
+  there are no separate Open or Pinned sections. Archived lanes and sessions
+  have expandable archive views.
 - **All sessions** is one flat, reverse-chronological list of every harness
   session found on disk, including ones started from the terminal and ones
   already shown under Lanes. You can adopt an unassociated conversation into
-  a lane, which creates a Panoptes session record that points at it. Adoption
-  never copies or rewrites the harness's files. Lane membership comes from
-  these records, never from a cwd guess.
+  an active lane that has no session, which creates its one Panoptes session
+  record. Adoption never copies or rewrites the harness's files. Lane
+  membership comes from these records, never from a cwd guess.
 
 ## Lifecycles
 
 ### Lane
 
-1. **Create** from a project. Panoptes adds a worktree on a new branch from
-   `baseBranch`, copies `copyFiles` from the main checkout, then runs
-   `setup`. With the main-checkout opt-in, none of that happens.
-2. If any step fails or you cancel, everything created so far is removed, so
-   nothing is left behind (#9).
-3. **Use:** sessions come and go inside it. The lane needs none to exist.
+1. **Create from a project `+` and a prompt.** Panoptes adds a worktree on a
+   new branch from `baseBranch`, copies `copyFiles` from the main checkout,
+   runs `setup`, then creates the lane's one session and sends the prompt.
+   With the main-checkout opt-in, it uses the project's checkout instead.
+2. If worktree setup fails or you cancel, everything created so far is removed,
+   so nothing is left behind (#9). If session startup fails, its record is
+   discarded and the empty lane offers a retry.
+3. **Use:** close and reopen the lane's one session as needed.
 4. **Archive**, on request. Archiving never touches the branch.
    - A clean tree: the worktree is removed.
    - A dirty tree never loses work. Panoptes offers three ways out and does
@@ -188,17 +187,15 @@ The sidebar has two tabs (#57):
 
 ### Session
 
-1. **New:** in an existing lane, or in a new lane created for it. The session
-   gets its Panoptes id here, before its harness process starts, so every
-   event it sends carries that id.
+1. **New:** created with its lane from the project `+` prompt, or adopted into
+   an empty active lane. The session gets its Panoptes id before the harness
+   starts, so every event it sends carries that id.
 2. **Open:** one harness process runs it. Each prompt is one run, Running then
-   Done (or Waiting, or Failed). A run that needs to edit waits for the
-   lane's write lock.
-3. **Close or crash:** the process ends and releases the write lock. The
-   conversation stays in the harness and the session can be reopened.
-4. **Replace:** close it and start a fresh session in the same lane.
-5. **Archive:** hidden from the lane. Archiving a session never archives its
-   lane.
+   Done (or Waiting, or Failed). The lane has no write lock or queue.
+3. **Close or crash:** the process ends. The conversation stays in the harness
+   and the same session can be reopened; archived lanes reopen it read-only.
+4. **Archive:** hidden from the lane. Archiving a session never archives its
+   lane and does not permit a second session to replace it.
 
 ## Deferred
 
@@ -257,9 +254,9 @@ Smaller fixes from the backend review, needed by the model above:
 - **#9:** the default target is a new lane with a fresh worktree. The main
   checkout is an explicit, marked opt-in.
 - **#11:** the tool-call entity and approvals come first.
-- **#46:** the write lock answers "sessions sharing a mutation-capable
-  worktree", and the archive rules answer "never destroy user work".
-  Checkpoints and crash recovery stay with #46.
+- **#46:** one session per lane answers who may write in a worktree, and the
+  archive rules answer "never destroy user work". Checkpoints and crash
+  recovery stay with #46.
 - **#48:** the product bet is chosen through [bets.md](bets.md).
 
 ## Build order
@@ -272,10 +269,11 @@ Build the spine fast and solid, not polished; the reason is in
 | done | #18 | Versioned Panoptes store |
 | done | #19 | Projects and their settings |
 | done | #20 | Lanes: create a worktree, archive without losing work, main-checkout opt-in |
-| done | #22 | Sessions inside a lane: Panoptes identity, write lock and queue, replace |
+| done | #22 | Sessions inside a lane: Panoptes identity; lock model superseded by #228 |
 | done | #57 | Collapsible Lanes hierarchy, flat All sessions list and adoption |
-| 4 | #58 | Subsessions that hand their result back |
-| 5 | #21 | Nested groups and multi-repo lanes, last |
+| done | #228 | One session per lane, prompt-based creation, no lock or replacement |
+| dropped | #58 | Panoptes-owned subsessions; Pi subagent observation moves to #227 |
+| dropped | #21 | Nested groups and multi-repo lanes |
 
 The contract fixes (#23 to #27) can go in any order alongside.
 

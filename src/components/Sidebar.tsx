@@ -142,7 +142,11 @@ export function Sidebar() {
       {adopting && (
         <AdoptSessionDialog
           session={adopting}
-          lanes={lanes.filter((lane) => lane.state === "active")}
+          lanes={lanes.filter((lane) => {
+            if (lane.state !== "active") return false;
+            const entry = navigationByLane.get(lane.id);
+            return !entry || (entry.sessions.length === 0 && entry.archivedSessions.length === 0);
+          })}
           projects={projects}
           onClose={() => setAdopting(null)}
         />
@@ -198,6 +202,15 @@ function ProjectItem({
         >
           {project.name}
         </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="plus"
+          aria-label={`New lane in ${project.name}`}
+          title={`New lane in ${project.name}`}
+          className={`${REVEAL_ON_HOVER} group-hover/project:opacity-100 group-focus-within/project:opacity-100`}
+          onClick={onNewLane}
+        />
         <RowMenu
           label={`Actions for project ${project.name}`}
           className={`ml-1 flex flex-none ${REVEAL_ON_HOVER} group-hover/project:opacity-100 group-focus-within/project:opacity-100`}
@@ -298,7 +311,6 @@ function LaneItem({
           className={`absolute inset-y-0 right-1 flex items-center ${REVEAL_ON_HOVER} group-hover/lane:opacity-100 group-focus-within/lane:opacity-100`}
           items={laneMenuItems(lane)}
           onSelect={(id) => {
-            if (id === "new-session") onWork?.();
             if (id === "archive-lane" || id === "restore-lane") onAction();
           }}
         />
@@ -326,8 +338,10 @@ function LaneItem({
               )}
             </>
           )}
-          {sessions.length === 0 && archivedSessions.length === 0 && (
-            <p className="px-3 py-1 text-caption text-ink-muted">No sessions yet.</p>
+          {sessions.length === 0 && archivedSessions.length === 0 && onWork && (
+            <Button variant="ghost" size="sm" className="ml-2" onClick={onWork}>
+              Start session
+            </Button>
           )}
         </div>
       )}
@@ -411,10 +425,10 @@ function AdoptSessionDialog({
     <Dialog title={`Adopt “${session.title}” into a lane`} onClose={busy ? undefined : onClose}>
       <p className="pb-3 text-ink-muted">
         The conversation stays in the harness's own files. Only its Panoptes lane membership is
-        added.
+        added. Each lane can hold one session.
       </p>
       {lanes.length === 0 ? (
-        <p>Create an active lane before adopting this session.</p>
+        <p>No active lane without a session is available. Create a lane for a new task instead.</p>
       ) : (
         <ul className="flex flex-col gap-1">
           {lanes.map((lane) => (

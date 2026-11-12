@@ -19,7 +19,6 @@ const lane: Lane = {
   branch: "panoptes/fix-login",
   state: "active",
   worktrees: [],
-  writeLock: { holder: null, queue: [] },
 };
 
 const session: Session = {

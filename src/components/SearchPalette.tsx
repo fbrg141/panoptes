@@ -46,14 +46,17 @@ export function SearchPalette() {
       case "session":
         await open(target.session);
         break;
-      case "lane":
-        await create(target.lane.id);
+      case "lane": {
+        const session = sessions.find((item) => item.laneId === target.lane.id);
+        if (session) await open(session);
+        else await create(target.lane.id);
         break;
+      }
       case "project":
         show({ type: "newLane", projectId: target.project.id });
         break;
       case "newSession":
-        show({ type: "newSession" });
+        show({ type: "newLane", projectId: projects[0]?.id ?? 0 });
         break;
       case "newProject":
         await pickProjectFolder();

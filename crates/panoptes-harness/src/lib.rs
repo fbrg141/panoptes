@@ -383,8 +383,7 @@ pub struct StartSession {
     /// starts a new one.
     pub resume: Option<String>,
     /// Gives the agent only tools that cannot change files (reading,
-    /// searching, listing). Panoptes starts every session that does not
-    /// hold its lane's write lock this way.
+    /// searching, listing). Used for archived lanes and safe history fallback.
     pub read_only: bool,
 }
 

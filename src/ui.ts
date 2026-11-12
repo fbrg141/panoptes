@@ -8,7 +8,6 @@ import { create } from "zustand";
  */
 export type Overlay =
   | { type: "search" }
-  | { type: "newSession" }
   | { type: "newProject" }
   | { type: "shortcuts" }
   | { type: "newLane"; projectId: number; prompt?: string };

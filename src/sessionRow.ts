@@ -1,4 +1,4 @@
-import type { LockState, Session, SessionStatus } from "./types";
+import type { Session, SessionStatus } from "./types";
 
 /** The status words the guide allows; idle has none and recedes instead. */
 export const STATUS_WORDS: Record<Exclude<SessionStatus, "idle">, string> = {
@@ -17,18 +17,6 @@ export const statusWord = (status: SessionStatus): string | null =>
  */
 export const isLive = (status: SessionStatus): boolean =>
   status === "running" || status === "waiting" || status === "failed";
-
-/** What the lock means for this session, in words, or null when it has no say. */
-export function lockLabel(lock: LockState | undefined): string | null {
-  if (lock?.holder) return "Holds the lane's write lock";
-  if (lock?.queued) return "Queued for the write lock, read-only";
-  return null;
-}
-
-/** The compact, visible queue marker in the row's metadata. */
-export function lockQueueText(lock: LockState | undefined): string | null {
-  return lock?.queued && !lock.holder ? "Waiting" : null;
-}
 
 /**
  * The second line of a session row. Nested under a lane, the lane already
@@ -50,19 +38,15 @@ export function sessionDetail(
 export function sessionRowLabel({
   title,
   status,
-  lock,
   detail,
   time,
 }: {
   title: string;
   status: SessionStatus;
-  lock: LockState | undefined;
   detail: string;
   time: string;
 }): string {
-  return [title, statusWord(status), lockLabel(lock), detail, `updated ${time}`]
-    .filter(Boolean)
-    .join(", ");
+  return [title, statusWord(status), detail, `updated ${time}`].filter(Boolean).join(", ");
 }
 
 /** The one action worth a button on the row itself; the rest stay in its menu. */

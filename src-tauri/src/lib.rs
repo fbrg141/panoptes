@@ -101,11 +101,6 @@ async fn adopt_session(
 }
 
 #[tauri::command]
-async fn replace_session(state: State<'_, AppState>, key: String) -> ServiceResult<OpenedSession> {
-    state.service.replace(&key).await
-}
-
-#[tauri::command]
 async fn archive_session(
     state: State<'_, AppState>,
     key: String,
@@ -375,7 +370,6 @@ pub fn run() {
             open_session,
             new_session,
             adopt_session,
-            replace_session,
             archive_session,
             rename_session,
             set_session_tags,

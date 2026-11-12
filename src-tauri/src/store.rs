@@ -246,17 +246,6 @@ impl LaneState {
     }
 }
 
-/// The write lock belongs to the lane, not to any one process: by the key of
-/// the open session that may edit files, and the keys of those waiting for
-/// it. Only an open session can hold it, so it lives in the service's
-/// memory and is filled into listings; the store always reads it empty.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteLock {
-    pub holder: Option<String>,
-    pub queue: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaneWorktree {
@@ -284,7 +273,6 @@ pub struct Lane {
     pub branch: String,
     pub state: LaneState,
     pub worktrees: Vec<LaneWorktree>,
-    pub write_lock: WriteLock,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -615,11 +603,12 @@ impl Store {
     }
 
     /// Gives a session its Panoptes id before any harness process exists.
-    /// Only an active lane takes new sessions.
+    /// Only an active lane with no session takes one.
     pub fn add_session(&self, lane_id: i64, harness: &str) -> anyhow::Result<SessionRecord> {
         if self.lane(lane_id)?.state != LaneState::Active {
             bail!("That lane is archived; restore it to start a session");
         }
+        self.ensure_lane_has_no_session(lane_id)?;
         self.conn.execute(
             "INSERT INTO sessions (lane_id, harness, created_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![lane_id, harness, now_ms()],
@@ -640,6 +629,7 @@ impl Store {
         if self.lane(lane_id)?.state != LaneState::Active {
             bail!("That lane is archived; restore it before adopting a session");
         }
+        self.ensure_lane_has_no_session(lane_id)?;
         if self.session_for(harness, harness_id)?.is_some() {
             bail!("That conversation already belongs to a lane");
         }
@@ -660,6 +650,18 @@ impl Store {
         tx.execute("DELETE FROM pins WHERE session_key = ?1", [&legacy_key])?;
         tx.commit()?;
         self.session(id)
+    }
+
+    fn ensure_lane_has_no_session(&self, lane_id: i64) -> anyhow::Result<()> {
+        let occupied: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions WHERE lane_id = ?1)",
+            [lane_id],
+            |row| row.get(0),
+        )?;
+        if occupied {
+            bail!("That lane already has a session");
+        }
+        Ok(())
     }
 
     /// Records which harness conversation a session wraps, once the harness
@@ -780,7 +782,6 @@ fn lane_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Lane> {
         branch: row.get(4)?,
         state: LaneState::parse(&state)?,
         worktrees: Vec::new(),
-        write_lock: WriteLock::default(),
     })
 }
 
@@ -1408,8 +1409,6 @@ mod tests {
         let added = store.add_lane(&new).unwrap();
         assert_eq!(added.state, LaneState::Active);
         assert_eq!(added.worktrees.len(), 2);
-        assert_eq!(added.write_lock.holder, None);
-        assert!(added.write_lock.queue.is_empty());
         drop(store);
 
         let store = Store::open(dir.path()).unwrap();
@@ -1450,6 +1449,22 @@ mod tests {
             .unwrap()
     }
 
+    fn another_lane_in(store: &Store, lane: &Lane) -> Lane {
+        store
+            .add_lane(&NewLane {
+                project_id: lane.project_id,
+                name: "another-lane".into(),
+                task: "Another lane".into(),
+                branch: "panoptes/another-lane".into(),
+                worktrees: vec![NewLaneWorktree {
+                    project_id: lane.project_id,
+                    path: "/lanes/another-lane/web".into(),
+                    main_checkout: false,
+                }],
+            })
+            .unwrap()
+    }
+
     #[test]
     fn sessions_get_an_id_first_and_their_harness_ref_later() {
         let dir = tempfile::tempdir().unwrap();
@@ -1483,8 +1498,9 @@ mod tests {
         assert_eq!(store.session_for("pi", "abc").unwrap(), Some(session.id));
         // Archiving the session leaves its lane alone.
         assert_eq!(store.lane(lane.id).unwrap().state, LaneState::Active);
-        // One harness conversation, one Panoptes session.
-        let other = store.add_session(lane.id, "pi").unwrap();
+        // One harness conversation, one Panoptes session, even across lanes.
+        let other_lane = another_lane_in(&store, &lane);
+        let other = store.add_session(other_lane.id, "pi").unwrap();
         assert!(
             store
                 .set_harness_ref(other.id, "abc", "/s/abc.jsonl")
@@ -1523,7 +1539,8 @@ mod tests {
         let lane = lane_in(&store);
         let started = store.add_session(lane.id, "pi").unwrap();
         store.set_harness_ref(started.id, "abc", "").unwrap();
-        let unstarted = store.add_session(lane.id, "pi").unwrap();
+        let other_lane = another_lane_in(&store, &lane);
+        let unstarted = store.add_session(other_lane.id, "pi").unwrap();
         store.discard_session(started.id).unwrap();
         store.discard_session(unstarted.id).unwrap();
         let left: Vec<i64> = store.sessions().unwrap().iter().map(|s| s.id).collect();
