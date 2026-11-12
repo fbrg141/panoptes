@@ -19,8 +19,8 @@ Eight two-tone icons are offered in Settings → Appearance through `AppIconPick
 | `bone-on-pupil` | `brand-bone` on `brand-pupil` | 14.4 | |
 | `pupil-on-red` | `brand-pupil` on `brand-red` | 5.2 | |
 | `red-on-pupil` | `brand-red` on `brand-pupil` | 5.2 | |
-| `bone-on-cobalt` | `brand-bone` on `brand-cobalt` | 5.6 | |
-| `cobalt-on-bone` | `brand-cobalt` on `brand-bone` | 5.6 | |
+| `bone-on-cobalt` | `brand-bone` on `brand-cobalt` | 5.1 | |
+| `cobalt-on-bone` | `brand-cobalt` on `brand-bone` | 5.1 | |
 | `bone-on-red` | `brand-bone` on `brand-red` | 2.8 | Low contrast, a style choice |
 | `red-on-bone` | `brand-red` on `brand-bone` | 2.8 | Low contrast, a style choice |
 
