@@ -1,14 +1,13 @@
 import { Button, Dialog, LoopMark, Tabs } from "@panoptes/design-system";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { relativeTime } from "../grouping";
-import { emptyLane, workLabel, writersLabel } from "../laneRow";
+import { useMemo, useState } from "react";
+import { emptyLane, workLabel } from "../laneRow";
 import { pickProjectFolder } from "../pickProject";
 import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
 import { useUi } from "../ui";
 import { RowMenu } from "./RowMenu";
-import { SessionItem, useClock } from "./SessionItem";
+import { SessionItem } from "./SessionItem";
 
 type NavigationTab = "lanes" | "all";
 
@@ -27,7 +26,6 @@ export function Sidebar() {
   const [tab, setTab] = useState<NavigationTab>("lanes");
   const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
   const [deletingLane, setDeletingLane] = useState<Lane | null>(null);
-  const [continuing, setContinuing] = useState<Lane | null>(null);
   const [adopting, setAdopting] = useState<Session | null>(null);
   const navigationByLane = useMemo(
     () => new Map(navigation.map((entry) => [entry.laneId, entry])),
@@ -107,7 +105,6 @@ export function Sidebar() {
                 navigationByLane={navigationByLane}
                 onNewLane={() => show({ type: "newLane", projectId: project.id })}
                 onWork={(lane) => void create(lane.id)}
-                onContinue={setContinuing}
                 onArchive={(lane) => void requestArchive(lane)}
                 onDelete={setDeletingLane}
               />
@@ -148,7 +145,6 @@ export function Sidebar() {
       {deletingLane && (
         <DeleteLaneDialog lane={deletingLane} onClose={() => setDeletingLane(null)} />
       )}
-      {continuing && <HandoffDialog lane={continuing} onClose={() => setContinuing(null)} />}
       {adopting && (
         <AdoptSessionDialog
           session={adopting}
@@ -178,7 +174,6 @@ function ProjectItem({
   navigationByLane,
   onNewLane,
   onWork,
-  onContinue,
   onArchive,
   onDelete,
 }: {
@@ -187,7 +182,6 @@ function ProjectItem({
   navigationByLane: Map<number, LaneNavigation>;
   onNewLane: () => void;
   onWork: (lane: Lane) => void;
-  onContinue: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
   onDelete: (lane: Lane) => void;
 }) {
@@ -244,7 +238,6 @@ function ProjectItem({
                 lane={lane}
                 navigation={navigationByLane.get(lane.id)}
                 onWork={() => onWork(lane)}
-                onContinue={() => onContinue(lane)}
                 onAction={() => onArchive(lane)}
                 onDelete={() => onDelete(lane)}
               />
@@ -282,26 +275,15 @@ function LaneItem({
   lane,
   navigation,
   onWork,
-  onContinue,
   onAction,
   onDelete,
 }: {
   lane: Lane;
   navigation?: LaneNavigation;
   onWork?: () => void;
-  onContinue?: () => void;
   onAction: () => void;
   onDelete: () => void;
 }) {
-  const allSessions = useStore((s) => s.sessions);
-  const allLanes = useStore((s) => s.lanes);
-  const openSession = useStore((s) => s.open);
-  const now = useClock();
-  const empty = emptyLane(lane, navigation);
-  const work = workLabel(navigation?.work ?? null);
-  const writers = navigation?.writers ?? [];
-  const writerLine = writersLabel(writers, (at) => relativeTime(at, Math.max(now, at)));
-  const latestWriter = allSessions.find((session) => session.key === writers[0]?.sessionKey);
   const [collapsed, setCollapsed] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
@@ -309,9 +291,11 @@ function LaneItem({
   const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
   const sessions = navigation?.sessions ?? [];
   const archivedSessions = navigation?.archivedSessions ?? [];
+  const empty = emptyLane(lane, navigation);
+  const work = workLabel(navigation?.work ?? null);
 
   return (
-    <li id={laneElementId(lane.id)} tabIndex={-1} className={archived ? "text-ink-muted" : ""}>
+    <li className={archived ? "text-ink-muted" : ""}>
       <div className="group/lane relative flex min-h-12 items-center px-1">
         <Button
           variant="ghost"
@@ -349,43 +333,11 @@ function LaneItem({
       </div>
       {!collapsed && (
         <div className="ml-4">
-          {writerLine && (
-            // Another session changed this lane: name it once, as a link to
-            // that session's own row, never as a second row here.
-            <button
-              type="button"
-              className={`block w-full truncate py-0.5 pr-2 pl-3.5 text-left text-xs hover:text-ink ${
-                writers[0]?.live ? "text-waiting" : "text-ink-muted"
-              }`}
-              title={latestWriter ? `Open “${latestWriter.title}”` : undefined}
-              disabled={!latestWriter}
-              onClick={() => latestWriter && void openSession(latestWriter)}
-            >
-              {writerLine}
-            </button>
-          )}
           <ul>
             {(archived ? [...sessions, ...archivedSessions] : sessions).map((session) => (
               <SessionItem key={session.key} session={session} laneActions nested />
             ))}
           </ul>
-          {sessions.flatMap((session) =>
-            session.editedLanes.map((id) => {
-              const other = allLanes.find((item) => item.id === id);
-              if (!other) return null;
-              return (
-                <button
-                  key={`${session.key}-${id}`}
-                  type="button"
-                  className="block w-full truncate py-0.5 pr-2 pl-10 text-left text-xs text-ink-muted hover:text-ink"
-                  title={`Show the lane “${other.task}”`}
-                  onClick={() => revealLane(id)}
-                >
-                  Also edited: {other.task}
-                </button>
-              );
-            }),
-          )}
           {!archived && archivedSessions.length > 0 && (
             <>
               <Button variant="ghost" size="sm" onClick={() => setShowArchived((shown) => !shown)}>
@@ -402,109 +354,19 @@ function LaneItem({
               )}
             </>
           )}
-          {empty?.kind === "notStarted" && onWork && (
+          {empty?.kind === "startable" && onWork && (
             <Button variant="ghost" size="sm" className="ml-2" onClick={onWork}>
               Start session
             </Button>
           )}
-          {empty?.kind === "hasWork" && onContinue && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-2"
-              title="Start this lane's session with a brief of the work already here"
-              onClick={onContinue}
-            >
-              Continue in this lane
-            </Button>
-          )}
-          {empty?.kind === "beingWritten" && (
+          {empty?.kind === "busy" && (
             <p className="ml-2 py-1 text-xs text-ink-muted">
-              No session here yet. Continue once{" "}
-              {empty.writer.title ? `“${empty.writer.title}”` : "the other session"} is Done.
+              “{empty.writer}” is changing this lane. Start a session here once it is Done.
             </p>
           )}
         </div>
       )}
     </li>
-  );
-}
-
-const laneElementId = (id: number) => `lane-${id}`;
-
-/** Scrolls a lane's row into view and moves focus to it. */
-function revealLane(id: number) {
-  const row = document.getElementById(laneElementId(id));
-  row?.scrollIntoView({ block: "nearest" });
-  row?.focus();
-}
-
-/**
- * Continue in this lane: its own session starts with a brief built from what
- * the lane holds and which conversations started it, shown here to edit
- * before anything is sent.
- */
-function HandoffDialog({ lane, onClose }: { lane: Lane; onClose: () => void }) {
-  const handoffBrief = useStore((s) => s.handoffBrief);
-  const create = useStore((s) => s.create);
-  const [brief, setBrief] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  // Read once per lane; a parent re-render must not replace an edited brief.
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useEffect(() => {
-    let current = true;
-    void handoffBrief(lane.id).then((text) => {
-      if (!current) return;
-      if (text === null) closeRef.current();
-      else setBrief(text);
-    });
-    return () => {
-      current = false;
-    };
-  }, [handoffBrief, lane.id]);
-
-  const send = async () => {
-    const text = brief?.trim();
-    if (!text || busy) return;
-    setBusy(true);
-    await create(lane.id, { prompt: text });
-    onClose();
-  };
-
-  return (
-    <Dialog
-      title={`Continue “${lane.task}” in this lane`}
-      width={640}
-      onClose={busy ? undefined : onClose}
-      actions={
-        <>
-          <Button variant="secondary" disabled={busy} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button disabled={busy || !brief?.trim()} onClick={() => void send()}>
-            {busy ? "Starting…" : "Start session"}
-          </Button>
-        </>
-      }
-    >
-      <p className="pb-3 text-ink-muted">
-        This lane's own session starts with this brief. It lists only what git and Panoptes
-        recorded, so check it against the work and add anything the agent should know.
-      </p>
-      {brief === null ? (
-        <p className="text-ink-muted">Reading the lane…</p>
-      ) : (
-        <textarea
-          aria-label="Brief for the new session"
-          className="text-code min-h-64 w-full rounded-sm border border-line-strong bg-surface-sunken p-2 text-ink focus:border-focus focus:outline-2 focus:outline-offset-1 focus:outline-focus"
-          value={brief}
-          disabled={busy}
-          onChange={(event) => setBrief(event.target.value)}
-        />
-      )}
-    </Dialog>
   );
 }
 

@@ -183,8 +183,6 @@ export interface Session {
   pinned: boolean;
   archived: boolean;
   open: boolean;
-  /** Other lanes this session has been seen changing, most recent first. */
-  editedLanes: number[];
 }
 
 /** What can be changed about a project (`ProjectSettings` in src-tauri/src/store.rs). */
@@ -238,21 +236,10 @@ export interface LaneWork {
   commitsAhead: number | null;
 }
 
-/** How a write to another lane's worktree was seen. */
-export type WriteVia = "edit" | "shell";
-
-/** A session other than the lane's own seen changing its worktree. */
-export interface LaneWriter {
+/** Another session that edited a lane and is Running or Waiting now. */
+export interface BusyWriter {
   sessionKey: string;
-  /** Null once the writing session is gone. */
-  title: string | null;
-  /** The writer's own lane, if it has one. */
-  laneId: number | null;
-  via: WriteVia;
-  /** Unix milliseconds of the latest write seen. */
-  lastAt: number;
-  /** Open and Running or Waiting: it can still write right now. */
-  live: boolean;
+  title: string;
 }
 
 /** Backend-owned membership for the collapsible Lanes hierarchy. */
@@ -262,8 +249,8 @@ export interface LaneNavigation {
   archivedSessions: Session[];
   /** Null for archived lanes or an unreadable worktree. */
   work: LaneWork | null;
-  /** Most recent first. */
-  writers: LaneWriter[];
+  /** While set, the lane gets no session of its own: two writers otherwise. */
+  busyWriter: BusyWriter | null;
 }
 
 export interface Listing {

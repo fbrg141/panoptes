@@ -157,15 +157,6 @@ The sidebar has two tabs (#57):
   record. Adoption never copies or rewrites the harness's files. Lane
   membership comes from these records, never from a cwd guess.
 
-A session can still change another lane's worktree. Those writes are
-recorded from tool calls and worktree fingerprints, and shown as links: the
-written lane names the writer, the writer's lane lists what it also edited,
-and each active lane shows its uncommitted files and commits ahead. A lane
-with no session reads as not started, holding work (Continue in this lane,
-with an editable brief), or being changed by another session that is still
-running, which holds back a second writer. See
-[decisions.md](decisions.md#work-in-another-lane-is-shown-not-reorganised).
-
 ## Lifecycles
 
 ### Lane

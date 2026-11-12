@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -433,50 +433,6 @@ pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
     })
 }
 
-/// The uncommitted files and the commits a lane's branch adds to the base
-/// branch, as git lists them, for a handoff to read.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LaneChanges {
-    /// `git status --porcelain` lines, such as ` M src/lib.rs`.
-    pub files: Vec<String>,
-    /// One line per commit, newest first.
-    pub commits: Vec<String>,
-}
-
-pub fn changes(project: &Project, lane: &Lane) -> LaneChanges {
-    let Ok(worktree) = sole_worktree(lane) else {
-        return LaneChanges::default();
-    };
-    let path = Path::new(&worktree.path);
-    let lines = |text: String| -> Vec<String> {
-        text.lines()
-            .filter(|line| !line.is_empty())
-            .map(String::from)
-            .collect()
-    };
-    let range = format!("{}..HEAD", project.settings.base_branch);
-    LaneChanges {
-        files: worktree_status(path).map(lines).unwrap_or_default(),
-        commits: run(path, &["log", "--format=%h %s", &range])
-            .map(lines)
-            .unwrap_or_default(),
-    }
-}
-
-/// Identifies the exact state of a lane's worktree, untracked files
-/// included, so a change between two moments can be told apart from none.
-/// It writes only loose objects for the snapshot, never the real index.
-pub fn fingerprint(lane: &Lane) -> Option<String> {
-    let path = Path::new(&sole_worktree(lane).ok()?.path);
-    let head = run(path, &["rev-parse", "--verify", "--quiet", "HEAD"]).unwrap_or_default();
-    // A snapshot can refuse new nested repositories; their status still
-    // tells a change apart.
-    let tree = snapshot_tree_as(path, &format!("fingerprint-{}", lane.id))
-        .or_else(|_| worktree_status(path))
-        .ok()?;
-    Some(format!("{head} {tree}"))
-}
-
 /// Archiving keeps the lane's branch, so it is only safe when the worktree
 /// is on that branch. Commits made on a detached HEAD or another branch would
 /// otherwise become unreachable once the worktree is removed, and so would a
@@ -828,18 +784,11 @@ fn gitlink_path(entry: &str) -> Option<&str> {
 /// The tree of the worktree as it is on disk, tracked and untracked files
 /// alike, written through a private copy of the index.
 fn snapshot_tree(path: &Path, lane: &Lane) -> anyhow::Result<String> {
-    snapshot_tree_as(path, &format!("archive-{}", lane.id))
-}
-
-/// [`snapshot_tree`] through an index copy named for its purpose. A counter
-/// keeps concurrent snapshots of one worktree from sharing the copy.
-fn snapshot_tree_as(path: &Path, purpose: &str) -> anyhow::Result<String> {
-    static SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
     let index = git_path(path, "index")?;
     let temporary = index.with_file_name(format!(
-        "panoptes-{purpose}-{}-{}",
+        "panoptes-archive-{}-{}",
         std::process::id(),
-        SNAPSHOTS.fetch_add(1, Ordering::Relaxed)
+        lane.id
     ));
     let _temporary = TemporaryFile(temporary.clone());
     match std::fs::copy(&index, &temporary) {
@@ -1363,6 +1312,30 @@ mod tests {
         assert!(path.exists());
         assert!(ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
         assert!(ref_exists(&f.repo, "refs/heads/somewhere-else").unwrap());
+    }
+
+    #[test]
+    fn work_counts_changed_files_and_commits_ahead_of_the_base() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&lane.worktrees[0].path);
+        let none = LaneWork {
+            changed_files: 0,
+            commits_ahead: Some(0),
+        };
+        assert_eq!(work(&f.project, &lane), Some(none));
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        std::fs::write(path.join("b.txt"), "b").unwrap();
+        git(&path, &["add", "a.txt"]);
+        git(&path, &["commit", "--quiet", "-m", "a"]);
+        assert_eq!(
+            work(&f.project, &lane),
+            Some(LaneWork {
+                changed_files: 1,
+                commits_ahead: Some(1)
+            })
+        );
     }
 
     #[test]

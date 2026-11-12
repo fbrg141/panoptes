@@ -33,7 +33,6 @@ const session: Session = {
   pinned: false,
   archived: false,
   open: false,
-  editedLanes: [],
 };
 
 const project: Project = {
@@ -127,7 +126,6 @@ function fakeBackend() {
     archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
     restoreLane: vi.fn(async (): Promise<Lane> => lane),
     deleteLane: vi.fn(async () => {}),
-    handoffBrief: vi.fn(async (): Promise<string> => "Continue the work in this lane."),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
       return () => {};
@@ -203,7 +201,7 @@ describe("store", () => {
     expect(store.getState().conversations["pi:s1"].busy).toBe(false);
   });
 
-  it("lists again as soon as a session is seen changing another lane", async () => {
+  it("lists again as soon as a session is seen editing another lane", async () => {
     await store.getState().open(session);
     const before = fake.backend.listSessions.mock.calls.length;
     fake.emit({ key: "pi:s1", event: { type: "laneWritesChanged", laneId: 2 } });
@@ -212,13 +210,6 @@ describe("store", () => {
     );
     // It is not a harness event, so the conversation is left as it was.
     expect(store.getState().conversations["pi:s1"].messages).toEqual([]);
-  });
-
-  it("reads a lane's handoff brief, and reports a failure as an error", async () => {
-    expect(await store.getState().handoffBrief(2)).toBe("Continue the work in this lane.");
-    fake.backend.handoffBrief.mockRejectedValueOnce({ kind: "other", message: "gone" });
-    expect(await store.getState().handoffBrief(2)).toBeNull();
-    expect(store.getState().error).not.toBeNull();
   });
 
   it("resumes a session whose process is gone and sends again", async () => {
@@ -385,7 +376,7 @@ describe("store", () => {
       sessions: [session],
       projects: [project],
       lanes: [{ ...lane, state: "archived" }],
-      navigation: [{ laneId: 1, sessions: [], archivedSessions: [], work: null, writers: [] }],
+      navigation: [{ laneId: 1, sessions: [], archivedSessions: [], work: null, busyWriter: null }],
       errors: [],
     });
     const archived = await store.getState().archiveLane(1, "checkpoint");
@@ -399,7 +390,7 @@ describe("store", () => {
       projects: [project],
       lanes: [lane],
       navigation: [
-        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, writers: [] },
+        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, busyWriter: null },
       ],
       errors: [],
     });
@@ -427,7 +418,7 @@ describe("store", () => {
       sessions: [],
       projects: [project],
       lanes: [lane],
-      navigation: [{ laneId: 1, sessions: [], archivedSessions: [], work: null, writers: [] }],
+      navigation: [{ laneId: 1, sessions: [], archivedSessions: [], work: null, busyWriter: null }],
       errors: [],
     });
     await store.getState().refresh();
@@ -450,7 +441,7 @@ describe("store", () => {
       projects: [project],
       lanes: [lane],
       navigation: [
-        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, writers: [] },
+        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, busyWriter: null },
       ],
       errors: [],
     });
@@ -515,7 +506,7 @@ describe("store", () => {
       projects: [project],
       lanes: [lane],
       navigation: [
-        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, writers: [] },
+        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, busyWriter: null },
       ],
       errors: [],
     });

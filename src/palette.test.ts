@@ -40,7 +40,6 @@ const session: Session = {
   pinned: false,
   archived: false,
   open: false,
-  editedLanes: [],
 };
 
 describe("paletteGroups", () => {

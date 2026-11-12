@@ -1,15 +1,12 @@
 //! Which lanes a session changes besides its own. A lane has one session,
 //! but nothing stops that session's agent from editing another lane's
-//! worktree. These are recorded facts, never a guess from a folder: an edit
-//! tool that names a file in the worktree, or a worktree that changed during
-//! a run that ran commands while its own session was idle.
+//! worktree. This is read from recorded facts, never guessed from a folder:
+//! a finished edit tool call that names a file in the worktree.
 
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use panoptes_harness::{ToolCall, ToolKind, ToolOutput, ToolStatus};
 
-use crate::lanes::LaneChanges;
 use crate::store::{Lane, LaneState};
 
 /// The files a finished edit call changed, as the harness named them.
@@ -54,119 +51,6 @@ pub fn lanes_touched(paths: &[String], cwd: &Path, own: Option<i64>, lanes: &[La
         }
     }
     touched
-}
-
-/// The lanes whose fingerprint differs between the start and end of a run.
-/// A lane missing from either side is left out: it was not comparable.
-pub fn changed_lanes(before: &HashMap<i64, String>, after: &HashMap<i64, String>) -> Vec<i64> {
-    let mut changed: Vec<i64> = after
-        .iter()
-        .filter(|(lane, print)| before.get(lane).is_some_and(|earlier| earlier != *print))
-        .map(|(&lane, _)| lane)
-        .collect();
-    changed.sort_unstable();
-    changed
-}
-
-/// A conversation that changed a lane before it had a session of its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BriefSource {
-    pub title: String,
-    /// The task of the lane that conversation belongs to, if any.
-    pub lane: Option<String>,
-    /// Where the harness keeps the conversation, for the new agent to read.
-    pub conversation: Option<String>,
-}
-
-/// What a handoff brief is written from.
-pub struct Brief<'a> {
-    pub task: &'a str,
-    pub branch: &'a str,
-    pub base: &'a str,
-    pub worktree: &'a str,
-    pub changes: &'a LaneChanges,
-    pub sources: &'a [BriefSource],
-}
-
-/// Lists past this many lines are cut, with a count of the rest.
-const BRIEF_LIST_LIMIT: usize = 40;
-
-/// The first prompt for a lane's own session when other conversations
-/// started its work. Only recorded facts go in: the lane, what git says it
-/// holds, and where the earlier conversations are. Nothing is summarised on
-/// an agent's word.
-pub fn handoff_brief(brief: &Brief) -> String {
-    let mut text = String::new();
-    let mut line = |s: &str| {
-        text.push_str(s);
-        text.push('\n');
-    };
-    line(
-        "Continue the work in this lane. It was started from another conversation; from now on this conversation is the only one that changes this worktree.",
-    );
-    line("");
-    line(&format!("Task: {}", brief.task));
-    line(&format!("Branch: {} (from {})", brief.branch, brief.base));
-    line(&format!("Worktree: {}", brief.worktree));
-    line("");
-    let files = &brief.changes.files;
-    let commits = &brief.changes.commits;
-    if files.is_empty() && commits.is_empty() {
-        line(&format!(
-            "Nothing is changed or committed yet compared with {}.",
-            brief.base
-        ));
-    }
-    if !files.is_empty() {
-        line(&format!("Uncommitted changes ({}):", files.len()));
-        list(&mut line, files);
-    }
-    if !commits.is_empty() {
-        if !files.is_empty() {
-            line("");
-        }
-        line(&format!(
-            "Commits ahead of {} ({}):",
-            brief.base,
-            commits.len()
-        ));
-        list(&mut line, commits);
-    }
-    if !brief.sources.is_empty() {
-        line("");
-        line("Started from:");
-        for source in brief.sources {
-            let lane = source
-                .lane
-                .as_deref()
-                .map(|task| format!(", in the lane for “{task}”"))
-                .unwrap_or_default();
-            let file = source
-                .conversation
-                .as_deref()
-                .map(|path| format!(". Conversation: {path}"))
-                .unwrap_or_default();
-            line(&format!("- “{}”{lane}{file}", source.title));
-        }
-        line("");
-        line("Read that conversation if you need the reasoning behind the changes.");
-    }
-    line(
-        "Before changing anything, check the current diff, then tell me what is done and what is left.",
-    );
-    text.trim_end().to_string()
-}
-
-fn list(line: &mut impl FnMut(&str), items: &[String]) {
-    for item in items.iter().take(BRIEF_LIST_LIMIT) {
-        line(&format!("    {item}"));
-    }
-    if items.len() > BRIEF_LIST_LIMIT {
-        line(&format!(
-            "    … and {} more",
-            items.len() - BRIEF_LIST_LIMIT
-        ));
-    }
 }
 
 /// An absolute, lexically normalised path: `~` is the home folder, a
@@ -308,73 +192,5 @@ mod tests {
         let lanes = [lane(2, "/lanes/b", LaneState::Active)];
         let paths = ["/lanes/b-other/x.rs".to_string()];
         assert!(lanes_touched(&paths, Path::new("/"), None, &lanes).is_empty());
-    }
-
-    #[test]
-    fn a_brief_holds_the_lane_its_changes_and_where_it_came_from() {
-        let changes = LaneChanges {
-            files: vec![" M src/lib.rs".into(), "?? src/new.rs".into()],
-            commits: vec!["abc1234 Add the parser".into()],
-        };
-        let sources = [BriefSource {
-            title: "Plan the parser".into(),
-            lane: Some("Refactor the lexer".into()),
-            conversation: Some("/home/me/.sessions/a.jsonl".into()),
-        }];
-        let text = handoff_brief(&Brief {
-            task: "Add a parser",
-            branch: "panoptes/add-a-parser",
-            base: "main",
-            worktree: "/lanes/add-a-parser/app",
-            changes: &changes,
-            sources: &sources,
-        });
-        assert!(text.contains("Task: Add a parser"));
-        assert!(text.contains("Branch: panoptes/add-a-parser (from main)"));
-        assert!(text.contains("Uncommitted changes (2):\n     M src/lib.rs\n    ?? src/new.rs"));
-        assert!(text.contains("Commits ahead of main (1):\n    abc1234 Add the parser"));
-        assert!(text.contains(
-            "- “Plan the parser”, in the lane for “Refactor the lexer”. Conversation: /home/me/.sessions/a.jsonl"
-        ));
-        assert!(!text.ends_with('\n'));
-    }
-
-    #[test]
-    fn a_brief_for_an_untouched_lane_says_so_and_cuts_long_lists() {
-        let files: Vec<String> = (0..45).map(|i| format!("?? f{i}")).collect();
-        let empty = handoff_brief(&Brief {
-            task: "T",
-            branch: "b",
-            base: "main",
-            worktree: "/w",
-            changes: &LaneChanges::default(),
-            sources: &[],
-        });
-        assert!(empty.contains("Nothing is changed or committed yet compared with main."));
-        assert!(!empty.contains("Started from"));
-        let long = handoff_brief(&Brief {
-            task: "T",
-            branch: "b",
-            base: "main",
-            worktree: "/w",
-            changes: &LaneChanges {
-                files,
-                commits: Vec::new(),
-            },
-            sources: &[],
-        });
-        assert!(long.contains("    ?? f39\n    … and 5 more"));
-        assert!(!long.contains("f40"));
-    }
-
-    #[test]
-    fn only_lanes_seen_on_both_sides_can_change() {
-        let before = HashMap::from([(1, "a".to_string()), (2, "b".to_string())]);
-        let after = HashMap::from([
-            (1, "a".to_string()),
-            (2, "c".to_string()),
-            (3, "d".to_string()),
-        ]);
-        assert_eq!(changed_lanes(&before, &after), [2]);
     }
 }

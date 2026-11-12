@@ -86,8 +86,6 @@ export interface State {
   restoreLane: (id: number) => Promise<void>;
   /** Permanently deletes a lane after explicit confirmation in the UI. */
   deleteLane: (id: number) => Promise<boolean>;
-  /** The first prompt for a lane whose work other sessions started; null on failure. */
-  handoffBrief: (laneId: number) => Promise<string | null>;
   dismissError: () => void;
 }
 
@@ -172,7 +170,7 @@ export function createAppStore(backend: typeof api) {
         return;
       }
       if (event.type === "laneWritesChanged") {
-        // A session was first seen changing another lane: show it now.
+        // A session was first seen editing another lane: hold that lane back now.
         void get().refresh();
         return;
       }
@@ -469,15 +467,6 @@ export function createAppStore(backend: typeof api) {
         } catch (e) {
           fail(e);
           return false;
-        }
-      },
-
-      handoffBrief: async (laneId) => {
-        try {
-          return await backend.handoffBrief(laneId);
-        } catch (e) {
-          fail(e);
-          return null;
         }
       },
 
