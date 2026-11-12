@@ -125,6 +125,7 @@ function fakeBackend() {
     cancelLaneCreation: vi.fn(async () => {}),
     archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
     restoreLane: vi.fn(async (): Promise<Lane> => lane),
+    deleteLane: vi.fn(async () => {}),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
       return () => {};
@@ -370,6 +371,54 @@ describe("store", () => {
     const archived = await store.getState().archiveLane(1, "checkpoint");
     expect(archived).toEqual({ type: "archived" });
     expect(store.getState().lanes[0].state).toBe("archived");
+  });
+
+  it("deletes a lane, forgets its sessions and refreshes the projects", async () => {
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [laneSession],
+      projects: [project],
+      lanes: [lane],
+      navigation: [{ laneId: 1, sessions: [laneSession], archivedSessions: [] }],
+      errors: [],
+    });
+    await store.getState().refresh();
+    store.setState({ activeKey: laneSession.key });
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [],
+      projects: [project],
+      lanes: [],
+      navigation: [],
+      errors: [],
+    });
+
+    const deleted = await store.getState().deleteLane(lane.id);
+
+    expect(deleted).toBe(true);
+    expect(fake.backend.deleteLane).toHaveBeenCalledWith(lane.id);
+    expect(store.getState().activeKey).toBeNull();
+    expect(store.getState().sessions).toEqual([]);
+    expect(store.getState().lanes).toEqual([]);
+  });
+
+  it("keeps the lane visible and shows the error when deletion fails", async () => {
+    fake.backend.listSessions.mockResolvedValueOnce({
+      sessions: [],
+      projects: [project],
+      lanes: [lane],
+      navigation: [{ laneId: 1, sessions: [], archivedSessions: [] }],
+      errors: [],
+    });
+    await store.getState().refresh();
+    fake.backend.deleteLane.mockRejectedValueOnce({
+      kind: "rejected",
+      message: "Close this lane's session before deleting it",
+    });
+
+    const deleted = await store.getState().deleteLane(lane.id);
+
+    expect(deleted).toBe(false);
+    expect(store.getState().lanes).toEqual([lane]);
+    expect(store.getState().error).toBe("Close this lane's session before deleting it");
   });
 
   it("starts a session in a lane and lists it at once, from its record", async () => {
