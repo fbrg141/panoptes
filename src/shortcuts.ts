@@ -42,7 +42,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     label: "Panoptes",
     entries: [
       { label: "Search projects, lanes and sessions", keys: ["⌘", "P"] },
-      { label: "New session", keys: ["⌘", "T"] },
+      { label: "New lane", keys: ["⌘", "T"] },
       { label: "Add a project", keys: ["⌘", "N"] },
       { label: "Keyboard shortcuts", keys: ["⌘", "/"] },
     ],

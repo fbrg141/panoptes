@@ -47,7 +47,6 @@ export const api = {
       cwd: s.cwd,
       laneId,
     }),
-  replaceSession: (key: string) => invoke<OpenedSession>("replace_session", { key }),
   archiveSession: (key: string, archived: boolean) =>
     invoke<void>("archive_session", { key, archived }),
   renameSession: (key: string, title: string | null) =>

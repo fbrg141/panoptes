@@ -118,19 +118,8 @@ export type HarnessEvent =
 /** Where an open session stands; worked out by the backend. */
 export type SessionStatus = "idle" | "running" | "waiting" | "failed" | "done";
 
-/** How an open lane session stands with its lane's write lock. */
-export interface LockState {
-  /** It may edit files. */
-  holder: boolean;
-  /** It tried to run while another session held the lock: it runs read-only until it gets it. */
-  queued: boolean;
-}
-
-/** A harness event, or a status or lock change the service adds. */
-export type SessionUpdate =
-  | HarnessEvent
-  | { type: "statusChanged"; status: SessionStatus }
-  | ({ type: "lockChanged" } & LockState);
+/** A harness event, or a status change the service adds. */
+export type SessionUpdate = HarnessEvent | { type: "statusChanged"; status: SessionStatus };
 
 export interface SessionEvent {
   key: string;
@@ -221,11 +210,6 @@ export interface LaneWorktree {
   checkpointRef: string | null;
 }
 
-export interface WriteLock {
-  holder: string | null;
-  queue: string[];
-}
-
 /** Durable work owned by Panoptes; it exists with or without a session. */
 export interface Lane {
   id: number;
@@ -235,7 +219,6 @@ export interface Lane {
   branch: string;
   state: LaneState;
   worktrees: LaneWorktree[];
-  writeLock: WriteLock;
 }
 
 export type ArchiveStrategy = "commit" | "stash" | "checkpoint";

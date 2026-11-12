@@ -18,7 +18,6 @@ describe("sidebar row menus", () => {
 
   it("offers the actions appropriate to the lane state", () => {
     expect(ids(laneMenuItems({ state: "active" } satisfies Pick<Lane, "state">))).toEqual([
-      "new-session",
       "archive-lane",
     ]);
     expect(ids(laneMenuItems({ state: "archived" }))).toEqual(["restore-lane"]);

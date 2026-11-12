@@ -1,40 +1,51 @@
 import { Button, Icon } from "@panoptes/design-system";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
 import { useUi } from "../ui";
 import { OptionToggle, Overlay, OverlayFooter, OverlayHeader } from "./Overlay";
 
 /**
- * The new lane panel, opened from a project's row menu, the search palette,
- * or the new session panel (which hands over the prompt typed so far). The
- * task names the lane; the footer holds what happens around it.
+ * The project + flow: one prompt creates a lane and its only session. The
+ * prompt names the lane and becomes its first message.
  */
 export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt?: string }) {
   const project = useStore((s) => s.projects.find((item) => item.id === projectId));
-  const createLane = useStore((s) => s.createLane);
-  const createSession = useStore((s) => s.create);
+  const createFromPrompt = useStore((s) => s.createFromPrompt);
   const cancelLaneCreation = useStore((s) => s.cancelLaneCreation);
   const close = useUi((s) => s.close);
-  const [task, setTask] = useState("");
+  const [task, setTask] = useState(prompt ?? "");
   const [mainCheckout, setMainCheckout] = useState(false);
-  const [startSession, setStartSession] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  // The project can be removed while the panel is open.
-  useEffect(() => {
-    if (!project) close();
-  }, [project, close]);
-
-  if (!project) return null;
+  if (!project) {
+    return (
+      <Overlay label="New lane" width={480} onClose={close}>
+        <OverlayHeader onClose={close}>
+          <h2 className="text-heading">New lane</h2>
+        </OverlayHeader>
+        <div className="flex flex-col items-center gap-3 px-6 pt-4 pb-8 text-center">
+          <Icon name="folder-open" size={24} className="text-ink-muted" />
+          <p className="max-w-80 text-ink-muted">
+            Lanes belong to projects. Add a git repository to begin.
+          </p>
+          <Button variant="primary" autoFocus onClick={() => void pickProjectFolder()}>
+            Add a project
+          </Button>
+        </div>
+      </Overlay>
+    );
+  }
 
   const submit = async () => {
-    if (!task.trim() || busy) return;
+    const text = task.trim();
+    if (!text || busy) return;
     setBusy(true);
-    const lane = await createLane(project.id, task, mainCheckout);
-    setBusy(false);
-    if (lane) {
+    const created = await createFromPrompt(project.id, text, mainCheckout);
+    if (created) {
       close();
-      if (startSession) await createSession(lane.id, { prompt });
+    } else {
+      setBusy(false);
     }
   };
 
@@ -63,44 +74,24 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
 
         <div className="flex flex-col gap-2 px-4 pt-1 pb-4">
           <input
-            aria-label="Lane task"
+            aria-label="First prompt"
             aria-describedby="new-lane-help"
-            placeholder="What is this lane for? e.g. Fix login redirects"
+            placeholder="What should Pi do? e.g. Fix login redirects"
             value={task}
             onChange={(event) => setTask(event.target.value)}
             disabled={busy}
-            // biome-ignore lint/a11y/noAutofocus: the task is what this panel asks for
+            // biome-ignore lint/a11y/noAutofocus: the prompt is what this panel asks for
             autoFocus
             className="menu-search h-9 w-full bg-transparent text-heading font-medium text-ink placeholder:font-normal placeholder:text-ink-faint"
           />
           <p id="new-lane-help" className="text-label font-normal text-ink-muted">
             {mainCheckout
               ? "Shares the project's own checkout: no worktree, copied files or setup command. Archiving the lane never removes it."
-              : `Gets its own worktree, branch and write lock, branched from ${project.baseBranch}.`}
+              : `Gets its own worktree and branch from ${project.baseBranch}. Your prompt starts the lane's one session.`}
           </p>
-          {prompt && (
-            <div className="mt-1 flex gap-2 rounded-sm border border-line bg-surface-sunken px-3 py-2">
-              <Icon name="message-square" size={14} className="mt-0.5 flex-none text-ink-muted" />
-              <p className="line-clamp-3 min-w-0 whitespace-pre-wrap text-ink">
-                <span className="text-ink-muted">First prompt · </span>
-                {prompt}
-              </p>
-            </div>
-          )}
         </div>
 
         <OverlayFooter>
-          <OptionToggle
-            label="Start a session"
-            title={
-              prompt
-                ? "Start a session with your prompt"
-                : "Open a session in the lane once it is ready"
-            }
-            pressed={startSession}
-            disabled={busy}
-            onChange={setStartSession}
-          />
           <OptionToggle
             label="Use the main checkout"
             title="Work in the project's own checkout instead of a new worktree"

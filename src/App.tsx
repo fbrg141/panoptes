@@ -3,7 +3,6 @@ import { useEffect } from "react";
 import { api } from "./api";
 import { ChatPane } from "./components/ChatPane";
 import { NewLaneDialog } from "./components/NewLaneDialog";
-import { NewSessionDialog } from "./components/NewSessionDialog";
 import { SearchPalette } from "./components/SearchPalette";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Sidebar } from "./components/Sidebar";
@@ -18,6 +17,7 @@ export default function App() {
   const info = useStore((s) => s.info);
   const error = useStore((s) => s.error);
   const dismissError = useStore((s) => s.dismissError);
+  const projects = useStore((s) => s.projects);
   const overlay = useUi((s) => s.overlay);
 
   useEffect(() => {
@@ -38,9 +38,9 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // The window shortcuts: ⌘P searches, ⌘T starts a session, ⌘N adds a
-  // project, ⌘/ shows the cheatsheet. An open overlay keeps the keyboard, so
-  // a second shortcut does not yank it away from under the user.
+  // The window shortcuts: ⌘P searches, ⌘T starts a lane from a prompt,
+  // ⌘N adds a project, ⌘/ shows the cheatsheet. An open overlay keeps the
+  // keyboard, so a second shortcut does not yank it away from under the user.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const id = shortcutFor(e);
@@ -50,19 +50,17 @@ export default function App() {
         void pickProjectFolder();
         return;
       }
-      useUi
-        .getState()
-        .open(
-          id === "search"
-            ? { type: "search" }
-            : id === "newSession"
-              ? { type: "newSession" }
-              : { type: "shortcuts" },
-        );
+      const overlay =
+        id === "search"
+          ? { type: "search" as const }
+          : id === "newSession"
+            ? { type: "newLane" as const, projectId: projects[0]?.id ?? 0 }
+            : { type: "shortcuts" as const };
+      useUi.getState().open(overlay);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [projects]);
 
   const pi = info?.harnesses.find((h) => h.id === "pi");
   const warning =
@@ -94,7 +92,6 @@ export default function App() {
         <ChatPane />
       </div>
       {overlay?.type === "search" && <SearchPalette />}
-      {overlay?.type === "newSession" && <NewSessionDialog />}
       {overlay?.type === "shortcuts" && <ShortcutsDialog />}
       {overlay?.type === "newLane" && (
         <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />

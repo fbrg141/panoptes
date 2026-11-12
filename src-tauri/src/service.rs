@@ -2,7 +2,7 @@
 //! are open, and Panoptes' own store. Independent of Tauri so it can be
 //! tested with a fake harness; `lib.rs` exposes it as commands.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 
 use crate::lanes::{self, ArchiveResult, ArchiveStrategy};
 use crate::projects::{self, Location};
-use crate::store::{Lane, LaneState, Project, ProjectSettings, Store, WriteLock};
+use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -127,19 +127,6 @@ pub struct SessionEvent {
 pub enum SessionUpdate {
     Harness(HarnessEvent),
     Status(StatusChanged),
-    Lock(LockChanged),
-}
-
-/// Sent when an open lane session gains or loses its lane's write lock, or
-/// joins or leaves the queue for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename = "lockChanged")]
-pub struct LockChanged {
-    /// It may edit files: it runs with every tool.
-    pub holder: bool,
-    /// It tried to run while another session held the lock, so it runs
-    /// read-only and gets the lock when that session is done.
-    pub queued: bool,
 }
 
 /// Sent when an open session's status changes, and once when it opens.
@@ -162,8 +149,6 @@ struct StatusTracker {
     errored: bool,
     /// How the last run ended: Idle before any, then Done or Failed.
     settled: SessionStatus,
-    /// Queued for its lane's write lock: Waiting while it has no run.
-    queued: bool,
 }
 
 impl Default for StatusTracker {
@@ -174,7 +159,6 @@ impl Default for StatusTracker {
             questions: HashMap::new(),
             errored: false,
             settled: SessionStatus::Idle,
-            queued: false,
         }
     }
 }
@@ -223,11 +207,6 @@ impl StatusTracker {
         self.update(now)
     }
 
-    fn set_queued(&mut self, queued: bool, now: i64) -> Option<SessionStatus> {
-        self.queued = queued;
-        self.update(now)
-    }
-
     fn update(&mut self, now: i64) -> Option<SessionStatus> {
         // The harness picks a default once a question expires.
         self.questions
@@ -236,8 +215,6 @@ impl StatusTracker {
             SessionStatus::Waiting
         } else if self.running {
             SessionStatus::Running
-        } else if self.queued {
-            SessionStatus::Waiting
         } else {
             self.settled
         };
@@ -310,8 +287,7 @@ pub struct Listing {
     pub sessions: Vec<Session>,
     /// Every registered project, by name, with or without sessions.
     pub projects: Vec<Project>,
-    /// Every lane, including archived ones, with its write lock as it
-    /// stands; navigation decides which to show.
+    /// Every lane, including archived ones; navigation decides which to show.
     pub lanes: Vec<Lane>,
     /// Authoritative session membership for each lane. The UI renders this
     /// hierarchy rather than inferring it from folders.
@@ -355,10 +331,8 @@ struct OpenSession {
     generation: u64,
     session: Arc<dyn AgentSession>,
     status: Tracker,
-    /// The lane whose write lock it takes part in.
+    /// Lane membership, used to keep an open lane from being archived.
     lane: Option<i64>,
-    /// Started with reading tools only.
-    read_only: bool,
 }
 
 /// What a session's process is started with.
@@ -366,160 +340,18 @@ struct Launch {
     harness: String,
     cwd: PathBuf,
     resume: Option<String>,
-    /// The lane whose write lock decides its tools.
+    /// Lane membership, not a lock.
     lane: Option<i64>,
-    /// Read-only whatever the lock says (a session of an archived lane).
+    /// Read-only for archived lanes or a missing-folder resume.
     read_only: bool,
 }
 
-/// One lane's write lock. Only the holder's process has tools that edit
-/// files. A lock nobody is using is dropped from the map.
-#[derive(Debug, Default)]
-struct LaneLock {
-    holder: Option<String>,
-    /// The holder has a run going. Set before its prompt is sent, so the
-    /// run cannot settle unnoticed; cleared when it settles or closes.
-    running: bool,
-    queue: VecDeque<String>,
-}
-
-impl LaneLock {
-    /// A session's process is starting: whether it must be read-only. The
-    /// first session in a lane takes the lock; opening never queues.
-    fn on_open(&mut self, key: &str) -> bool {
-        match &self.holder {
-            None => {
-                self.holder = Some(key.to_string());
-                false
-            }
-            Some(holder) => holder != key,
-        }
-    }
-
-    /// A session is starting a run: whether the run must be read-only.
-    /// A lock whose holder is idle passes straight to it, since the holder
-    /// has finished its run; otherwise it waits in the queue.
-    fn claim(&mut self, key: &str) -> bool {
-        match &self.holder {
-            Some(holder) if holder != key && self.running => {
-                if !self.queue.iter().any(|queued| queued == key) {
-                    self.queue.push_back(key.to_string());
-                }
-                true
-            }
-            _ => {
-                self.holder = Some(key.to_string());
-                self.queue.retain(|queued| queued != key);
-                self.running = true;
-                false
-            }
-        }
-    }
-
-    /// The holder's run did not start after all.
-    fn not_running(&mut self, key: &str) {
-        if self.holder.as_deref() == Some(key) {
-            self.running = false;
-        }
-    }
-
-    /// `key`'s run settled, or (`gone`) its process ended. A holder passes
-    /// the lock to the first queued session; a session that is gone leaves
-    /// the queue and gives the lock up even with nobody waiting.
-    fn release(&mut self, key: &str, gone: bool) {
-        if gone {
-            self.queue.retain(|queued| queued != key);
-        }
-        if self.holder.as_deref() != Some(key) {
-            return;
-        }
-        self.running = false;
-        if let Some(next) = self.queue.pop_front() {
-            self.holder = Some(next);
-        } else if gone {
-            self.holder = None;
-        }
-    }
-
-    fn view(&self, key: &str) -> LockChanged {
-        LockChanged {
-            holder: self.holder.as_deref() == Some(key),
-            queued: self.queue.iter().any(|queued| queued == key),
-        }
-    }
-
-    fn keys(&self) -> impl Iterator<Item = String> + '_ {
-        self.holder.iter().chain(self.queue.iter()).cloned()
-    }
-}
-
-type Locks = Arc<std::sync::Mutex<HashMap<i64, LaneLock>>>;
-
-/// Applies `update` to a lane's lock. Returns its result and how every
-/// session it concerned before or after, and `key`, now stands.
-fn change_lock<R>(
-    locks: &Locks,
-    lane: i64,
-    key: &str,
-    update: impl FnOnce(&mut LaneLock) -> R,
-) -> (R, Vec<(String, LockChanged)>) {
-    let mut locks = locks.lock().unwrap();
-    let lock = locks.entry(lane).or_default();
-    let mut keys: Vec<String> = lock.keys().collect();
-    let result = update(lock);
-    keys.extend(lock.keys());
-    keys.push(key.to_string());
-    keys.sort();
-    keys.dedup();
-    let views = keys
-        .into_iter()
-        .map(|key| {
-            let view = lock.view(&key);
-            (key, view)
-        })
-        .collect();
-    if lock.holder.is_none() && lock.queue.is_empty() {
-        locks.remove(&lane);
-    }
-    (result, views)
-}
-
-/// Tells the UI how each open session stands with its lane's lock. A queued
-/// session without a run shows as Waiting.
-async fn announce(
-    open: &Mutex<HashMap<String, OpenSession>>,
-    emit: &Emit,
-    views: Vec<(String, LockChanged)>,
-) {
-    let open = open.lock().await;
-    for (key, view) in views {
-        let Some(session) = open.get(&key) else {
-            continue;
-        };
-        let mut tracker = session.status.lock().unwrap();
-        let changed = tracker.set_queued(view.queued, now_ms());
-        emit(SessionEvent {
-            key: key.clone(),
-            event: SessionUpdate::Lock(view),
-        });
-        if let Some(status) = changed {
-            emit(SessionEvent {
-                key,
-                event: SessionUpdate::Status(StatusChanged { status }),
-            });
-        }
-    }
-}
-
-/// Forwards one process's events, tagged with its session's key, works out
-/// the session's status, and passes the lane's write lock on when the
-/// holder's run settles or its process ends.
+/// Forwards one process's events, tagged with its session's key, and works
+/// out the session's status.
 struct Forwarder {
     key: String,
     generation: u64,
-    lane: Option<i64>,
     open: Arc<Mutex<HashMap<String, OpenSession>>>,
-    locks: Locks,
     status: Tracker,
     emit: Emit,
 }
@@ -527,7 +359,6 @@ struct Forwarder {
 impl Forwarder {
     async fn run(self, mut events: tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>) {
         while let Some(event) = events.recv().await {
-            let mut gone = false;
             if matches!(event, HarnessEvent::Exited { .. }) {
                 let mut open = self.open.lock().await;
                 let current = open
@@ -538,9 +369,7 @@ impl Forwarder {
                     continue;
                 }
                 open.remove(&self.key);
-                gone = true;
             }
-            let settled = matches!(event, HarnessEvent::RunSettled { .. });
             {
                 // Holding the tracker while emitting keeps statuses in
                 // order with the ones `answer` sends.
@@ -556,14 +385,6 @@ impl Forwarder {
                         event: SessionUpdate::Status(StatusChanged { status }),
                     });
                 }
-            }
-            if let Some(lane) = self.lane
-                && (gone || settled)
-            {
-                let (_, views) = change_lock(&self.locks, lane, &self.key, |lock| {
-                    lock.release(&self.key, gone)
-                });
-                announce(&self.open, &self.emit, views).await;
             }
         }
     }
@@ -585,11 +406,6 @@ pub struct Service {
     lane_cancellations: Arc<std::sync::Mutex<HashMap<i64, Arc<AtomicBool>>>>,
     /// Lanes with an archive or restore in progress.
     busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
-    /// Each lane's write lock; see [`LaneLock`].
-    locks: Locks,
-    /// One per lane, so deciding a run's tools, restarting for them and
-    /// sending its prompt happen for one session of the lane at a time.
-    lane_gates: Mutex<HashMap<i64, Arc<Mutex<()>>>>,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
@@ -614,8 +430,6 @@ impl Service {
             lanes_root,
             lane_cancellations: Arc::default(),
             busy_lanes: Arc::default(),
-            locks: Arc::default(),
-            lane_gates: Mutex::default(),
             locations: std::sync::Mutex::default(),
             emit,
         }
@@ -666,7 +480,7 @@ impl Service {
                 errors.push(format!("Could not read projects: {}", err(error)));
                 Vec::new()
             });
-        let mut lanes = self
+        let lanes = self
             .with_store(|store| store.lanes())
             .await
             .unwrap_or_else(|error| {
@@ -680,17 +494,6 @@ impl Service {
                 errors.push(format!("Could not read sessions: {}", err(error)));
                 Vec::new()
             });
-        {
-            let locks = self.locks.lock().unwrap();
-            for lane in &mut lanes {
-                if let Some(lock) = locks.get(&lane.id) {
-                    lane.write_lock = WriteLock {
-                        holder: lock.holder.clone(),
-                        queue: lock.queue.iter().cloned().collect(),
-                    };
-                }
-            }
-        }
         let lane_by_id: HashMap<i64, &Lane> = lanes.iter().map(|lane| (lane.id, lane)).collect();
         let by_checkout: HashMap<&Path, i64> = projects
             .iter()
@@ -922,9 +725,9 @@ impl Service {
             harness: record.harness,
             cwd: PathBuf::from(lane_cwd(&lane)),
             resume: record.locator,
-            // An archived lane has no worktree to edit; its sessions stay
-            // readable and take no part in a lock.
-            lane: active.then_some(lane.id),
+            lane: Some(lane.id),
+            // An archived lane has no worktree to edit; its session stays
+            // readable without editing tools.
             read_only: !active,
         })
     }
@@ -989,12 +792,20 @@ impl Service {
             Some(id) => id,
             None => {
                 let cwd = PathBuf::from(cwd);
+                let occupied = self
+                    .with_store(|store| store.sessions())
+                    .await
+                    .map_err(err)?
+                    .into_iter()
+                    .map(|record| record.lane_id)
+                    .collect::<HashSet<_>>();
                 let candidates = self
                     .with_store(|store| store.lanes())
                     .await
                     .map_err(err)?
                     .into_iter()
                     .filter(|lane| lane.state == LaneState::Active)
+                    .filter(|lane| !occupied.contains(&lane.id))
                     .filter(|lane| {
                         lane.worktrees
                             .iter()
@@ -1040,9 +851,8 @@ impl Service {
         result
     }
 
-    /// Starts a session's process under `key` and forwards its events. In a
-    /// lane, only the holder of the write lock gets tools that edit files.
-    /// `status` carries a session's status across a restart.
+    /// Starts a session's process under `key` and forwards its events.
+    /// `status` carries a session's status when it is reopened.
     async fn start(
         &self,
         key: &str,
@@ -1050,11 +860,6 @@ impl Service {
         status: Option<Tracker>,
     ) -> ServiceResult<OpenedSession> {
         let harness = self.harness(&launch.harness)?;
-        let (read_only, views) = match launch.lane {
-            Some(lane) => change_lock(&self.locks, lane, key, |lock| lock.on_open(key)),
-            None => (false, Vec::new()),
-        };
-        let read_only = read_only || launch.read_only;
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HarnessEvent>();
         let fresh = status.is_none();
@@ -1071,9 +876,7 @@ impl Service {
             Forwarder {
                 key: key.to_string(),
                 generation,
-                lane: launch.lane,
                 open: self.open.clone(),
-                locks: self.locks.clone(),
                 status: status.clone(),
                 emit: self.emit.clone(),
             }
@@ -1083,7 +886,7 @@ impl Service {
         let request = StartSession {
             cwd: launch.cwd,
             resume: launch.resume,
-            read_only,
+            read_only: launch.read_only,
         };
         let started = async {
             let session: Arc<dyn AgentSession> =
@@ -1111,7 +914,6 @@ impl Service {
         let (session, history) = match started.await {
             Ok(started) => started,
             Err(error) => {
-                self.release(key, launch.lane).await;
                 return Err(error);
             }
         };
@@ -1122,65 +924,19 @@ impl Service {
                 session,
                 status,
                 lane: launch.lane,
-                read_only,
             },
         );
-        announce(&self.open, &self.emit, views).await;
         Ok(OpenedSession {
             key: key.to_string(),
             history,
         })
     }
 
-    /// Gives up `key`'s place in its lane's lock: the lock passes to the
-    /// first queued session, if any.
-    async fn release(&self, key: &str, lane: Option<i64>) {
-        if let Some(lane) = lane {
-            let (_, views) = change_lock(&self.locks, lane, key, |lock| lock.release(key, true));
-            announce(&self.open, &self.emit, views).await;
-        }
-    }
-
-    /// Restarts an open session with the tools `read_only` asks for, unless
-    /// it already has them, and returns its process. A conversation the
-    /// harness has not written yet starts afresh rather than resuming.
-    async fn with_tools(&self, key: &str, read_only: bool) -> ServiceResult<Arc<dyn AgentSession>> {
-        let (session, current, lane, status) = {
-            let open = self.open.lock().await;
-            let open = open.get(key).ok_or_else(not_open)?;
-            (
-                open.session.clone(),
-                open.read_only,
-                open.lane,
-                open.status.clone(),
-            )
-        };
-        if current == read_only {
-            return Ok(session);
-        }
-        let empty = session.history().await.map_err(err)?.is_empty();
-        let reference = session.harness_ref();
-        self.open.lock().await.remove(key);
-        session.shutdown().await;
-        let launch = Launch {
-            harness: reference.harness,
-            cwd: PathBuf::from(reference.cwd),
-            resume: (!empty).then_some(reference.locator),
-            lane,
-            read_only,
-        };
-        self.start(key, launch, Some(status)).await?;
-        self.session(key).await
-    }
-
     pub async fn history(&self, key: &str) -> ServiceResult<Vec<Message>> {
         self.session(key).await?.history().await.map_err(err)
     }
 
-    /// Sends a prompt. A lane session starting a run first claims its
-    /// lane's write lock: it runs with every tool if it gets it, read-only
-    /// and queued if another session's run holds it, and is restarted when
-    /// its process has the wrong tools for that.
+    /// Sends a prompt to the lane's one session.
     pub async fn prompt(
         &self,
         key: &str,
@@ -1188,33 +944,11 @@ impl Service {
         images: Vec<ImageAttachment>,
         mode: PromptMode,
     ) -> ServiceResult<PromptOutcome> {
-        let lane = self.open.lock().await.get(key).ok_or_else(not_open)?.lane;
-        let Some(lane) = lane.filter(|_| mode == PromptMode::Start) else {
-            return self
-                .session(key)
-                .await?
-                .prompt(text, images, mode)
-                .await
-                .map_err(err);
-        };
-        let gate = self
-            .lane_gates
-            .lock()
+        self.session(key)
+            .await?
+            .prompt(text, images, mode)
             .await
-            .entry(lane)
-            .or_default()
-            .clone();
-        let _gate = gate.lock().await;
-        let (read_only, views) = change_lock(&self.locks, lane, key, |lock| lock.claim(key));
-        announce(&self.open, &self.emit, views).await;
-        let outcome = match self.with_tools(key, read_only).await {
-            Ok(session) => session.prompt(text, images, mode).await.map_err(err),
-            Err(error) => Err(error),
-        };
-        if !read_only && !matches!(outcome, Ok(PromptOutcome::Started)) {
-            change_lock(&self.locks, lane, key, |lock| lock.not_running(key));
-        }
-        outcome
+            .map_err(err)
     }
 
     pub async fn settings(&self, key: &str) -> ServiceResult<SessionSettings> {
@@ -1278,7 +1012,6 @@ impl Service {
         let open = self.open.lock().await.remove(key);
         if let Some(open) = open {
             open.session.shutdown().await;
-            self.release(key, open.lane).await;
         }
     }
 
@@ -1291,7 +1024,6 @@ impl Service {
             .drain()
             .map(|(_, o)| o.session)
             .collect();
-        self.locks.lock().unwrap().clear();
         let mut shutdowns = tokio::task::JoinSet::new();
         for session in sessions {
             shutdowns.spawn(async move { session.shutdown().await });
@@ -1334,30 +1066,6 @@ impl Service {
         self.with_store(move |store| store.set_session_tags(id, &tags))
             .await
             .map_err(err)
-    }
-
-    /// Closes and archives a lane session and starts a fresh one in the same
-    /// lane, so on the same worktree, branch and task. If the old session
-    /// held the write lock, the new one takes it over, ahead of the queue.
-    pub async fn replace(&self, key: &str) -> ServiceResult<OpenedSession> {
-        let id = panoptes_id(key).ok_or_else(|| only_in_a_lane("replaced"))?;
-        let (record, lane) = self
-            .with_store(move |store| {
-                let old = store.session(id)?;
-                let record = store.add_session(old.lane_id, &old.harness)?;
-                Ok((record, store.lane(old.lane_id)?))
-            })
-            .await
-            .map_err(err)?;
-        let successor = panoptes_key(record.id);
-        change_lock(&self.locks, lane.id, key, |lock| {
-            if lock.holder.as_deref() == Some(key) {
-                lock.holder = Some(successor.clone());
-                lock.running = false;
-            }
-        });
-        self.set_archived(key, true).await?;
-        self.start_recorded(record.id, &lane, &record.harness).await
     }
 
     /// Registers the git repository `folder` is in, by its main checkout,
@@ -1642,10 +1350,6 @@ mod tests {
             let requests = self.requests.lock().unwrap();
             requests.iter().map(|request| request.read_only).collect()
         }
-
-        fn sink(&self, start: usize) -> EventSink {
-            self.sinks.lock().unwrap()[start].clone()
-        }
     }
 
     struct FakeSession {
@@ -1866,30 +1570,6 @@ mod tests {
         (code, lane)
     }
 
-    fn locks_of(f: &Fixture, key: &str) -> Vec<LockChanged> {
-        let events = f.events.lock().unwrap();
-        events
-            .iter()
-            .filter(|e| e.key == key)
-            .filter_map(|e| match e.event {
-                SessionUpdate::Lock(lock) => Some(lock),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn status_of(f: &Fixture, key: &str) -> Option<SessionStatus> {
-        let events = f.events.lock().unwrap();
-        events.iter().rev().find_map(|e| match e.event {
-            SessionUpdate::Status(StatusChanged { status }) if e.key == key => Some(status),
-            _ => None,
-        })
-    }
-
-    async fn lock_now(f: &Fixture) -> WriteLock {
-        f.service.list().await.lanes[0].write_lock.clone()
-    }
-
     #[tokio::test]
     async fn a_lane_session_has_its_key_before_the_harness_starts() {
         let f = fixture(FakeHarness::default());
@@ -2009,6 +1689,18 @@ mod tests {
                 "fake",
                 "fake:s2",
                 "s2".into(),
+                lane.worktrees[0].path.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, AdoptionOutcome::ChooseLane));
+        let outcome = f
+            .service
+            .adopt(
+                "fake",
+                "fake:s2",
+                "s2".into(),
                 "/somewhere/else".into(),
                 None,
             )
@@ -2025,11 +1717,11 @@ mod tests {
                 Some(lane.id),
             )
             .await
-            .unwrap();
-        assert!(matches!(outcome, AdoptionOutcome::Adopted { .. }));
+            .unwrap_err();
+        assert!(outcome.message.contains("already has a session"));
         let listing = f.service.list().await;
-        assert_eq!(listing.sessions.len(), 2);
-        assert_eq!(listing.navigation[0].sessions.len(), 2);
+        assert_eq!(listing.sessions.len(), 1);
+        assert_eq!(listing.navigation[0].sessions.len(), 1);
     }
 
     #[tokio::test]
@@ -2049,146 +1741,49 @@ mod tests {
         assert!(error.message.contains("Stop this session"));
     }
 
-    #[test]
-    fn the_write_lock_passes_in_queue_order() {
-        let mut lock = LaneLock::default();
-        assert!(!lock.on_open("a"));
-        assert!(lock.on_open("b"));
-        assert!(lock.on_open("c"));
-        assert!(!lock.claim("a"));
-        assert!(lock.claim("c"));
-        assert!(lock.claim("b"));
-        assert!(lock.claim("c"));
-        assert_eq!(lock.queue, ["c", "b"]);
-        // Only the holder's own run passes the lock on.
-        lock.release("b", false);
-        assert_eq!(lock.holder.as_deref(), Some("a"));
-        lock.release("a", false);
-        assert_eq!(lock.holder.as_deref(), Some("c"));
-        assert_eq!(lock.queue, ["b"]);
-        assert!(!lock.running);
-        // An idle holder has finished its run, so whoever runs next takes it.
-        assert!(!lock.claim("b"));
-        assert_eq!(lock.holder.as_deref(), Some("b"));
-        assert!(lock.queue.is_empty());
-        lock.release("b", true);
-        assert_eq!(lock.holder, None);
-    }
-
     #[tokio::test]
-    async fn one_session_per_lane_edits_and_the_others_run_read_only_in_turn() {
+    async fn a_lane_rejects_a_second_session_even_if_the_first_is_archived() {
         let f = fixture(FakeHarness::default());
         let (_code, lane) = lane_of(&f).await;
-        let a = f.service.create(lane.id, "fake").await.unwrap().key;
-        let b = f.service.create(lane.id, "fake").await.unwrap().key;
-        // The first session in the lane takes the lock.
-        assert_eq!(f.harness.read_only(), [false, true]);
-        let prompt = |key: String| {
-            let service = f.service.clone();
-            async move {
-                service
-                    .prompt(&key, "go".into(), Vec::new(), PromptMode::Start)
-                    .await
-                    .unwrap()
-            }
-        };
+        let key = f.service.create(lane.id, "fake").await.unwrap().key;
+        let error = f.service.create(lane.id, "fake").await.unwrap_err();
+        assert!(error.message.contains("already has a session"));
+        assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
 
-        // While A's run holds the lock, B runs read-only and queues.
-        prompt(a.clone()).await;
-        prompt(b.clone()).await;
-        assert_eq!(f.harness.read_only(), [false, true]);
-        let lock = lock_now(&f).await;
-        assert_eq!(lock.holder.as_deref(), Some(a.as_str()));
-        assert_eq!(lock.queue, std::slice::from_ref(&b));
-        assert_eq!(status_of(&f, &b), Some(SessionStatus::Waiting));
-
-        // A's run settling hands the lock to B ...
-        f.harness
-            .sink(0)
-            .send(HarnessEvent::RunSettled { aborted: false })
-            .unwrap();
-        settle().await;
-        let lock = lock_now(&f).await;
-        assert_eq!(lock.holder.as_deref(), Some(b.as_str()));
-        assert!(lock.queue.is_empty());
-        assert_eq!(
-            locks_of(&f, &b).last(),
-            Some(&LockChanged {
-                holder: true,
-                queued: false
-            })
-        );
-        // ... whose next run restarts it with every tool.
-        prompt(b.clone()).await;
-        assert_eq!(f.harness.read_only(), [false, true, false]);
-
-        // A, prompted while B's run holds the lock, restarts read-only.
-        prompt(a.clone()).await;
-        assert_eq!(f.harness.read_only(), [false, true, false, true]);
-        assert_eq!(lock_now(&f).await.queue, std::slice::from_ref(&a));
-
-        // B closing gives the lock to A, and restarting never reported an exit.
-        f.service.close(&b).await;
-        assert_eq!(lock_now(&f).await.holder.as_deref(), Some(a.as_str()));
-        settle().await;
-        assert_eq!(exits(&f), 0);
-    }
-
-    #[tokio::test]
-    async fn a_crashed_holder_gives_up_the_lock() {
-        let f = fixture(FakeHarness::default());
-        let (_code, lane) = lane_of(&f).await;
-        let a = f.service.create(lane.id, "fake").await.unwrap().key;
-        f.harness
-            .sink(0)
-            .send(HarnessEvent::Exited {
-                code: Some(1),
-                stderr_tail: String::new(),
-            })
-            .unwrap();
-        settle().await;
-        assert_eq!(lock_now(&f).await.holder, None);
-        let b = f.service.create(lane.id, "fake").await.unwrap().key;
-        assert_ne!(a, b);
-        assert_eq!(lock_now(&f).await.holder, Some(b));
-    }
-
-    #[tokio::test]
-    async fn replacing_a_session_archives_it_and_its_successor_takes_the_lock() {
-        let f = fixture(FakeHarness::default());
-        let (_code, lane) = lane_of(&f).await;
-        let a = f.service.create(lane.id, "fake").await.unwrap().key;
-        let b = f.service.create(lane.id, "fake").await.unwrap().key;
-        let c = f.service.replace(&a).await.unwrap().key;
-        assert_eq!(f.harness.read_only(), [false, true, false]);
+        f.service.set_archived(&key, true).await.unwrap();
+        let error = f.service.create(lane.id, "fake").await.unwrap_err();
+        assert!(error.message.contains("already has a session"));
+        let error = f
+            .service
+            .adopt(
+                "fake",
+                "fake:s2",
+                "s2".into(),
+                lane.worktrees[0].path.clone(),
+                Some(lane.id),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("already has a session"));
         let listing = f.service.list().await;
-        assert_eq!(
-            listing.lanes[0].write_lock.holder.as_deref(),
-            Some(c.as_str())
-        );
-        let old = listing.sessions.iter().find(|s| s.key == a).unwrap();
-        assert!(old.archived && !old.open);
-        let new = listing.sessions.iter().find(|s| s.key == c).unwrap();
-        assert_eq!(new.lane_id, Some(lane.id));
+        assert!(listing.navigation[0].sessions.is_empty());
+        assert_eq!(listing.navigation[0].archived_sessions.len(), 1);
+    }
 
-        // Archiving a session leaves its lane active.
-        f.service.set_archived(&c, true).await.unwrap();
-        let listing = f.service.list().await;
-        assert_eq!(listing.lanes[0].state, LaneState::Active);
-        assert_eq!(listing.lanes[0].write_lock.holder, None);
-
-        // A lane with an open session is not archived under it.
-        let error = f.service.archive_lane(lane.id, None).await.unwrap_err();
-        assert!(error.message.contains("Close this lane"), "{error}");
-        f.service.close(&b).await;
+    #[tokio::test]
+    async fn an_archived_lane_reopens_its_existing_session_read_only() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let key = f.service.create(lane.id, "fake").await.unwrap().key;
+        f.service.close(&key).await;
         f.service.archive_lane(lane.id, None).await.unwrap();
-        // An archived lane takes no new sessions; old ones open read-only.
         assert!(f.service.create(lane.id, "fake").await.is_err());
+
         f.service
-            .open("fake", &b, String::new(), String::new())
+            .open("fake", &key, String::new(), String::new())
             .await
             .unwrap();
-        assert_eq!(f.harness.read_only().last(), Some(&true));
+        assert_eq!(f.harness.read_only(), [false, true]);
     }
 
     #[tokio::test]

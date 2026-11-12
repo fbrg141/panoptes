@@ -192,10 +192,10 @@ All of this follows the standing rule that decisions live in Rust and the UI
 only renders: the one-session rule, lane state and what appears where are
 worked out in the core.
 
-**Implementation status.** The current code still contains #22's multi-session
-write lock and queue. #228 replaces them with the one-session rule before P1
-step 3, so the lock and process-race issues do not get fixed just to be removed.
-The original build order ending in subsessions (#58) and groups (#21) is closed.
+**Implementation status.** #228 makes this one-session rule real: project `+`
+creates a lane from a prompt and starts its only session. The write lock,
+queue, non-holder read-only sessions and replacement flow are gone. The
+original build order ending in subsessions (#58) and groups (#21) is closed.
 
 **Deferred on purpose.** What happens when the base branch moves underneath
 a lane, and remote or cloud execution. The harness adapter boundary keeps the
@@ -269,7 +269,7 @@ the one-session boundary from #228, not #22's removed write lock.
 
 ## One session per lane
 
-*Decided 2026-11-11 (#228); implementation pending.* A lane holds exactly one
+*Decided 2026-11-11 (#228), implemented the same day.* A lane holds exactly one
 session. Clicking `+` on a project asks for a prompt and creates a lane with
 it, with the existing clearly marked option to use the main checkout when a
 worktree is unnecessary.

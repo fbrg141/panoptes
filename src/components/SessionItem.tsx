@@ -1,15 +1,7 @@
 import { Button, Icon, LoopMark } from "@panoptes/design-system";
 import { type KeyboardEvent, useRef, useState, useSyncExternalStore } from "react";
 import { relativeTime } from "../grouping";
-import {
-  isLive,
-  lockLabel,
-  lockQueueText,
-  primaryAction,
-  sessionDetail,
-  sessionRowLabel,
-  statusWord,
-} from "../sessionRow";
+import { isLive, primaryAction, sessionDetail, sessionRowLabel, statusWord } from "../sessionRow";
 import { sessionMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { Session, SessionStatus } from "../types";
@@ -105,7 +97,6 @@ export function SessionItem({
 }) {
   const active = useStore((s) => s.activeKey === session.key);
   const status = useStore((s) => s.statuses[session.key] ?? "idle");
-  const lock = useStore((s) => s.locks[session.key]);
   const open = useStore((s) => s.open);
   const close = useStore((s) => s.close);
   const setArchived = useStore((s) => s.setArchived);
@@ -124,9 +115,7 @@ export function SessionItem({
   const detail = sessionDetail(session, context);
   const now = useClock();
   const time = relativeTime(session.updatedAt, Math.max(now, session.updatedAt));
-  const lockText = lockLabel(lock);
-  const queueText = lockQueueText(lock);
-  const label = sessionRowLabel({ title: session.title, status, lock, detail, time });
+  const label = sessionRowLabel({ title: session.title, status, detail, time });
 
   const select = (id: string) => {
     if (id === "adopt") onAdopt?.();
@@ -220,19 +209,6 @@ export function SessionItem({
             </span>
             <span className="session-meta">
               <span>{time}</span>
-              {lockText && (
-                <span
-                  className={`inline-flex items-center gap-1 ${
-                    queueText
-                      ? "rounded-sm bg-waiting-soft px-1.5 py-0.5 font-medium text-waiting"
-                      : ""
-                  }`}
-                  title={lockText}
-                >
-                  <Icon name="lock" size={12} />
-                  {lock?.queued && !lock.holder && "queued"}
-                </span>
-              )}
             </span>
           </button>
           {hasActions && (

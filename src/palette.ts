@@ -88,7 +88,7 @@ export function paletteGroups(
     {
       label: "Actions",
       items: [
-        { id: "action:newSession", label: "New session", icon: "plus", kbd: ["⌘", "T"] },
+        { id: "action:newSession", label: "New lane", icon: "plus", kbd: ["⌘", "T"] },
         { id: "action:newProject", label: "Add a project", icon: "folder", kbd: ["⌘", "N"] },
         {
           id: "action:shortcuts",
