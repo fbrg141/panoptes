@@ -117,6 +117,11 @@ let lanes: Lane[] = [
   },
 ];
 let nextLaneId = 2;
+
+/** What each lane's worktree holds; lanes created here start empty. */
+const laneWork: Record<number, { changedFiles: number; commitsAhead: number | null }> = {
+  1: { changedFiles: 3, commitsAhead: 1 },
+};
 let nextSessionId = 2;
 
 /** Records a Panoptes session in a lane, as the backend does before it starts. */
@@ -572,6 +577,11 @@ export function installMockBackend() {
                 laneId: lane.id,
                 sessions: owned.filter((s) => !s.archived),
                 archivedSessions: owned.filter((s) => s.archived),
+                work:
+                  lane.state === "active"
+                    ? (laneWork[lane.id] ?? { changedFiles: 0, commitsAhead: 0 })
+                    : null,
+                busyWriter: null,
               };
             }),
             errors: [],

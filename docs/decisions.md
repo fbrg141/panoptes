@@ -286,6 +286,16 @@ This supersedes #22's write-lock decision and the earlier subsession proposal.
 It is intentionally simpler than worker fan-out: Panoptes observes one agent's
 work in each lane.
 
+**Another lane's session can still write.** Nothing stops a lane's agent from
+editing another lane's worktree with its tools. While an open session that
+has edited a lane (a finished edit tool call naming a file in its worktree)
+is Running or Waiting, the core refuses that lane's own session, so it never
+gets two writers. The sidebar says so instead of offering Start session, and
+every active lane shows its uncommitted files and commits ahead, so a lane
+without a session no longer looks empty when it holds work. This is kept in
+memory for as long as the writing session runs; recording who wrote what, and
+showing it, is left to the bet review (2026-11-12).
+
 ## The design system lives in the repo as a package
 
 *Decided 2026-11-05.*

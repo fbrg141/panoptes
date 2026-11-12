@@ -201,6 +201,17 @@ describe("store", () => {
     expect(store.getState().conversations["pi:s1"].busy).toBe(false);
   });
 
+  it("lists again as soon as a session is seen editing another lane", async () => {
+    await store.getState().open(session);
+    const before = fake.backend.listSessions.mock.calls.length;
+    fake.emit({ key: "pi:s1", event: { type: "laneWritesChanged", laneId: 2 } });
+    await vi.waitFor(() =>
+      expect(fake.backend.listSessions.mock.calls.length).toBeGreaterThan(before),
+    );
+    // It is not a harness event, so the conversation is left as it was.
+    expect(store.getState().conversations["pi:s1"].messages).toEqual([]);
+  });
+
   it("resumes a session whose process is gone and sends again", async () => {
     await store.getState().open(session);
     fake.emit({ key: "pi:s1", event: { type: "exited", code: 1, stderrTail: "" } });
@@ -365,7 +376,7 @@ describe("store", () => {
       sessions: [session],
       projects: [project],
       lanes: [{ ...lane, state: "archived" }],
-      navigation: [{ laneId: 1, sessions: [], archivedSessions: [] }],
+      navigation: [{ laneId: 1, sessions: [], archivedSessions: [], work: null, busyWriter: null }],
       errors: [],
     });
     const archived = await store.getState().archiveLane(1, "checkpoint");
@@ -378,7 +389,9 @@ describe("store", () => {
       sessions: [laneSession],
       projects: [project],
       lanes: [lane],
-      navigation: [{ laneId: 1, sessions: [laneSession], archivedSessions: [] }],
+      navigation: [
+        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, busyWriter: null },
+      ],
       errors: [],
     });
     await store.getState().refresh();
@@ -405,7 +418,7 @@ describe("store", () => {
       sessions: [],
       projects: [project],
       lanes: [lane],
-      navigation: [{ laneId: 1, sessions: [], archivedSessions: [] }],
+      navigation: [{ laneId: 1, sessions: [], archivedSessions: [], work: null, busyWriter: null }],
       errors: [],
     });
     await store.getState().refresh();
@@ -427,7 +440,9 @@ describe("store", () => {
       sessions: [laneSession, session],
       projects: [project],
       lanes: [lane],
-      navigation: [{ laneId: 1, sessions: [laneSession], archivedSessions: [] }],
+      navigation: [
+        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, busyWriter: null },
+      ],
       errors: [],
     });
     await store.getState().create(lane.id);
@@ -490,7 +505,9 @@ describe("store", () => {
       sessions: [laneSession],
       projects: [project],
       lanes: [lane],
-      navigation: [{ laneId: 1, sessions: [laneSession], archivedSessions: [] }],
+      navigation: [
+        { laneId: 1, sessions: [laneSession], archivedSessions: [], work: null, busyWriter: null },
+      ],
       errors: [],
     });
     const adopted = await store.getState().adopt(session, 1);

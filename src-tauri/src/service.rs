@@ -16,9 +16,10 @@ use panoptes_harness::{
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::lanes::{self, ArchiveResult, ArchiveStrategy};
+use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
 use crate::projects::{self, Location};
 use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
+use crate::writes;
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -127,6 +128,15 @@ pub struct SessionEvent {
 pub enum SessionUpdate {
     Harness(HarnessEvent),
     Status(StatusChanged),
+    LaneWrites(LaneWritesChanged),
+}
+
+/// Sent when an open session is first seen editing another lane's worktree,
+/// so the sidebar can hold back that lane's own session straight away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename = "laneWritesChanged")]
+pub struct LaneWritesChanged {
+    pub lane_id: i64,
 }
 
 /// Sent when an open session's status changes, and once when it opens.
@@ -277,6 +287,20 @@ pub struct LaneNavigation {
     pub sessions: Vec<Session>,
     /// Archived sessions stay attached to the lane for its archive view.
     pub archived_sessions: Vec<Session>,
+    /// What an active lane's worktree holds, whether or not it has a
+    /// session; `None` for archived lanes or a worktree that can't be read.
+    pub work: Option<LaneWork>,
+    /// Another session that has edited this lane's worktree and is Running
+    /// or Waiting now. While there is one, the lane gets no session of its
+    /// own, so there are never two writers.
+    pub busy_writer: Option<BusyWriter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusyWriter {
+    pub session_key: String,
+    pub title: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -354,11 +378,71 @@ struct Forwarder {
     open: Arc<Mutex<HashMap<String, OpenSession>>>,
     status: Tracker,
     emit: Emit,
+    writes: WriteWatch,
+}
+
+/// Lanes other than its own that each open session has edited, by lane.
+/// Kept in memory for as long as the writing session runs: it only has to
+/// hold back a second writer, not record history.
+type LaneWriters = Arc<std::sync::Mutex<HashMap<i64, HashSet<String>>>>;
+
+/// What a forwarder needs to notice its session editing other lanes.
+struct WriteWatch {
+    writers: LaneWriters,
+    store: Arc<std::sync::Mutex<Store>>,
+    /// The session's own lane, never counted as another lane.
+    own: Option<i64>,
+    cwd: PathBuf,
 }
 
 impl Forwarder {
+    /// Notes the other lanes a finished edit touched, and forgets the
+    /// session's edits once its process ends.
+    async fn watch(&self, event: &HarnessEvent) {
+        match event {
+            HarnessEvent::ToolCallUpdated { call } => {
+                let paths = writes::edited_paths(call);
+                if paths.is_empty() {
+                    return;
+                }
+                let store = self.writes.store.clone();
+                let (own, cwd) = (self.writes.own, self.writes.cwd.clone());
+                let touched = tokio::task::spawn_blocking(move || {
+                    let lanes = store.lock().unwrap().lanes()?;
+                    anyhow::Ok(writes::lanes_touched(&paths, &cwd, own, &lanes))
+                })
+                .await;
+                let Ok(Ok(touched)) = touched else {
+                    return;
+                };
+                let new: Vec<i64> = {
+                    let mut writers = self.writes.writers.lock().unwrap();
+                    touched
+                        .into_iter()
+                        .filter(|lane| writers.entry(*lane).or_default().insert(self.key.clone()))
+                        .collect()
+                };
+                for lane_id in new {
+                    (self.emit)(SessionEvent {
+                        key: self.key.clone(),
+                        event: SessionUpdate::LaneWrites(LaneWritesChanged { lane_id }),
+                    });
+                }
+            }
+            HarnessEvent::Exited { .. } => {
+                let mut writers = self.writes.writers.lock().unwrap();
+                for keys in writers.values_mut() {
+                    keys.remove(&self.key);
+                }
+                writers.retain(|_, keys| !keys.is_empty());
+            }
+            _ => {}
+        }
+    }
+
     async fn run(self, mut events: tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>) {
         while let Some(event) = events.recv().await {
+            self.watch(&event).await;
             if matches!(event, HarnessEvent::Exited { .. }) {
                 let mut open = self.open.lock().await;
                 let current = open
@@ -406,6 +490,8 @@ pub struct Service {
     lane_cancellations: Arc<std::sync::Mutex<HashMap<i64, Arc<AtomicBool>>>>,
     /// Lanes with an archive, restore or delete in progress.
     busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
+    /// Open sessions seen editing a lane that is not their own.
+    lane_writers: LaneWriters,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
@@ -430,6 +516,7 @@ impl Service {
             lanes_root,
             lane_cancellations: Arc::default(),
             busy_lanes: Arc::default(),
+            lane_writers: Arc::default(),
             locations: std::sync::Mutex::default(),
             emit,
         }
@@ -494,6 +581,24 @@ impl Service {
                 errors.push(format!("Could not read sessions: {}", err(error)));
                 Vec::new()
             });
+        let work: HashMap<i64, LaneWork> = {
+            let active: Vec<(Project, Lane)> = lanes
+                .iter()
+                .filter(|lane| lane.state == LaneState::Active)
+                .filter_map(|lane| {
+                    let project = projects.iter().find(|p| p.id == lane.project_id)?;
+                    Some((project.clone(), lane.clone()))
+                })
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                active
+                    .iter()
+                    .filter_map(|(project, lane)| Some((lane.id, lanes::work(project, lane)?)))
+                    .collect()
+            })
+            .await
+            .unwrap_or_default()
+        };
         let lane_by_id: HashMap<i64, &Lane> = lanes.iter().map(|lane| (lane.id, lane)).collect();
         let by_checkout: HashMap<&Path, i64> = projects
             .iter()
@@ -510,6 +615,10 @@ impl Service {
             .collect();
         let mut adopted = vec![false; discovered.len()];
         let open = self.open.lock().await;
+        let busy_writers: HashMap<i64, String> = lanes
+            .iter()
+            .filter_map(|lane| Some((lane.id, busy_writer(&open, &self.lane_writers, lane.id)?)))
+            .collect();
         let mut locations = self.locations.lock().unwrap();
         let mut sessions = Vec::new();
         for record in records {
@@ -603,6 +712,7 @@ impl Service {
         }
         drop(locations);
         drop(open);
+        let all = &sessions;
         let mut navigation: Vec<LaneNavigation> = lanes
             .iter()
             .map(|lane| {
@@ -622,10 +732,19 @@ impl Service {
                     .cloned()
                     .collect();
                 sessions.retain(|session| !session.archived);
+                let busy_writer = busy_writers.get(&lane.id).map(|key| BusyWriter {
+                    session_key: key.clone(),
+                    title: all
+                        .iter()
+                        .find(|session| &session.key == key)
+                        .map_or_else(|| "Another session".into(), |s| s.title.clone()),
+                });
                 LaneNavigation {
                     lane_id: lane.id,
                     sessions,
                     archived_sessions,
+                    work: work.get(&lane.id).copied(),
+                    busy_writer,
                 }
             })
             .collect();
@@ -734,8 +853,20 @@ impl Service {
 
     /// Starts a new Panoptes session in a lane's worktree. Its id, and so
     /// its key, exist before the harness starts.
+    /// A lane that another Running or Waiting session has edited gets no
+    /// session of its own until that one is Done: two writers otherwise.
     pub async fn create(&self, lane_id: i64, harness: &str) -> ServiceResult<OpenedSession> {
         self.harness(harness)?;
+        let busy = {
+            let open = self.open.lock().await;
+            busy_writer(&open, &self.lane_writers, lane_id)
+        };
+        if busy.is_some() {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "Another session is still changing this lane. Start one here once it is Done",
+            ));
+        }
         let name = harness.to_string();
         let (record, lane) = self
             .with_store(move |store| {
@@ -879,6 +1010,12 @@ impl Service {
                 open: self.open.clone(),
                 status: status.clone(),
                 emit: self.emit.clone(),
+                writes: WriteWatch {
+                    writers: self.lane_writers.clone(),
+                    store: self.store.clone(),
+                    own: launch.lane,
+                    cwd: launch.cwd.clone(),
+                },
             }
             .run(rx),
         );
@@ -1323,6 +1460,29 @@ impl Drop for LaneBusy {
     fn drop(&mut self) {
         self.lanes.lock().unwrap().remove(&self.id);
     }
+}
+
+/// The key of a session other than `lane_id`'s own that has edited the lane
+/// and is Running or Waiting, if there is one.
+fn busy_writer(
+    open: &HashMap<String, OpenSession>,
+    writers: &LaneWriters,
+    lane_id: i64,
+) -> Option<String> {
+    let writers = writers.lock().unwrap();
+    let mut keys: Vec<&String> = writers.get(&lane_id)?.iter().collect();
+    keys.sort();
+    keys.into_iter()
+        .find(|key| {
+            open.get(*key).is_some_and(|session| {
+                session.lane != Some(lane_id)
+                    && matches!(
+                        session.status.lock().unwrap().status,
+                        SessionStatus::Running | SessionStatus::Waiting
+                    )
+            })
+        })
+        .cloned()
 }
 
 /// Whether another active lane of `project_id` already uses the main checkout.
@@ -2197,6 +2357,137 @@ mod tests {
             std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
             "work\n"
         );
+    }
+
+    /// A project with two worktree lanes, and a session started in the first.
+    async fn two_lanes(f: &Fixture) -> (tempfile::TempDir, Lane, Lane, EventSink) {
+        let code = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(code.path()).unwrap().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        std::fs::write(repo.join("tracked.txt"), "start\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        git(&repo, &["commit", "--quiet", "-m", "start"]);
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let a = f
+            .service
+            .create_lane(project.id, "Plan the work".into(), false)
+            .await
+            .unwrap();
+        let b = f
+            .service
+            .create_lane(project.id, "Build the parser".into(), false)
+            .await
+            .unwrap();
+        f.service.create(a.id, "fake").await.unwrap();
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        (code, a, b, sink)
+    }
+
+    fn edit(id: &str, path: &str) -> HarnessEvent {
+        HarnessEvent::ToolCallUpdated {
+            call: Box::new(panoptes_harness::ToolCall {
+                id: id.into(),
+                name: "edit".into(),
+                kind: panoptes_harness::ToolKind::Edit,
+                subject: Some(path.into()),
+                input: serde_json::Value::Null,
+                status: panoptes_harness::ToolStatus::Done,
+                output: None,
+                started_at: None,
+                ended_at: None,
+            }),
+        }
+    }
+
+    fn entry(listing: &Listing, lane: i64) -> &LaneNavigation {
+        listing
+            .navigation
+            .iter()
+            .find(|entry| entry.lane_id == lane)
+            .unwrap()
+    }
+
+    /// Lists until `done` holds, for what the forwarder records on its own.
+    async fn eventually(f: &Fixture, done: impl Fn(&Listing) -> bool) -> Listing {
+        for _ in 0..100 {
+            let listing = f.service.list().await;
+            if done(&listing) {
+                return listing;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("never happened: {:?}", f.service.list().await.navigation);
+    }
+
+    #[tokio::test]
+    async fn a_session_editing_another_lane_holds_back_that_lanes_own_session() {
+        let f = fixture(FakeHarness::default());
+        let (_code, a, b, sink) = two_lanes(&f).await;
+        let b_path = PathBuf::from(&b.worktrees[0].path);
+
+        let listing = f.service.list().await;
+        assert_eq!(
+            entry(&listing, b.id).work,
+            Some(LaneWork {
+                changed_files: 0,
+                commits_ahead: Some(0)
+            })
+        );
+        assert!(entry(&listing, b.id).busy_writer.is_none());
+
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        // Its own worktree is not another lane's.
+        sink.send(edit("t1", "own.txt")).unwrap();
+        std::fs::write(b_path.join("parser.rs"), "fn parse() {}\n").unwrap();
+        sink.send(edit("t2", &b_path.join("parser.rs").to_string_lossy()))
+            .unwrap();
+        let listing = eventually(&f, |l| entry(l, b.id).busy_writer.is_some()).await;
+        let writer = entry(&listing, b.id).busy_writer.clone().unwrap();
+        assert_eq!(writer.session_key, "panoptes:1");
+        assert_eq!(writer.title, "New session");
+        assert!(entry(&listing, a.id).busy_writer.is_none());
+        assert_eq!(entry(&listing, b.id).work.unwrap().changed_files, 1);
+        assert!(
+            f.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.event == SessionUpdate::LaneWrites(LaneWritesChanged { lane_id: b.id }))
+        );
+
+        let refused = f.service.create(b.id, "fake").await.unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Rejected);
+
+        // Once the writer is Done, the lane can have its own session.
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        let listing = eventually(&f, |l| entry(l, b.id).busy_writer.is_none()).await;
+        assert_eq!(entry(&listing, b.id).work.unwrap().changed_files, 1);
+        assert_eq!(
+            f.service.create(b.id, "fake").await.unwrap().key,
+            "panoptes:2"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_writer_that_stops_no_longer_holds_a_lane_back() {
+        let f = fixture(FakeHarness::default());
+        let (_code, _a, b, sink) = two_lanes(&f).await;
+        let b_path = PathBuf::from(&b.worktrees[0].path);
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(edit("t1", &b_path.join("x.rs").to_string_lossy()))
+            .unwrap();
+        eventually(&f, |l| entry(l, b.id).busy_writer.is_some()).await;
+        f.service.close("panoptes:1").await;
+        eventually(&f, |l| entry(l, b.id).busy_writer.is_none()).await;
+        assert!(f.service.lane_writers.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

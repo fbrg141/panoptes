@@ -169,6 +169,11 @@ export function createAppStore(backend: typeof api) {
         set((s) => ({ statuses: { ...s.statuses, [key]: event.status } }));
         return;
       }
+      if (event.type === "laneWritesChanged") {
+        // A session was first seen editing another lane: hold that lane back now.
+        void get().refresh();
+        return;
+      }
       patch(key, (c) => applyEvent(c, event));
       if (event.type === "runSettled") {
         // The history is authoritative; it keeps the ids the run streamed under.

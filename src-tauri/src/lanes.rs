@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::store::{Lane, LaneWorktree, NewLane, NewLaneWorktree, Project};
 
@@ -405,6 +405,32 @@ fn worktree_status(path: &Path) -> anyhow::Result<String> {
             "--ignore-submodules=none",
         ],
     )
+}
+
+/// What a lane's worktree holds compared with where it started: the files
+/// changed and not yet committed, and the commits on its branch that the
+/// project's base branch does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneWork {
+    pub changed_files: u32,
+    /// `None` when the base branch can't be compared, such as once it is gone.
+    pub commits_ahead: Option<u32>,
+}
+
+/// The work in an active lane's worktree, or `None` when it can't be read.
+pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
+    let path = Path::new(&sole_worktree(lane).ok()?.path);
+    let status = worktree_status(path).ok()?;
+    let changed_files = status.lines().filter(|line| !line.is_empty()).count() as u32;
+    let range = format!("{}..HEAD", project.settings.base_branch);
+    let commits_ahead = run(path, &["rev-list", "--count", &range])
+        .ok()
+        .and_then(|count| count.parse().ok());
+    Some(LaneWork {
+        changed_files,
+        commits_ahead,
+    })
 }
 
 /// Archiving keeps the lane's branch, so it is only safe when the worktree
@@ -1286,6 +1312,30 @@ mod tests {
         assert!(path.exists());
         assert!(ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
         assert!(ref_exists(&f.repo, "refs/heads/somewhere-else").unwrap());
+    }
+
+    #[test]
+    fn work_counts_changed_files_and_commits_ahead_of_the_base() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&lane.worktrees[0].path);
+        let none = LaneWork {
+            changed_files: 0,
+            commits_ahead: Some(0),
+        };
+        assert_eq!(work(&f.project, &lane), Some(none));
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        std::fs::write(path.join("b.txt"), "b").unwrap();
+        git(&path, &["add", "a.txt"]);
+        git(&path, &["commit", "--quiet", "-m", "a"]);
+        assert_eq!(
+            work(&f.project, &lane),
+            Some(LaneWork {
+                changed_files: 1,
+                commits_ahead: Some(1)
+            })
+        );
     }
 
     #[test]

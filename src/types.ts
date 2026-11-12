@@ -119,7 +119,10 @@ export type HarnessEvent =
 export type SessionStatus = "idle" | "running" | "waiting" | "failed" | "done";
 
 /** A harness event, or a status change the service adds. */
-export type SessionUpdate = HarnessEvent | { type: "statusChanged"; status: SessionStatus };
+export type SessionUpdate =
+  | HarnessEvent
+  | { type: "statusChanged"; status: SessionStatus }
+  | { type: "laneWritesChanged"; laneId: number };
 
 export interface SessionEvent {
   key: string;
@@ -225,11 +228,29 @@ export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
 export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
 export type AdoptionOutcome = { type: "adopted"; key: string } | { type: "chooseLane" };
 
+/** What an active lane's worktree holds (`LaneWork` in src-tauri/src/lanes.rs). */
+export interface LaneWork {
+  /** Uncommitted files, untracked ones included. */
+  changedFiles: number;
+  /** Null when the base branch can't be compared. */
+  commitsAhead: number | null;
+}
+
+/** Another session that edited a lane and is Running or Waiting now. */
+export interface BusyWriter {
+  sessionKey: string;
+  title: string;
+}
+
 /** Backend-owned membership for the collapsible Lanes hierarchy. */
 export interface LaneNavigation {
   laneId: number;
   sessions: Session[];
   archivedSessions: Session[];
+  /** Null for archived lanes or an unreadable worktree. */
+  work: LaneWork | null;
+  /** While set, the lane gets no session of its own: two writers otherwise. */
+  busyWriter: BusyWriter | null;
 }
 
 export interface Listing {

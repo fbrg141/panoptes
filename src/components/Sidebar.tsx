@@ -1,5 +1,6 @@
 import { Button, Dialog, LoopMark, Tabs } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
+import { emptyLane, workLabel } from "../laneRow";
 import { pickProjectFolder } from "../pickProject";
 import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
@@ -290,6 +291,8 @@ function LaneItem({
   const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
   const sessions = navigation?.sessions ?? [];
   const archivedSessions = navigation?.archivedSessions ?? [];
+  const empty = emptyLane(lane, navigation);
+  const work = workLabel(navigation?.work ?? null);
 
   return (
     <li className={archived ? "text-ink-muted" : ""}>
@@ -316,6 +319,7 @@ function LaneItem({
             {main ? "Main checkout" : lane.branch}
             {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
           </p>
+          {work && <p className="truncate text-xs text-ink-muted">{work}</p>}
         </button>
         <RowMenu
           label={`Actions for lane ${lane.name}`}
@@ -350,10 +354,15 @@ function LaneItem({
               )}
             </>
           )}
-          {sessions.length === 0 && archivedSessions.length === 0 && onWork && (
+          {empty?.kind === "startable" && onWork && (
             <Button variant="ghost" size="sm" className="ml-2" onClick={onWork}>
               Start session
             </Button>
+          )}
+          {empty?.kind === "busy" && (
+            <p className="ml-2 py-1 text-xs text-ink-muted">
+              “{empty.writer}” is changing this lane. Start a session here once it is Done.
+            </p>
           )}
         </div>
       )}

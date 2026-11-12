@@ -7,6 +7,7 @@ mod projects;
 mod service;
 mod shell_path;
 mod store;
+mod writes;
 
 use std::path::Path;
 use std::sync::Arc;
