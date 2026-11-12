@@ -286,6 +286,37 @@ This supersedes #22's write-lock decision and the earlier subsession proposal.
 It is intentionally simpler than worker fan-out: Panoptes observes one agent's
 work in each lane.
 
+## Work in another lane is shown, not reorganised
+
+*Decided 2026-11-12.* One session per lane makes one writer per worktree only
+inside Panoptes' records. Nothing stops a lane's agent from editing another
+lane's worktree with its tools, and when that happened the other lane looked
+empty while it held all the new work. The navigation stays lane-first and
+ownership stays where it is; Panoptes records and shows who else wrote.
+
+- **Recorded facts, not cwd guesses.** A finished edit tool call that names a
+  file in another active lane's worktree is a write to that lane. A run that
+  ran commands compares the other lanes' worktree fingerprints (HEAD plus a
+  snapshot tree of every file) from its start to its end; a lane whose own
+  session was active in between is left alone. Both are stored in
+  `lane_writes`.
+- **Links, never extra rows.** Every session appears once, under its own lane.
+  The written lane says "Edited by …" and links to that session's row; the
+  writer's lane says "Also edited: …" and reveals the other lane.
+- **"No session" is three states.** Not started (Start session), holds work or
+  was written by another session (Continue in this lane), or being changed
+  right now by another session that is Running or Waiting. In that last
+  state the core refuses a new session, so there are never two writers.
+- **The handoff is a brief built from facts.** Continue in this lane opens the
+  lane's task, branch, uncommitted files and commits ahead of the base branch,
+  and where the earlier conversations are, for the person to edit before it
+  becomes the new session's first prompt. Nothing is summarised on an agent's
+  word.
+
+Left for later: asking once before an agent edits outside its lane (through
+Panoptes' Pi extension), a sanctioned way for an agent to start a new lane with
+its own session, and per-file attribution in a lane's review.
+
 ## The design system lives in the repo as a package
 
 *Decided 2026-11-05.*

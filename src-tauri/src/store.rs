@@ -63,6 +63,10 @@ const MIGRATIONS: &[Migration] = &[
         apply: v4_sessions,
         committed: |_| {},
     },
+    Migration {
+        apply: v5_lane_writes,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -162,6 +166,25 @@ fn v4_sessions(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
             session_id INTEGER NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
             tag TEXT NOT NULL CHECK (tag <> ''),
             PRIMARY KEY (session_id, tag)
+        ) STRICT;",
+    )?;
+    Ok(())
+}
+
+/// Sessions seen changing a lane that is not their own: one row per lane
+/// and session key, so a session in another lane, or a conversation no lane
+/// has adopted, can be named as a writer. `via` is `edit` once an edit tool
+/// touched the worktree, and `shell` while only a command run is known to
+/// have changed it.
+fn v5_lane_writes(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE lane_writes (
+            lane_id INTEGER NOT NULL REFERENCES lanes (id) ON DELETE CASCADE,
+            session_key TEXT NOT NULL CHECK (session_key <> ''),
+            via TEXT NOT NULL CHECK (via IN ('edit', 'shell')),
+            first_at INTEGER NOT NULL,
+            last_at INTEGER NOT NULL,
+            PRIMARY KEY (lane_id, session_key)
         ) STRICT;",
     )?;
     Ok(())
@@ -282,6 +305,45 @@ pub struct NewLane {
     pub task: String,
     pub branch: String,
     pub worktrees: Vec<NewLaneWorktree>,
+}
+
+/// How a write to another lane's worktree was seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WriteVia {
+    /// An edit tool named a file in the worktree.
+    Edit,
+    /// The worktree changed during a run that ran commands.
+    Shell,
+}
+
+impl WriteVia {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Edit => "edit",
+            Self::Shell => "shell",
+        }
+    }
+
+    fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "edit" => Ok(Self::Edit),
+            "shell" => Ok(Self::Shell),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+/// A session seen writing to a lane that is not its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneWrite {
+    pub lane_id: i64,
+    pub session_key: String,
+    pub via: WriteVia,
+    /// Unix milliseconds.
+    pub first_at: i64,
+    pub last_at: i64,
 }
 
 /// A Panoptes session: its own identity, the lane it belongs to, and the
@@ -563,10 +625,69 @@ impl Store {
         if !exists {
             bail!("That lane no longer exists");
         }
+        tx.execute(
+            "DELETE FROM lane_writes WHERE lane_id = ?1 OR session_key IN
+                (SELECT 'panoptes:' || id FROM sessions WHERE lane_id = ?1)",
+            [id],
+        )?;
         tx.execute("DELETE FROM sessions WHERE lane_id = ?1", [id])?;
         tx.execute("DELETE FROM lanes WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Records that `session_key` changed `lane_id`'s worktree at `at`. An
+    /// edit outranks a shell sighting, since it names the files. Returns
+    /// whether the writer is new to the lane or now known by an edit, the
+    /// changes worth telling the UI about straight away.
+    pub fn record_lane_write(
+        &self,
+        lane_id: i64,
+        session_key: &str,
+        via: WriteVia,
+        at: i64,
+    ) -> anyhow::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let known: Option<String> = tx
+            .query_row(
+                "SELECT via FROM lane_writes WHERE lane_id = ?1 AND session_key = ?2",
+                rusqlite::params![lane_id, session_key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        tx.execute(
+            "INSERT INTO lane_writes (lane_id, session_key, via, first_at, last_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT (lane_id, session_key) DO UPDATE SET
+                via = CASE WHEN via = 'edit' OR excluded.via = 'edit' THEN 'edit' ELSE 'shell' END,
+                last_at = MAX(last_at, excluded.last_at)",
+            rusqlite::params![lane_id, session_key, via.as_str(), at],
+        )?;
+        tx.commit()?;
+        Ok(match known.as_deref() {
+            None => true,
+            Some(known) => known == "shell" && via == WriteVia::Edit,
+        })
+    }
+
+    /// Every recorded cross-lane write, most recent first.
+    pub fn lane_writes(&self) -> anyhow::Result<Vec<LaneWrite>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT lane_id, session_key, via, first_at, last_at FROM lane_writes
+             ORDER BY last_at DESC, lane_id",
+        )?;
+        let writes = statement
+            .query_map([], |row| {
+                Ok(LaneWrite {
+                    lane_id: row.get(0)?,
+                    session_key: row.get(1)?,
+                    via: WriteVia::parse(&row.get::<_, String>(2)?)?,
+                    first_at: row.get(3)?,
+                    last_at: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(writes)
     }
 
     /// Forgets a project with no lanes. Its repository and worktrees on disk

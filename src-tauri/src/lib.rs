@@ -7,6 +7,7 @@ mod projects;
 mod service;
 mod shell_path;
 mod store;
+mod writes;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -271,6 +272,11 @@ async fn delete_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
     state.service.delete_lane(id).await
 }
 
+#[tauri::command]
+async fn handoff_brief(state: State<'_, AppState>, lane_id: i64) -> ServiceResult<String> {
+    state.service.handoff_brief(lane_id).await
+}
+
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app
         .path()
@@ -398,6 +404,7 @@ pub fn run() {
             archive_lane,
             restore_lane,
             delete_lane,
+            handoff_brief,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

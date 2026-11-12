@@ -78,6 +78,7 @@ export const api = {
     invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy }),
   restoreLane: (id: number) => invoke<Lane>("restore_lane", { id }),
   deleteLane: (id: number) => invoke<void>("delete_lane", { id }),
+  handoffBrief: (laneId: number) => invoke<string>("handoff_brief", { laneId }),
   onSessionEvent: (handler: (event: SessionEvent) => void) =>
     listen<SessionEvent>("session-event", (e) => handler(e.payload)),
 };

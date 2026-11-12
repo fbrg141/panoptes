@@ -56,7 +56,7 @@ function subscribeToClock(onTick: () => void) {
     }
   };
 }
-const useClock = () =>
+export const useClock = () =>
   useSyncExternalStore(subscribeToClock, () => Math.floor(Date.now() / TICK_MS) * TICK_MS);
 
 /** Moves focus to the previous or next session row in the same list. */

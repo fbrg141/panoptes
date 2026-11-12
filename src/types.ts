@@ -119,7 +119,10 @@ export type HarnessEvent =
 export type SessionStatus = "idle" | "running" | "waiting" | "failed" | "done";
 
 /** A harness event, or a status change the service adds. */
-export type SessionUpdate = HarnessEvent | { type: "statusChanged"; status: SessionStatus };
+export type SessionUpdate =
+  | HarnessEvent
+  | { type: "statusChanged"; status: SessionStatus }
+  | { type: "laneWritesChanged"; laneId: number };
 
 export interface SessionEvent {
   key: string;
@@ -180,6 +183,8 @@ export interface Session {
   pinned: boolean;
   archived: boolean;
   open: boolean;
+  /** Other lanes this session has been seen changing, most recent first. */
+  editedLanes: number[];
 }
 
 /** What can be changed about a project (`ProjectSettings` in src-tauri/src/store.rs). */
@@ -225,11 +230,40 @@ export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
 export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
 export type AdoptionOutcome = { type: "adopted"; key: string } | { type: "chooseLane" };
 
+/** What an active lane's worktree holds (`LaneWork` in src-tauri/src/lanes.rs). */
+export interface LaneWork {
+  /** Uncommitted files, untracked ones included. */
+  changedFiles: number;
+  /** Null when the base branch can't be compared. */
+  commitsAhead: number | null;
+}
+
+/** How a write to another lane's worktree was seen. */
+export type WriteVia = "edit" | "shell";
+
+/** A session other than the lane's own seen changing its worktree. */
+export interface LaneWriter {
+  sessionKey: string;
+  /** Null once the writing session is gone. */
+  title: string | null;
+  /** The writer's own lane, if it has one. */
+  laneId: number | null;
+  via: WriteVia;
+  /** Unix milliseconds of the latest write seen. */
+  lastAt: number;
+  /** Open and Running or Waiting: it can still write right now. */
+  live: boolean;
+}
+
 /** Backend-owned membership for the collapsible Lanes hierarchy. */
 export interface LaneNavigation {
   laneId: number;
   sessions: Session[];
   archivedSessions: Session[];
+  /** Null for archived lanes or an unreadable worktree. */
+  work: LaneWork | null;
+  /** Most recent first. */
+  writers: LaneWriter[];
 }
 
 export interface Listing {

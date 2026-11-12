@@ -44,6 +44,7 @@ const session = (over: Partial<Session> & { name: string; title: string }): Sess
   pinned: false,
   archived: false,
   open: false,
+  editedLanes: [],
   ...over,
 });
 
@@ -56,6 +57,8 @@ let sessions: Session[] = [
     cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
     title: "Sketch the harness interface",
     updatedAt: now - 5 * 60_000,
+    // It went on to build lane 2's work itself, without a session there.
+    editedLanes: [2],
   }),
   session({ name: "b", title: "Release checklist", pinned: true, updatedAt: now - 30 * hour }),
   session({ name: "c", title: "Fix streaming scroll jump", updatedAt: now - 3 * hour }),
@@ -115,8 +118,35 @@ let lanes: Lane[] = [
       },
     ],
   },
+  {
+    id: 2,
+    projectId: 1,
+    name: "lane-parser",
+    task: "Parse lane events into turns",
+    branch: "panoptes/lane-parser",
+    state: "active",
+    worktrees: [
+      {
+        projectId: 1,
+        path: "/Users/you/Panoptes/lanes/lane-parser/panoptes",
+        mainCheckout: false,
+        checkpointRef: null,
+      },
+    ],
+  },
 ];
-let nextLaneId = 2;
+let nextLaneId = 3;
+
+/** What each lane's worktree holds; lanes created here start empty. */
+const laneWork: Record<number, { changedFiles: number; commitsAhead: number | null }> = {
+  1: { changedFiles: 3, commitsAhead: 1 },
+  2: { changedFiles: 6, commitsAhead: 2 },
+};
+/** Sessions seen changing a lane other than their own. */
+const laneWriters: Record<number, { sessionKey: string; via: "edit" | "shell"; lastAt: number }[]> =
+  {
+    2: [{ sessionKey: "panoptes:1", via: "edit", lastAt: now - 4 * 60_000 }],
+  };
 let nextSessionId = 2;
 
 /** Records a Panoptes session in a lane, as the backend does before it starts. */
@@ -572,6 +602,19 @@ export function installMockBackend() {
                 laneId: lane.id,
                 sessions: owned.filter((s) => !s.archived),
                 archivedSessions: owned.filter((s) => s.archived),
+                work:
+                  lane.state === "active"
+                    ? (laneWork[lane.id] ?? { changedFiles: 0, commitsAhead: 0 })
+                    : null,
+                writers: (laneWriters[lane.id] ?? []).map((write) => {
+                  const writer = all.find((s) => s.key === write.sessionKey);
+                  return {
+                    ...write,
+                    title: writer?.title ?? null,
+                    laneId: writer?.laneId ?? null,
+                    live: streaming && writer?.open === true,
+                  };
+                }),
               };
             }),
             errors: [],
@@ -667,6 +710,27 @@ export function installMockBackend() {
           sessions = sessions.filter((session) => session.laneId !== id);
           lanes = lanes.filter((lane) => lane.id !== id);
           return null;
+        }
+        case "handoff_brief": {
+          const lane = lanes.find((item) => item.id === (args as { laneId: number }).laneId);
+          if (!lane) throw { kind: "other", message: "That lane no longer exists" };
+          return [
+            "Continue the work in this lane. It was started from another conversation; from now on this conversation is the only one that changes this worktree.",
+            "",
+            `Task: ${lane.task}`,
+            `Branch: ${lane.branch} (from main)`,
+            `Worktree: ${lane.worktrees[0]?.path ?? ""}`,
+            "",
+            "Uncommitted changes (2):",
+            "     M src/turns.ts",
+            "    ?? src/laneEvents.ts",
+            "",
+            "Started from:",
+            "- “Sketch the harness interface”, in the lane for “Make lane work reviewable”. Conversation: /sessions/a.jsonl",
+            "",
+            "Read that conversation if you need the reasoning behind the changes.",
+            "Before changing anything, check the current diff, then tell me what is done and what is left.",
+          ].join("\n");
         }
         case "open_session":
           if (!open.has(a.key)) {

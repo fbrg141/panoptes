@@ -11,14 +11,15 @@ use anyhow::Context;
 use panoptes_harness::{
     AgentSession, Answer, DiscoveredSession, Harness, HarnessError, HarnessErrorKind, HarnessEvent,
     HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, Role,
-    SessionSettings, SessionStatus, StartSession,
+    SessionSettings, SessionStatus, StartSession, ToolKind,
 };
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::lanes::{self, ArchiveResult, ArchiveStrategy};
+use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
 use crate::projects::{self, Location};
-use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
+use crate::store::{Lane, LaneState, Project, ProjectSettings, Store, WriteVia};
+use crate::writes;
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -127,6 +128,15 @@ pub struct SessionEvent {
 pub enum SessionUpdate {
     Harness(HarnessEvent),
     Status(StatusChanged),
+    LaneWrites(LaneWritesChanged),
+}
+
+/// Sent when an open session is first seen writing to another lane, so the
+/// sidebar can show it without waiting for the run to end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename = "laneWritesChanged")]
+pub struct LaneWritesChanged {
+    pub lane_id: i64,
 }
 
 /// Sent when an open session's status changes, and once when it opens.
@@ -149,6 +159,9 @@ struct StatusTracker {
     errored: bool,
     /// How the last run ended: Idle before any, then Done or Failed.
     settled: SessionStatus,
+    /// When the session last did anything in a run (Unix ms), so another
+    /// session's run can tell whether this one overlapped it.
+    active_at: i64,
 }
 
 impl Default for StatusTracker {
@@ -159,6 +172,7 @@ impl Default for StatusTracker {
             questions: HashMap::new(),
             errored: false,
             settled: SessionStatus::Idle,
+            active_at: 0,
         }
     }
 }
@@ -166,6 +180,9 @@ impl Default for StatusTracker {
 impl StatusTracker {
     /// Folds in one event; returns the new status if it changed.
     fn apply(&mut self, event: &HarnessEvent, now: i64) -> Option<SessionStatus> {
+        if self.running || matches!(event, HarnessEvent::RunStarted) {
+            self.active_at = now;
+        }
         match event {
             HarnessEvent::RunStarted => {
                 self.running = true;
@@ -267,6 +284,8 @@ pub struct Session {
     pub pinned: bool,
     pub archived: bool,
     pub open: bool,
+    /// Other lanes this session has been seen changing, most recent first.
+    pub edited_lanes: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -277,6 +296,28 @@ pub struct LaneNavigation {
     pub sessions: Vec<Session>,
     /// Archived sessions stay attached to the lane for its archive view.
     pub archived_sessions: Vec<Session>,
+    /// What an active lane's worktree holds, whether or not it has a
+    /// session; `None` for archived lanes or a worktree that can't be read.
+    pub work: Option<LaneWork>,
+    /// Sessions other than the lane's own seen changing its worktree, most
+    /// recent first.
+    pub writers: Vec<LaneWriter>,
+}
+
+/// A session seen changing a lane that is not its own.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneWriter {
+    pub session_key: String,
+    /// The writer's title, or `None` once its session is gone.
+    pub title: Option<String>,
+    /// The writer's own lane, if it has one.
+    pub lane_id: Option<i64>,
+    pub via: WriteVia,
+    /// Unix milliseconds of the latest write seen.
+    pub last_at: i64,
+    /// Open and Running or Waiting: still able to write right now.
+    pub live: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -354,11 +395,102 @@ struct Forwarder {
     open: Arc<Mutex<HashMap<String, OpenSession>>>,
     status: Tracker,
     emit: Emit,
+    writes: WriteWatch,
+}
+
+/// What a forwarder needs to notice its session changing other lanes.
+struct WriteWatch {
+    store: Arc<std::sync::Mutex<Store>>,
+    /// The session's own lane, never counted as another lane.
+    own: Option<i64>,
+    cwd: PathBuf,
+    run: Option<RunWatch>,
+}
+
+/// The run in progress: when it started, whether it ran commands, and the
+/// other lanes' fingerprints as it began.
+struct RunWatch {
+    started_at: i64,
+    ran_commands: bool,
+    before: tokio::task::JoinHandle<HashMap<i64, String>>,
 }
 
 impl Forwarder {
-    async fn run(self, mut events: tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>) {
+    /// Records the lanes this event shows the session changing. Edits are
+    /// recorded as they finish. A run that ran commands compares the other
+    /// lanes' worktrees before and after, in the background so the run's
+    /// end is never held up by git.
+    async fn watch(&mut self, event: &HarnessEvent) {
+        match event {
+            HarnessEvent::RunStarted => {
+                let store = self.writes.store.clone();
+                let own = self.writes.own;
+                let before = tokio::task::spawn_blocking(move || fingerprints(&store, own));
+                if let Some(earlier) = self.writes.run.replace(RunWatch {
+                    started_at: now_ms(),
+                    ran_commands: false,
+                    before,
+                }) {
+                    earlier.before.abort();
+                }
+            }
+            HarnessEvent::ToolCallUpdated { call } => {
+                if call.kind == ToolKind::Execute
+                    && let Some(run) = &mut self.writes.run
+                {
+                    run.ran_commands = true;
+                }
+                let paths = writes::edited_paths(call);
+                if paths.is_empty() {
+                    return;
+                }
+                let store = self.writes.store.clone();
+                let (own, cwd, key) = (self.writes.own, self.writes.cwd.clone(), self.key.clone());
+                let recorded = tokio::task::spawn_blocking(move || {
+                    let store = store.lock().unwrap();
+                    let lanes = store.lanes()?;
+                    let mut changed = Vec::new();
+                    for lane in writes::lanes_touched(&paths, &cwd, own, &lanes) {
+                        if store.record_lane_write(lane, &key, WriteVia::Edit, now_ms())? {
+                            changed.push(lane);
+                        }
+                    }
+                    anyhow::Ok(changed)
+                })
+                .await;
+                if let Ok(Ok(changed)) = recorded {
+                    for lane_id in changed {
+                        (self.emit)(SessionEvent {
+                            key: self.key.clone(),
+                            event: SessionUpdate::LaneWrites(LaneWritesChanged { lane_id }),
+                        });
+                    }
+                }
+            }
+            HarnessEvent::RunSettled { .. } | HarnessEvent::Exited { .. } => {
+                let Some(run) = self.writes.run.take() else {
+                    return;
+                };
+                if !run.ran_commands {
+                    run.before.abort();
+                    return;
+                }
+                tokio::spawn(settle_shell_writes(
+                    run,
+                    self.key.clone(),
+                    self.writes.own,
+                    self.writes.store.clone(),
+                    self.open.clone(),
+                    self.emit.clone(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    async fn run(mut self, mut events: tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>) {
         while let Some(event) = events.recv().await {
+            self.watch(&event).await;
             if matches!(event, HarnessEvent::Exited { .. }) {
                 let mut open = self.open.lock().await;
                 let current = open
@@ -386,6 +518,74 @@ impl Forwarder {
                     });
                 }
             }
+        }
+    }
+}
+
+/// The fingerprint of every active lane's worktree but `own`.
+fn fingerprints(store: &std::sync::Mutex<Store>, own: Option<i64>) -> HashMap<i64, String> {
+    let lanes = store.lock().unwrap().lanes().unwrap_or_default();
+    lanes
+        .iter()
+        .filter(|lane| lane.state == LaneState::Active && Some(lane.id) != own)
+        .filter_map(|lane| Some((lane.id, lanes::fingerprint(lane)?)))
+        .collect()
+}
+
+/// Credits a run that ran commands with the other lanes whose worktree
+/// changed during it. A lane whose own session was active in the meantime is
+/// left alone: its own agent is the likelier writer.
+async fn settle_shell_writes(
+    run: RunWatch,
+    key: String,
+    own: Option<i64>,
+    store: Arc<std::sync::Mutex<Store>>,
+    open: Arc<Mutex<HashMap<String, OpenSession>>>,
+    emit: Emit,
+) {
+    let Ok(before) = run.before.await else {
+        return;
+    };
+    let after = {
+        let store = store.clone();
+        match tokio::task::spawn_blocking(move || fingerprints(&store, own)).await {
+            Ok(after) => after,
+            Err(_) => return,
+        }
+    };
+    let changed = writes::changed_lanes(&before, &after);
+    if changed.is_empty() {
+        return;
+    }
+    let owners_active: HashSet<i64> = open
+        .lock()
+        .await
+        .values()
+        .filter(|session| session.status.lock().unwrap().active_at >= run.started_at)
+        .filter_map(|session| session.lane)
+        .collect();
+    let candidates: Vec<i64> = changed
+        .into_iter()
+        .filter(|lane| !owners_active.contains(lane))
+        .collect();
+    let writer = key.clone();
+    let recorded = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap();
+        let mut news = Vec::new();
+        for lane in candidates {
+            if store.record_lane_write(lane, &writer, WriteVia::Shell, now_ms())? {
+                news.push(lane);
+            }
+        }
+        anyhow::Ok(news)
+    })
+    .await;
+    if let Ok(Ok(news)) = recorded {
+        for lane_id in news {
+            emit(SessionEvent {
+                key: key.clone(),
+                event: SessionUpdate::LaneWrites(LaneWritesChanged { lane_id }),
+            });
         }
     }
 }
@@ -494,6 +694,31 @@ impl Service {
                 errors.push(format!("Could not read sessions: {}", err(error)));
                 Vec::new()
             });
+        let lane_writes = self
+            .with_store(|store| store.lane_writes())
+            .await
+            .unwrap_or_else(|error| {
+                errors.push(format!("Could not read lane writes: {}", err(error)));
+                Vec::new()
+            });
+        let work: HashMap<i64, LaneWork> = {
+            let active: Vec<(Project, Lane)> = lanes
+                .iter()
+                .filter(|lane| lane.state == LaneState::Active)
+                .filter_map(|lane| {
+                    let project = projects.iter().find(|p| p.id == lane.project_id)?;
+                    Some((project.clone(), lane.clone()))
+                })
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                active
+                    .iter()
+                    .filter_map(|(project, lane)| Some((lane.id, lanes::work(project, lane)?)))
+                    .collect()
+            })
+            .await
+            .unwrap_or_default()
+        };
         let lane_by_id: HashMap<i64, &Lane> = lanes.iter().map(|lane| (lane.id, lane)).collect();
         let by_checkout: HashMap<&Path, i64> = projects
             .iter()
@@ -510,6 +735,25 @@ impl Service {
             .collect();
         let mut adopted = vec![false; discovered.len()];
         let open = self.open.lock().await;
+        let live: HashSet<String> = open
+            .iter()
+            .filter(|(_, session)| {
+                matches!(
+                    session.status.lock().unwrap().status,
+                    SessionStatus::Running | SessionStatus::Waiting
+                )
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        let edited_lanes = |key: &str| -> Vec<i64> {
+            let mut lanes: Vec<i64> = Vec::new();
+            for write in lane_writes.iter().filter(|write| write.session_key == key) {
+                if !lanes.contains(&write.lane_id) {
+                    lanes.push(write.lane_id);
+                }
+            }
+            lanes
+        };
         let mut locations = self.locations.lock().unwrap();
         let mut sessions = Vec::new();
         for record in records {
@@ -534,6 +778,7 @@ impl Service {
             };
             let location = cached_location(&mut locations, &cwd);
             let key = panoptes_key(record.id);
+            let edited = edited_lanes(&key);
             sessions.push(Session {
                 open: open.contains_key(&key),
                 key,
@@ -563,6 +808,7 @@ impl Service {
                 project_id: lane.map(|lane| lane.project_id),
                 pinned: record.pinned,
                 archived: record.archived,
+                edited_lanes: edited,
             });
         }
         drop(index);
@@ -573,6 +819,7 @@ impl Service {
         for session in unadopted {
             let reference = session.harness_ref;
             let key = harness_key(&reference.harness, &reference.id);
+            let edited_lanes = edited_lanes(&key);
             let location = cached_location(&mut locations, &reference.cwd);
             sessions.push(Session {
                 project_id: location
@@ -599,10 +846,12 @@ impl Service {
                 message_count: session.message_count,
                 parent_locator: session.parent_locator,
                 archived: false,
+                edited_lanes,
             });
         }
         drop(locations);
         drop(open);
+        let all = &sessions;
         let mut navigation: Vec<LaneNavigation> = lanes
             .iter()
             .map(|lane| {
@@ -622,10 +871,31 @@ impl Service {
                     .cloned()
                     .collect();
                 sessions.retain(|session| !session.archived);
+                let writers = lane_writes
+                    .iter()
+                    .filter(|write| write.lane_id == lane.id)
+                    .filter_map(|write| {
+                        let writer = all.iter().find(|s| s.key == write.session_key);
+                        // A conversation since adopted into this lane is its own.
+                        if writer.is_some_and(|s| s.lane_id == Some(lane.id)) {
+                            return None;
+                        }
+                        Some(LaneWriter {
+                            session_key: write.session_key.clone(),
+                            title: writer.map(|s| s.title.clone()),
+                            lane_id: writer.and_then(|s| s.lane_id),
+                            via: write.via,
+                            last_at: write.last_at,
+                            live: live.contains(&write.session_key),
+                        })
+                    })
+                    .collect();
                 LaneNavigation {
                     lane_id: lane.id,
                     sessions,
                     archived_sessions,
+                    work: work.get(&lane.id).copied(),
+                    writers,
                 }
             })
             .collect();
@@ -734,8 +1004,18 @@ impl Service {
 
     /// Starts a new Panoptes session in a lane's worktree. Its id, and so
     /// its key, exist before the harness starts.
+    /// A lane being changed by another session that is Running or Waiting
+    /// gets no session of its own, which would make two writers.
     pub async fn create(&self, lane_id: i64, harness: &str) -> ServiceResult<OpenedSession> {
         self.harness(harness)?;
+        if let Some(writer) = self.live_writer(lane_id).await? {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                format!(
+                    "“{writer}” is still changing this lane. Wait until it is Done, then continue here"
+                ),
+            ));
+        }
         let name = harness.to_string();
         let (record, lane) = self
             .with_store(move |store| {
@@ -745,6 +1025,112 @@ impl Service {
             .await
             .map_err(err)?;
         self.start_recorded(record.id, &lane, harness).await
+    }
+
+    /// The title of a session other than the lane's own that has changed it
+    /// and is Running or Waiting now, if there is one.
+    async fn live_writer(&self, lane_id: i64) -> ServiceResult<Option<String>> {
+        let writes = self
+            .with_store(|store| store.lane_writes())
+            .await
+            .map_err(err)?;
+        let open = self.open.lock().await;
+        let live = writes.into_iter().find(|write| {
+            write.lane_id == lane_id
+                && open.get(&write.session_key).is_some_and(|session| {
+                    session.lane != Some(lane_id)
+                        && matches!(
+                            session.status.lock().unwrap().status,
+                            SessionStatus::Running | SessionStatus::Waiting
+                        )
+                })
+        });
+        drop(open);
+        let Some(write) = live else {
+            return Ok(None);
+        };
+        let title = self
+            .list_title(&write.session_key)
+            .await
+            .unwrap_or_else(|| "Another session".into());
+        Ok(Some(title))
+    }
+
+    /// A session's title as the sidebar shows it.
+    async fn list_title(&self, key: &str) -> Option<String> {
+        self.list()
+            .await
+            .sessions
+            .into_iter()
+            .find(|session| session.key == key)
+            .map(|session| session.title)
+    }
+
+    /// The first prompt for a lane's own session when its work was started
+    /// by other sessions: what the lane holds, read from git, and where
+    /// those conversations are, so the new one can read them if it needs to.
+    /// The UI shows it for editing before anything is sent.
+    pub async fn handoff_brief(&self, lane_id: i64) -> ServiceResult<String> {
+        let listing = self.list().await;
+        let lane = listing
+            .lanes
+            .iter()
+            .find(|lane| lane.id == lane_id)
+            .cloned()
+            .ok_or_else(|| ServiceError::new(ErrorKind::Other, "That lane no longer exists"))?;
+        let project = listing
+            .projects
+            .iter()
+            .find(|project| project.id == lane.project_id)
+            .cloned()
+            .ok_or_else(|| ServiceError::new(ErrorKind::Other, "That project is gone"))?;
+        let entry = listing
+            .navigation
+            .iter()
+            .find(|entry| entry.lane_id == lane_id);
+        let sources: Vec<writes::BriefSource> = entry
+            .map(|entry| entry.writers.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|writer| {
+                let session = listing
+                    .sessions
+                    .iter()
+                    .find(|s| s.key == writer.session_key);
+                writes::BriefSource {
+                    title: writer
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| "A removed session".into()),
+                    lane: writer.lane_id.and_then(|id| {
+                        listing
+                            .lanes
+                            .iter()
+                            .find(|l| l.id == id)
+                            .map(|l| l.task.clone())
+                    }),
+                    conversation: session
+                        .and_then(|s| s.harness_ref.as_ref())
+                        .map(|reference| reference.locator.clone())
+                        .filter(|locator| !locator.is_empty()),
+                }
+            })
+            .collect();
+        let changes = {
+            let (project, lane) = (project.clone(), lane.clone());
+            tokio::task::spawn_blocking(move || lanes::changes(&project, &lane))
+                .await
+                .context("Reading the lane's changes stopped")
+                .map_err(err)?
+        };
+        Ok(writes::handoff_brief(&writes::Brief {
+            task: &lane.task,
+            branch: &lane.branch,
+            base: &project.settings.base_branch,
+            worktree: &lane_cwd(&lane),
+            changes: &changes,
+            sources: &sources,
+        }))
     }
 
     /// Adopts a discovered harness conversation. With no explicit lane, a
@@ -879,6 +1265,12 @@ impl Service {
                 open: self.open.clone(),
                 status: status.clone(),
                 emit: self.emit.clone(),
+                writes: WriteWatch {
+                    store: self.store.clone(),
+                    own: launch.lane,
+                    cwd: launch.cwd.clone(),
+                    run: None,
+                },
             }
             .run(rx),
         );
@@ -2197,6 +2589,172 @@ mod tests {
             std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
             "work\n"
         );
+    }
+
+    /// A project with two worktree lanes, and a session started in the first.
+    async fn two_lanes(f: &Fixture) -> (tempfile::TempDir, Lane, Lane, EventSink) {
+        let code = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(code.path()).unwrap().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        std::fs::write(repo.join("tracked.txt"), "start\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        git(&repo, &["commit", "--quiet", "-m", "start"]);
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let a = f
+            .service
+            .create_lane(project.id, "Plan the work".into(), false)
+            .await
+            .unwrap();
+        let b = f
+            .service
+            .create_lane(project.id, "Build the parser".into(), false)
+            .await
+            .unwrap();
+        f.service.create(a.id, "fake").await.unwrap();
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        (code, a, b, sink)
+    }
+
+    fn tool(id: &str, kind: ToolKind, subject: &str) -> HarnessEvent {
+        HarnessEvent::ToolCallUpdated {
+            call: Box::new(panoptes_harness::ToolCall {
+                id: id.into(),
+                name: "tool".into(),
+                kind,
+                subject: Some(subject.into()),
+                input: serde_json::Value::Null,
+                status: panoptes_harness::ToolStatus::Done,
+                output: None,
+                started_at: None,
+                ended_at: None,
+            }),
+        }
+    }
+
+    fn entry(listing: &Listing, lane: i64) -> &LaneNavigation {
+        listing
+            .navigation
+            .iter()
+            .find(|entry| entry.lane_id == lane)
+            .unwrap()
+    }
+
+    /// Lists until `done` holds, for work the service finishes in the
+    /// background.
+    async fn eventually(f: &Fixture, done: impl Fn(&Listing) -> bool) -> Listing {
+        for _ in 0..100 {
+            let listing = f.service.list().await;
+            if done(&listing) {
+                return listing;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        panic!("never happened: {:?}", f.service.list().await.navigation);
+    }
+
+    #[tokio::test]
+    async fn an_edit_in_another_lane_names_the_writer_and_holds_back_a_second_one() {
+        let f = fixture(FakeHarness::default());
+        let (_code, a, b, sink) = two_lanes(&f).await;
+        let b_path = PathBuf::from(&b.worktrees[0].path);
+
+        let listing = f.service.list().await;
+        let untouched = entry(&listing, b.id);
+        assert!(untouched.sessions.is_empty() && untouched.writers.is_empty());
+        assert_eq!(
+            untouched.work,
+            Some(LaneWork {
+                changed_files: 0,
+                commits_ahead: Some(0)
+            })
+        );
+
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        // Its own worktree is not news; the other lane's is.
+        std::fs::write(PathBuf::from(&a.worktrees[0].path).join("own.txt"), "x").unwrap();
+        sink.send(tool("t1", ToolKind::Edit, "own.txt")).unwrap();
+        std::fs::write(b_path.join("parser.rs"), "fn parse() {}\n").unwrap();
+        let other = b_path.join("parser.rs").to_string_lossy().into_owned();
+        sink.send(tool("t2", ToolKind::Edit, &other)).unwrap();
+        let listing = eventually(&f, |l| !entry(l, b.id).writers.is_empty()).await;
+
+        let writers = &entry(&listing, b.id).writers;
+        assert_eq!(writers.len(), 1);
+        assert_eq!(writers[0].session_key, "panoptes:1");
+        assert_eq!(writers[0].lane_id, Some(a.id));
+        assert_eq!(writers[0].via, WriteVia::Edit);
+        assert!(writers[0].live);
+        assert!(entry(&listing, a.id).writers.is_empty());
+        assert_eq!(entry(&listing, b.id).work.unwrap().changed_files, 1);
+        let session = listing
+            .sessions
+            .iter()
+            .find(|s| s.key == "panoptes:1")
+            .unwrap();
+        assert_eq!(session.edited_lanes, [b.id]);
+        assert!(
+            f.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.event == SessionUpdate::LaneWrites(LaneWritesChanged { lane_id: b.id }))
+        );
+
+        // While the writer runs, the lane gets no second writer.
+        let refused = f.service.create(b.id, "fake").await.unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Rejected);
+        assert!(
+            refused.message.contains("still changing this lane"),
+            "{refused}"
+        );
+
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        let listing = eventually(&f, |l| !entry(l, b.id).writers[0].live).await;
+        assert_eq!(
+            entry(&listing, b.id).writers[0].title.as_deref(),
+            Some("New session")
+        );
+
+        let brief = f.service.handoff_brief(b.id).await.unwrap();
+        assert!(brief.contains("Task: Build the parser"), "{brief}");
+        assert!(brief.contains("?? parser.rs"), "{brief}");
+        assert!(brief.contains("in the lane for “Plan the work”"), "{brief}");
+        let opened = f.service.create(b.id, "fake").await.unwrap();
+        assert_eq!(opened.key, "panoptes:2");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_ran_commands_is_credited_with_the_lanes_it_changed() {
+        let f = fixture(FakeHarness::default());
+        let (_code, _a, b, sink) = two_lanes(&f).await;
+        let b_path = PathBuf::from(&b.worktrees[0].path);
+
+        // A run without commands is never credited with a change.
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        settle().await;
+        std::fs::write(b_path.join("by-hand.txt"), "x").unwrap();
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(entry(&f.service.list().await, b.id).writers.is_empty());
+
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sink.send(tool("t1", ToolKind::Execute, "make parser"))
+            .unwrap();
+        std::fs::write(b_path.join("generated.rs"), "x").unwrap();
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        let listing = eventually(&f, |l| !entry(l, b.id).writers.is_empty()).await;
+        assert_eq!(entry(&listing, b.id).writers[0].via, WriteVia::Shell);
     }
 
     #[tokio::test]
