@@ -7,6 +7,7 @@ import {
   matchFiles,
   mentionAt,
   nextLevel,
+  restoreUnsent,
   segments,
 } from "./composer";
 
@@ -110,5 +111,24 @@ describe("composePrompt", () => {
     expect(composePrompt("", [{ name: "x", path: "/x", mimeType: null, data: null }]).text).toBe(
       "@/x",
     );
+  });
+});
+
+describe("restoreUnsent", () => {
+  const unsent = { text: "fix the login", attachments: [], mentioned: ["a.ts"] };
+
+  it("gives the unsent prompt back to an empty composer", () => {
+    expect(restoreUnsent(unsent, undefined)).toEqual(unsent);
+    expect(restoreUnsent(unsent, { text: "  ", attachments: [], mentioned: [] })).toEqual(unsent);
+  });
+
+  it("keeps what was typed since, after the unsent prompt", () => {
+    expect(
+      restoreUnsent(unsent, { text: "and the tests", attachments: [], mentioned: ["b.ts"] }),
+    ).toEqual({
+      text: "fix the login\nand the tests",
+      attachments: [],
+      mentioned: ["a.ts", "b.ts"],
+    });
   });
 });
