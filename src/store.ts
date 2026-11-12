@@ -67,7 +67,8 @@ export interface State {
   setArchived: (key: string, archived: boolean) => Promise<void>;
   /** Renames a lane session; an empty title falls back to the harness's. */
   rename: (key: string, title: string) => Promise<void>;
-  send: (text: string, options?: SendOptions) => Promise<void>;
+  /** Resolves to whether the harness took the prompt, so a caller can keep its draft. */
+  send: (text: string, options?: SendOptions) => Promise<boolean>;
   /** Keeps a composer draft under its session, or drops it once it is empty. */
   saveDraft: (key: string, draft: Draft) => void;
   loadModels: () => Promise<void>;
@@ -129,11 +130,31 @@ export function createAppStore(backend: typeof api) {
       }
     };
 
-    const adopt = (opened: OpenedSession) => {
+    // What each session's messages were last decided by: a run starting or
+    // a history request. A history reply is only applied if nothing newer
+    // happened while it was on its way.
+    const epochs = new Map<string, number>();
+    const bump = (key: string) => {
+      const next = (epochs.get(key) ?? 0) + 1;
+      epochs.set(key, next);
+      return next;
+    };
+
+    /** Whether a history fetched at `epoch` may still replace the messages. */
+    const historyApplies = (key: string, epoch: number, c: Conversation) =>
+      // During a run the events build the transcript, and the fetched
+      // history does not hold the message that is streaming.
+      epochs.get(key) === epoch && !(c.busy && c.messages.length > 0);
+
+    const adopt = (opened: OpenedSession, epoch = bump(opened.key)) => {
       set({ activeKey: opened.key });
       // Keep anything the session already said (questions, notices) and
       // take the history as the authoritative message list.
-      patch(opened.key, (c) => ({ ...c, messages: opened.history, exited: null }));
+      patch(opened.key, (c) => ({
+        ...c,
+        messages: historyApplies(opened.key, epoch, c) ? opened.history : c.messages,
+        exited: null,
+      }));
       void loadSettings(opened.key);
     };
 
@@ -145,6 +166,7 @@ export function createAppStore(backend: typeof api) {
         const { [key]: _settings, ...settings } = s.settings;
         const { [key]: _models, ...models } = s.models;
         const { [key]: _draft, ...drafts } = s.drafts;
+        epochs.delete(key);
         return {
           conversations,
           statuses,
@@ -156,9 +178,11 @@ export function createAppStore(backend: typeof api) {
       });
 
     const reloadHistory = async (key: string) => {
+      const epoch = bump(key);
       try {
         const messages = await backend.history(key);
-        if (get().conversations[key]) patch(key, (c) => ({ ...c, messages }));
+        const current = get().conversations[key];
+        if (current && historyApplies(key, epoch, current)) patch(key, (c) => ({ ...c, messages }));
       } catch (e) {
         fail(e);
       }
@@ -174,6 +198,7 @@ export function createAppStore(backend: typeof api) {
         void get().refresh();
         return;
       }
+      if (event.type === "runStarted") bump(key);
       patch(key, (c) => applyEvent(c, event));
       if (event.type === "runSettled") {
         // The history is authoritative; it keeps the ids the run streamed under.
@@ -227,8 +252,12 @@ export function createAppStore(backend: typeof api) {
 
       open: async (session) => {
         set({ activeKey: session.key });
+        const epoch = bump(session.key);
         try {
-          adopt(await backend.openSession(session));
+          const opened = await backend.openSession(session);
+          // An adopted conversation answers with its lane key, which has
+          // its own history of events.
+          adopt(opened, opened.key === session.key ? epoch : undefined);
           await get().refresh();
         } catch (e) {
           fail(e);
@@ -307,7 +336,7 @@ export function createAppStore(backend: typeof api) {
 
       send: async (text, { images = [], queue = false } = {}) => {
         const key = get().activeKey;
-        if (!key || get().sending[key]) return;
+        if (!key || get().sending[key]) return false;
         set((s) => ({ sending: { ...s.sending, [key]: true } }));
         const reopen = async () => {
           const session = get().sessions.find((s) => s.key === key);
@@ -329,8 +358,10 @@ export function createAppStore(backend: typeof api) {
           });
           if (outcome === "started") patch(key, (c) => ({ ...c, busy: true }));
           if (outcome === "handled") void reloadHistory(key);
+          return true;
         } catch (e) {
           fail(e);
+          return false;
         } finally {
           set((s) => ({ sending: { ...s.sending, [key]: false } }));
         }
@@ -386,8 +417,29 @@ export function createAppStore(backend: typeof api) {
       answer: async (questionId, answer) => {
         const key = get().activeKey;
         if (!key) return;
+        const before = get().conversations[key];
+        const question = before?.questions.find((q) => q.id === questionId);
+        const approval = before?.approvals.find((a) => a.id === questionId);
         patch(key, (c) => removeQuestion(c, questionId));
-        await backend.answer(key, questionId, answer).catch(fail);
+        try {
+          await backend.answer(key, questionId, answer);
+        } catch (e) {
+          fail(e);
+          // The harness is still waiting, so the card comes back. A process
+          // that has gone asks nothing any more.
+          if (needsReopen(e) || !get().conversations[key]) return;
+          patch(key, (c) => ({
+            ...c,
+            questions:
+              question && !c.questions.some((q) => q.id === questionId)
+                ? [...c.questions, question]
+                : c.questions,
+            approvals:
+              approval && !c.approvals.some((a) => a.id === questionId)
+                ? [...c.approvals, approval]
+                : c.approvals,
+          }));
+        }
       },
 
       close: async (key) => {

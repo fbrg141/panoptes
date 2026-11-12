@@ -201,6 +201,75 @@ describe("store", () => {
     expect(store.getState().conversations["pi:s1"].busy).toBe(false);
   });
 
+  const streamed = {
+    id: "m2",
+    role: "assistant" as const,
+    blocks: [],
+    timestamp: 0,
+    error: null,
+    stopped: false,
+  };
+
+  it("drops a history reply that a newer run has overtaken", async () => {
+    await store.getState().open(session);
+    let reply: (messages: never[]) => void = () => {};
+    fake.backend.history.mockImplementationOnce(
+      () => new Promise<never[]>((resolve) => (reply = resolve)),
+    );
+    fake.emit({ key: "pi:s1", event: { type: "runStarted" } });
+    fake.emit({ key: "pi:s1", event: { type: "runSettled", aborted: false } });
+    await vi.waitFor(() => expect(fake.backend.history).toHaveBeenCalled());
+    // The next run starts streaming before the reload answers.
+    fake.emit({ key: "pi:s1", event: { type: "runStarted" } });
+    fake.emit({
+      key: "pi:s1",
+      event: { type: "messageStarted", messageId: "m2", role: "assistant" },
+    });
+    reply([]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.getState().conversations["pi:s1"].messages.map((m) => m.id)).toEqual(["m2"]);
+  });
+
+  it("keeps the streaming transcript when a running session is opened again", async () => {
+    await store.getState().open(session);
+    fake.emit({ key: "pi:s1", event: { type: "runStarted" } });
+    fake.emit({
+      key: "pi:s1",
+      event: { type: "messageStarted", messageId: "m2", role: "assistant" },
+    });
+    await store.getState().open(session);
+    expect(store.getState().conversations["pi:s1"].messages).toMatchObject([{ id: streamed.id }]);
+  });
+
+  it("brings a question back when answering it fails", async () => {
+    await store.getState().open(session);
+    const question = {
+      id: "q1",
+      title: "Ok?",
+      message: null,
+      kind: { type: "confirm" as const },
+      expiresAt: null,
+    };
+    fake.emit({ key: "pi:s1", event: { type: "question", question } });
+    fake.backend.answer.mockRejectedValueOnce({ kind: "timedOut", message: "Pi did not answer" });
+    await store.getState().answer("q1", { type: "confirmed", confirmed: true });
+    expect(store.getState().conversations["pi:s1"].questions).toEqual([question]);
+    expect(store.getState().error).toBe("Pi did not answer");
+
+    // A process that has gone asks nothing any more.
+    fake.backend.answer.mockRejectedValueOnce({ kind: "exited", message: "Pi is not running" });
+    await store.getState().answer("q1", { type: "confirmed", confirmed: true });
+    expect(store.getState().conversations["pi:s1"].questions).toEqual([]);
+  });
+
+  it("says whether a prompt was delivered", async () => {
+    await store.getState().open(session);
+    expect(await store.getState().send("hello")).toBe(true);
+    fake.backend.sendPrompt.mockRejectedValueOnce({ kind: "rejected", message: "No model" });
+    expect(await store.getState().send("hello")).toBe(false);
+  });
+
   it("lists again as soon as a session is seen editing another lane", async () => {
     await store.getState().open(session);
     const before = fake.backend.listSessions.mock.calls.length;

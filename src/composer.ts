@@ -1,7 +1,7 @@
 // The composer's text logic: @-mentions, file matching and labels. Pure, so
 // it is tested without a window.
 
-import type { ContextUsage, FileAttachment, ImageAttachment } from "./types";
+import type { ContextUsage, Draft, FileAttachment, ImageAttachment } from "./types";
 
 /** An `@query` being typed: where its `@` is and what follows it. */
 export interface MentionQuery {
@@ -135,4 +135,17 @@ export function composePrompt(
   }
   const body = text.trim();
   return { text: [body, paths.join("\n")].filter(Boolean).join("\n\n"), images };
+}
+
+/**
+ * The draft to show after a prompt failed to reach the agent: what was sent,
+ * followed by anything typed since, so neither is lost.
+ */
+export function restoreUnsent(unsent: Draft, current: Draft | undefined): Draft {
+  if (!current || (!current.text.trim() && current.attachments.length === 0)) return unsent;
+  return {
+    text: unsent.text.trim() ? `${unsent.text}\n${current.text}` : current.text,
+    attachments: [...unsent.attachments, ...current.attachments],
+    mentioned: [...new Set([...unsent.mentioned, ...current.mentioned])],
+  };
 }

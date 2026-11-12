@@ -69,6 +69,9 @@ function updateBlock(
 ): Conversation {
   return updateMessage(conversation, id, (m) => {
     const blocks = [...m.blocks];
+    // A block that arrives before the ones below it must not leave holes:
+    // the type says every entry is a block.
+    while (blocks.length < index) blocks.push({ type: "text", text: "" });
     blocks[index] = update(blocks[index]);
     return { ...m, blocks };
   });
@@ -105,6 +108,8 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
     case "runStarted":
       return { ...conversation, busy: true, exited: null };
     case "messageStarted":
+      // A repeated start must not add the message a second time.
+      if (conversation.messages.some((m) => m.id === event.messageId)) return conversation;
       return {
         ...conversation,
         messages: [
@@ -133,10 +138,17 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
           }
         : next;
     }
-    case "blockDelta":
+    case "blockDelta": {
+      // Tool arguments only belong on a tool call; anywhere else they would
+      // show up as prose.
+      const target = conversation.messages.find((m) => m.id === event.messageId)?.blocks[
+        event.index
+      ];
+      if (event.kind === "toolArgs" && target?.type !== "toolCall") return conversation;
       return updateBlock(conversation, event.messageId, event.index, (block) =>
         appendDelta(block, event.kind, event.delta),
       );
+    }
     case "messageCompleted": {
       conversation = endThinking(conversation, event.message.id);
       const exists = conversation.messages.some((m) => m.id === event.message.id);
@@ -149,8 +161,15 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
     case "queueChanged":
       return { ...conversation, queued: event.queued };
     case "runSettled":
-      // Nothing waits once the agent stops.
-      return { ...conversation, busy: false, queued: [], thinking: null };
+      // Nothing waits once the agent stops, as the service's status says too.
+      return {
+        ...conversation,
+        busy: false,
+        queued: [],
+        thinking: null,
+        questions: [],
+        approvals: [],
+      };
     case "notice":
       return {
         ...conversation,
@@ -160,9 +179,21 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
         ],
       };
     case "question":
-      return { ...conversation, questions: [...conversation.questions, event.question] };
+      return {
+        ...conversation,
+        questions: [
+          ...conversation.questions.filter((q) => q.id !== event.question.id),
+          event.question,
+        ],
+      };
     case "approval":
-      return { ...conversation, approvals: [...conversation.approvals, event.approval] };
+      return {
+        ...conversation,
+        approvals: [
+          ...conversation.approvals.filter((a) => a.id !== event.approval.id),
+          event.approval,
+        ],
+      };
     case "exited":
       return {
         ...conversation,
@@ -175,6 +206,10 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
       };
     case "titleChanged":
     case "raw":
+      return conversation;
+    default:
+      // An event this build does not know (the core is ahead of the UI's
+      // types) changes nothing, rather than dropping the transcript.
       return conversation;
   }
 }

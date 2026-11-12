@@ -6,6 +6,63 @@ import type { Approval, HarnessEvent, ToolCall } from "./types";
 const fold = (events: HarnessEvent[]) => events.reduce(applyEvent, emptyConversation());
 
 describe("applyEvent", () => {
+  it("leaves the transcript alone on an event it does not know", () => {
+    const before = fold([
+      { type: "runStarted" },
+      { type: "messageStarted", messageId: "m1", role: "assistant" },
+    ]);
+    const after = applyEvent(before, { type: "fromANewerCore" } as unknown as HarnessEvent);
+    expect(after).toBe(before);
+  });
+
+  it("ignores a repeated message start", () => {
+    const c = fold([
+      { type: "messageStarted", messageId: "m1", role: "assistant" },
+      { type: "messageStarted", messageId: "m1", role: "assistant" },
+    ]);
+    expect(c.messages).toHaveLength(1);
+  });
+
+  it("drops tool arguments aimed at a block that is not a tool call", () => {
+    const c = fold([
+      { type: "messageStarted", messageId: "m1", role: "assistant" },
+      { type: "blockStarted", messageId: "m1", index: 0, block: { type: "text", text: "Hi" } },
+      { type: "blockDelta", messageId: "m1", index: 0, kind: "toolArgs", delta: '{"path":' },
+      { type: "blockDelta", messageId: "m1", index: 3, kind: "toolArgs", delta: '{"path":' },
+    ]);
+    expect(c.messages[0].blocks).toEqual([{ type: "text", text: "Hi" }]);
+  });
+
+  it("fills the gap when a block arrives ahead of the ones before it", () => {
+    const c = fold([
+      { type: "messageStarted", messageId: "m1", role: "assistant" },
+      { type: "blockDelta", messageId: "m1", index: 2, kind: "text", delta: "late" },
+    ]);
+    const blocks = c.messages[0].blocks;
+    expect(blocks).toHaveLength(3);
+    expect(blocks.every((b) => b !== undefined)).toBe(true);
+    expect(blocks[2]).toEqual({ type: "text", text: "late" });
+  });
+
+  it("clears questions and approvals when the run settles, and keeps one card per id", () => {
+    const question = {
+      id: "q1",
+      title: "Ok?",
+      message: null,
+      kind: { type: "confirm" as const },
+      expiresAt: null,
+    };
+    let c = fold([
+      { type: "runStarted" },
+      { type: "question", question },
+      { type: "question", question },
+    ]);
+    expect(c.questions).toHaveLength(1);
+    c = applyEvent(c, { type: "runSettled", aborted: false });
+    expect(c.questions).toEqual([]);
+    expect(c.approvals).toEqual([]);
+  });
+
   it("shows the harness's queue, and clears it once the run settles", () => {
     const queued = [
       { id: "q1", text: "a", mode: "steer" },

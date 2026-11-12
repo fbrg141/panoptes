@@ -9,6 +9,7 @@ import {
   matchFiles,
   mentionAt,
   nextLevel,
+  restoreUnsent,
   segments,
 } from "../composer";
 import { modelGroups, shortModelId } from "../newSession";
@@ -211,12 +212,29 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
   const submit = (queue: boolean) => {
     if (sending || (!text.trim() && attachments.length === 0)) return;
     const prompt = composePrompt(text, attachments);
+    const sentFrom = activeKey;
+    const unsent = { text, attachments, mentioned: [...mentioned] };
     setText("");
     setAttachments([]);
     setMentioned(new Set());
     setMention(null);
     if (activeKey) saveDraft(activeKey, { text: "", attachments: [], mentioned: [] });
-    void send(prompt.text, { images: prompt.images, queue });
+    void send(prompt.text, { images: prompt.images, queue }).then((delivered) => {
+      if (delivered || !sentFrom) return;
+      // The prompt did not reach the agent: give back what was typed.
+      const here = key.current === sentFrom;
+      const current = here
+        ? { ...live.current, mentioned: [...live.current.mentioned] }
+        : useStore.getState().drafts[sentFrom];
+      const draft = restoreUnsent(unsent, current);
+      if (here) {
+        setText(draft.text);
+        setAttachments(draft.attachments);
+        setMentioned(new Set(draft.mentioned));
+      } else {
+        saveDraft(sentFrom, draft);
+      }
+    });
   };
 
   const cycleThinking = () => {
