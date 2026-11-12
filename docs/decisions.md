@@ -143,6 +143,12 @@ autonomy.
 #222, #223 and #224. Until the open fix issues are closed, feature ideas go to
 the [observation log](bets.md#observation-log), not to new GitHub issues.
 
+**Backlog cut, 2026-11-12.** The audit's fix list was too long to steer by, so
+it was cut to the issues that lose work, mislead, or are hit every day. That
+short list is [the gate](backlog.md#the-gate): bug-only intake lasts until it
+is closed, not until every P1 to P4 issue is. The rest is closed and kept as
+one "Later" list in [backlog.md](backlog.md).
+
 ## Lanes are the unit of work
 
 *Decided 2026-11-07.* The full model is in
