@@ -275,7 +275,13 @@ pub fn archive(
         }
     }
     preserve_copy_files(project, lane, &path)?;
-    remove_worktree(repo, &path)?;
+    // Only checkpoint removal is intentionally dirty and therefore forced.
+    // Every other path lets Git refuse work that appeared after our checks.
+    remove_worktree(
+        repo,
+        &path,
+        matches!(strategy, Some(ArchiveStrategy::Checkpoint)),
+    )?;
     Ok(ArchiveResult::Archived { checkpoint_ref })
 }
 
@@ -600,11 +606,15 @@ fn stop_setup(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-fn remove_worktree(repo: &Path, path: &Path) -> anyhow::Result<()> {
-    run(
-        repo,
-        &["worktree", "remove", "--force", &path.to_string_lossy()],
-    )?;
+fn remove_worktree(repo: &Path, path: &Path, force: bool) -> anyhow::Result<()> {
+    if force {
+        run(
+            repo,
+            &["worktree", "remove", "--force", &path.to_string_lossy()],
+        )?;
+    } else {
+        run(repo, &["worktree", "remove", &path.to_string_lossy()])?;
+    }
     if let Some(parent) = path.parent() {
         let _ = std::fs::remove_dir(parent);
     }
@@ -632,7 +642,7 @@ impl Drop for CreationCleanup {
         if !self.armed {
             return;
         }
-        let _ = remove_worktree(&self.repo, &self.path);
+        let _ = remove_worktree(&self.repo, &self.path, true);
         // `git worktree add` can fail after creating the destination but
         // before registering it. This path was required not to exist before
         // the attempt, so removing whatever the attempt left is safe.
@@ -1149,6 +1159,21 @@ mod tests {
         assert!(new.worktrees[0].main_checkout);
         assert_eq!(new.branch, "trunk");
         assert!(!f.root.exists());
+    }
+
+    #[test]
+    fn non_forced_removal_preserves_a_worktree_that_became_dirty() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "new work\n").unwrap();
+
+        remove_worktree(&f.repo, &path, false).unwrap_err();
+
+        assert_eq!(
+            std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
+            "new work\n"
+        );
     }
 
     #[test]
