@@ -265,7 +265,8 @@ compose: with jj the checkpoints would be redundant.
 
 **What it changes in #20.** Archiving a dirty lane offers commit, stash, or
 **keep as checkpoint**: the tree is saved to a final checkpoint ref and the
-worktree is removed, and restoring creates a fresh worktree from it. That
+worktree is removed, and restoring creates a fresh worktree and puts the
+tree back as uncommitted changes, leaving the branch where it was. That
 replaces moving the tree aside to a holding area, which answers where the
 holding area lives. #20 reserves the `refs/panoptes/lanes/` namespace,
 keyed by lane name (`refs/panoptes/lanes/<lane>/archive`) rather than store

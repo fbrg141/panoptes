@@ -326,6 +326,14 @@ impl Store {
         Ok(Self { conn })
     }
 
+    /// A transaction that takes the write lock at once. Every operation that
+    /// checks something and then writes uses it, so a second Panoptes on the
+    /// same store waits for the whole check-and-write, never between the two.
+    fn write(&self) -> anyhow::Result<Transaction<'_>> {
+        Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+            .map_err(|error| explain(error, "Could not start a store change"))
+    }
+
     pub fn pinned(&self) -> anyhow::Result<BTreeSet<String>> {
         let mut statement = self.conn.prepare_cached("SELECT session_key FROM pins")?;
         let keys = statement.query_map([], |row| row.get(0))?;
@@ -377,7 +385,7 @@ impl Store {
     /// Registers the repository whose main checkout is `repo`. Fails if it is
     /// already registered.
     pub fn add_project(&self, repo: &str, settings: &ProjectSettings) -> anyhow::Result<Project> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write()?;
         let existing: Option<String> = tx
             .query_row("SELECT name FROM projects WHERE repo = ?1", [repo], |row| {
                 row.get(0)
@@ -408,7 +416,7 @@ impl Store {
     }
 
     pub fn update_project(&self, id: i64, settings: &ProjectSettings) -> anyhow::Result<Project> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write()?;
         let repo: Option<String> = tx
             .query_row(
                 "UPDATE projects SET name = ?2, base_branch = ?3, setup = ?4 WHERE id = ?1
@@ -487,7 +495,7 @@ impl Store {
     /// Saves a lane only after its worktree and setup have succeeded. The
     /// schema accepts several worktrees; the service currently supplies one.
     pub fn add_lane(&self, new: &NewLane) -> anyhow::Result<Lane> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write()?;
         for worktree in &new.worktrees {
             ensure_path_free(&tx, &worktree.path, None)?;
         }
@@ -518,7 +526,7 @@ impl Store {
     }
 
     pub fn archive_lane(&self, id: i64, checkpoint_ref: Option<&str>) -> anyhow::Result<Lane> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write()?;
         let changed = tx.execute(
             "UPDATE lanes SET state = 'archived' WHERE id = ?1 AND state = 'active'",
             [id],
@@ -534,8 +542,20 @@ impl Store {
         self.lane(id)
     }
 
+    /// Notes, on a lane that is still active, the checkpoint ref an archive
+    /// in progress has saved its work to (or forgets it). If that archive is
+    /// interrupted after removing the folder, the next one finds the ref
+    /// here.
+    pub fn set_lane_checkpoint(&self, id: i64, checkpoint_ref: Option<&str>) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE lane_worktrees SET checkpoint_ref = ?2 WHERE lane_id = ?1",
+            rusqlite::params![id, checkpoint_ref],
+        )?;
+        Ok(())
+    }
+
     pub fn restore_lane(&self, id: i64) -> anyhow::Result<Lane> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write()?;
         for worktree in self.lane_worktrees(id)? {
             ensure_path_free(&tx, &worktree.path, Some(id))?;
         }
@@ -546,6 +566,12 @@ impl Store {
         if changed == 0 {
             bail!("That lane is not archived");
         }
+        // The checkpoint is back in the worktree; the lane no longer rests
+        // on it.
+        tx.execute(
+            "UPDATE lane_worktrees SET checkpoint_ref = NULL WHERE lane_id = ?1",
+            [id],
+        )?;
         tx.commit()?;
         self.lane(id)
     }
@@ -554,7 +580,7 @@ impl Store {
     /// harness conversations remain in the harness's own files. Git cleanup
     /// is completed by the service before this transaction starts.
     pub fn delete_lane(&self, id: i64) -> anyhow::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write()?;
         let exists: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM lanes WHERE id = ?1)",
             [id],
@@ -624,15 +650,18 @@ impl Store {
     /// Gives a session its Panoptes id before any harness process exists.
     /// Only an active lane with no session takes one.
     pub fn add_session(&self, lane_id: i64, harness: &str) -> anyhow::Result<SessionRecord> {
+        let tx = self.write()?;
         if self.lane(lane_id)?.state != LaneState::Active {
             bail!("That lane is archived; restore it to start a session");
         }
         self.ensure_lane_has_no_session(lane_id)?;
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO sessions (lane_id, harness, created_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![lane_id, harness, now_ms()],
         )?;
-        self.session(self.conn.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        self.session(id)
     }
 
     /// Adopts an existing harness conversation into a lane without starting
@@ -645,6 +674,7 @@ impl Store {
         harness_id: &str,
         locator: &str,
     ) -> anyhow::Result<SessionRecord> {
+        let tx = self.write()?;
         if self.lane(lane_id)?.state != LaneState::Active {
             bail!("That lane is archived; restore it before adopting a session");
         }
@@ -653,7 +683,6 @@ impl Store {
             bail!("That conversation already belongs to a lane");
         }
         let legacy_key = format!("{harness}:{harness_id}");
-        let tx = self.conn.unchecked_transaction()?;
         let pinned = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM pins WHERE session_key = ?1)",
             [&legacy_key],
@@ -713,7 +742,7 @@ impl Store {
     }
 
     pub fn set_session_tags(&self, id: i64, tags: &[String]) -> anyhow::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write()?;
         if tx.execute("DELETE FROM session_tags WHERE session_id = ?1", [id])? == 0
             && !tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM sessions WHERE id = ?1)",
@@ -761,7 +790,8 @@ impl Store {
     }
 
     pub fn remove_project(&self, id: i64) -> anyhow::Result<()> {
-        let lanes: i64 = self.conn.query_row(
+        let tx = self.write()?;
+        let lanes: i64 = tx.query_row(
             "SELECT count(*) FROM lanes WHERE project_id = ?1",
             [id],
             |row| row.get(0),
@@ -769,8 +799,8 @@ impl Store {
         if lanes > 0 {
             bail!("That project still has lanes and cannot be removed");
         }
-        self.conn
-            .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -1296,6 +1326,121 @@ mod tests {
         let error = format!("{:#}", Store::open(dir.path()).err().unwrap());
         assert!(error.contains(IN_USE), "{error}");
         assert!(!error.contains("not a readable database"), "{error}");
+    }
+
+    /// A store as an earlier build left it, with data in every table that
+    /// build had, comes through the later steps unchanged.
+    #[test]
+    fn a_populated_v2_store_keeps_its_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = {
+            let store = Store::open_with(dir.path(), &MIGRATIONS[..2]).unwrap();
+            store.set_pinned("pi:a", true).unwrap();
+            store
+                .add_project("/code/app", &settings("App", &[".env", "local.toml"]))
+                .unwrap()
+        };
+
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(version(dir.path()), MIGRATIONS.len() as u32);
+        assert_eq!(store.projects().unwrap(), [project]);
+        assert_eq!(store.pinned().unwrap(), BTreeSet::from(["pi:a".into()]));
+        assert!(dir.path().join("panoptes.db.v2.bak").exists());
+    }
+
+    #[test]
+    fn a_populated_v3_store_keeps_its_lanes_and_takes_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, active, archived) = {
+            let store = Store::open_with(dir.path(), &MIGRATIONS[..3]).unwrap();
+            let project = store
+                .add_project("/code/app", &settings("App", &[".env"]))
+                .unwrap();
+            let lane = |name: &str| NewLane {
+                project_id: project.id,
+                name: name.into(),
+                task: format!("Do {name}"),
+                branch: format!("panoptes/{name}"),
+                worktrees: vec![NewLaneWorktree {
+                    project_id: project.id,
+                    path: format!("/lanes/{name}/app"),
+                    main_checkout: false,
+                }],
+            };
+            let active = store.add_lane(&lane("one")).unwrap();
+            let archived = store.add_lane(&lane("two")).unwrap();
+            let archived = store
+                .archive_lane(archived.id, Some("refs/panoptes/lanes/two/archive"))
+                .unwrap();
+            (project, active, archived)
+        };
+
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(version(dir.path()), MIGRATIONS.len() as u32);
+        assert_eq!(store.projects().unwrap(), [project]);
+        assert_eq!(store.lanes().unwrap(), [active.clone(), archived.clone()]);
+        assert_eq!(
+            archived.worktrees[0].checkpoint_ref.as_deref(),
+            Some("refs/panoptes/lanes/two/archive")
+        );
+        assert!(dir.path().join("panoptes.db.v3.bak").exists());
+        // The step that followed works on the migrated rows.
+        let session = store.add_session(active.id, "pi").unwrap();
+        assert_eq!(session.lane_id, active.id);
+        assert!(store.add_session(archived.id, "pi").is_err());
+    }
+
+    #[test]
+    fn restoring_a_lane_forgets_its_checkpoint_and_an_active_lane_can_note_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let project = store
+            .add_project("/code/app", &settings("App", &[]))
+            .unwrap();
+        let lane = store
+            .add_lane(&NewLane {
+                project_id: project.id,
+                name: "one".into(),
+                task: "Do one".into(),
+                branch: "panoptes/one".into(),
+                worktrees: vec![NewLaneWorktree {
+                    project_id: project.id,
+                    path: "/lanes/one/app".into(),
+                    main_checkout: false,
+                }],
+            })
+            .unwrap();
+        store
+            .set_lane_checkpoint(lane.id, Some("refs/panoptes/lanes/one/archive"))
+            .unwrap();
+        let noted = store.lane(lane.id).unwrap();
+        assert_eq!(noted.state, LaneState::Active);
+        assert!(noted.worktrees[0].checkpoint_ref.is_some());
+
+        store
+            .archive_lane(lane.id, Some("refs/panoptes/lanes/one/archive"))
+            .unwrap();
+        let restored = store.restore_lane(lane.id).unwrap();
+        assert_eq!(restored.worktrees[0].checkpoint_ref, None);
+    }
+
+    /// A second Panoptes on the same store waits for a whole check-and-write
+    /// rather than slipping in between the check and the write.
+    #[test]
+    fn a_store_change_takes_the_write_lock_before_it_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let other = Connection::open(dir.path().join(DATABASE)).unwrap();
+        other.busy_timeout(Duration::ZERO).unwrap();
+        let tx = store.write().unwrap();
+        let error = other
+            .execute("INSERT INTO pins (session_key) VALUES ('pi:b')", [])
+            .unwrap_err();
+        assert_eq!(error.sqlite_error_code(), Some(ErrorCode::DatabaseBusy));
+        drop(tx);
+        other
+            .execute("INSERT INTO pins (session_key) VALUES ('pi:b')", [])
+            .unwrap();
     }
 
     #[test]
