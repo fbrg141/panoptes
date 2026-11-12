@@ -5,8 +5,10 @@
 //! otherwise the usual install locations are searched.
 
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 
@@ -23,12 +25,63 @@ pub struct PiInstall {
 
 impl PiInstall {
     pub fn is_supported(&self) -> bool {
-        self.version
-            .split('.')
-            .next()
-            .and_then(|major| major.parse::<u32>().ok())
-            .is_some_and(|major| SUPPORTED_MAJOR_VERSIONS.contains(&major))
+        major_version(&self.version).is_some_and(|major| SUPPORTED_MAJOR_VERSIONS.contains(&major))
     }
+}
+
+/// The major version in what `pi --version` printed, which may be a bare
+/// `1.2.3`, a `v1.2.3`, or have a name in front of it (`pi 1.2.3`).
+fn major_version(output: &str) -> Option<u32> {
+    output.split_whitespace().find_map(|word| {
+        let word = word.strip_prefix('v').unwrap_or(word);
+        let (major, rest) = word.split_once('.')?;
+        rest.starts_with(|c: char| c.is_ascii_digit())
+            .then(|| major.parse().ok())?
+    })
+}
+
+/// How long `pi --version` gets. It runs while the app starts, so a Pi that
+/// hangs must not hang Panoptes with it.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `program --version` and returns what it printed, giving up after
+/// [`VERSION_TIMEOUT`].
+fn version_of(program: &Path, path_env: &OsString) -> anyhow::Result<String> {
+    let mut child = Command::new(program)
+        .arg("--version")
+        .env("PATH", path_env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("Could not run {}", program.display()))?;
+    let mut stdout = child.stdout.take().context("pi stdout")?;
+    // A version is a few bytes, so reading it after the exit cannot block
+    // on a full pipe.
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > VERSION_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "`{} --version` did not answer within {} seconds",
+                program.display(),
+                VERSION_TIMEOUT.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    if !status.success() {
+        bail!("`{} --version` failed", program.display());
+    }
+    let mut output = String::new();
+    stdout
+        .read_to_string(&mut output)
+        .with_context(|| format!("Could not read the version of {}", program.display()))?;
+    Ok(output.trim().to_string())
 }
 
 fn home() -> PathBuf {
@@ -76,16 +129,7 @@ pub fn locate(bundled: Option<&Path>) -> anyhow::Result<PiInstall> {
         .find(|candidate| candidate.is_file())
         .context("Could not find `pi`. Install Pi, or set PANOPTES_PI to its path.")?;
 
-    let output = Command::new(&program)
-        .arg("--version")
-        .env("PATH", &path_env)
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("Could not run {}", program.display()))?;
-    if !output.status.success() {
-        bail!("`{} --version` failed", program.display());
-    }
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let version = version_of(&program, &path_env)?;
 
     Ok(PiInstall {
         program,
@@ -135,6 +179,51 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, contents).unwrap();
         (dir, path)
+    }
+
+    fn install(version: &str) -> PiInstall {
+        PiInstall {
+            program: PathBuf::from("pi"),
+            version: version.into(),
+            path_env: OsString::new(),
+        }
+    }
+
+    #[test]
+    fn the_version_is_read_however_pi_prints_it() {
+        for supported in [
+            "1.0.0",
+            "1.12.3-beta.1",
+            "v1.2.3",
+            "pi 1.4.0",
+            "pi v1.4.0\n",
+        ] {
+            assert!(install(supported).is_supported(), "{supported}");
+        }
+        for unsupported in ["2.0.0", "v0.9.1", "pi 2.1.0", "", "unknown", "1"] {
+            assert!(!install(unsupported).is_supported(), "{unsupported}");
+        }
+    }
+
+    #[cfg(unix)]
+    fn script(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("pi");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_version_command_is_run_and_its_failure_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_env = std::env::var_os("PATH").unwrap_or_default();
+        let pi = script(dir.path(), "echo 1.2.3");
+        assert_eq!(version_of(&pi, &path_env).unwrap(), "1.2.3");
+        let pi = script(dir.path(), "exit 3");
+        let error = version_of(&pi, &path_env).unwrap_err();
+        assert!(error.to_string().contains("failed"), "{error}");
     }
 
     #[test]

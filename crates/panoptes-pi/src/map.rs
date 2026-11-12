@@ -21,11 +21,12 @@ pub struct SessionState {
     /// How to answer each open approval: `None` for a confirm dialog, or the
     /// select options that mean allow and reject.
     pub approvals: Mutex<HashMap<String, Option<(String, String)>>>,
-    /// The id each message streamed under, by role and Pi timestamp. Pi
-    /// writes the message object it streamed to the session file unchanged,
-    /// so history finds its entries here and keeps the ids the UI already
-    /// has.
-    pub live_ids: Mutex<HashMap<(String, i64), String>>,
+    /// The ids messages streamed under, by [`message_key`], in the order
+    /// they ended. Pi writes the message object it streamed to the session
+    /// file unchanged, so history finds its entries here and keeps the ids
+    /// the UI already has. Two messages can share a key (same role in the
+    /// same millisecond); history hands their ids out in the same order.
+    pub live_ids: Mutex<HashMap<String, Vec<String>>>,
 }
 
 pub type Shared = Arc<SessionState>;
@@ -60,6 +61,7 @@ pub fn user_text(content: &Value) -> Option<String> {
     }
 }
 
+/// Cuts long text for display, keeping its start.
 fn truncate(mut text: String) -> String {
     if text.len() > MAX_OUTPUT {
         let mut cut = MAX_OUTPUT;
@@ -72,9 +74,22 @@ fn truncate(mut text: String) -> String {
     text
 }
 
-/// Joined text of a tool result's `content` blocks.
+/// Cuts long command output for display, keeping its end: that is where a
+/// failing command says what went wrong.
+fn truncate_start(text: String) -> String {
+    if text.len() <= MAX_OUTPUT {
+        return text;
+    }
+    let mut cut = text.len() - MAX_OUTPUT;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    format!("… (earlier output truncated)\n{}", &text[cut..])
+}
+
+/// Joined text of a tool result's `content` blocks, in full.
 fn result_text(result: &Value) -> String {
-    let text = result["content"]
+    result["content"]
         .as_array()
         .map(|blocks| {
             blocks
@@ -83,8 +98,7 @@ fn result_text(result: &Value) -> String {
                 .collect::<Vec<_>>()
                 .join("\n")
         })
-        .unwrap_or_default();
-    truncate(text)
+        .unwrap_or_default()
 }
 
 fn content_blocks(content: &Value) -> Vec<Block> {
@@ -172,8 +186,10 @@ fn set_output(call: &mut ToolCall, result: &Value, finished: Option<bool>) {
         Some(true) => ToolStatus::Failed,
     };
     call.output = match call.kind {
+        // The exit code is read from the full text, before any cut.
         ToolKind::Execute => Some(shell_output(text, finished)),
         ToolKind::Edit => {
+            let text = truncate(text);
             let edits = match call.output.take() {
                 Some(ToolOutput::Edits { edits, .. }) => edits,
                 _ => Vec::new(),
@@ -183,7 +199,9 @@ fn set_output(call: &mut ToolCall, result: &Value, finished: Option<bool>) {
                 text: (!text.is_empty()).then_some(text),
             })
         }
-        _ => (!text.is_empty() || finished.is_some()).then_some(ToolOutput::Text { text }),
+        _ => (!text.is_empty() || finished.is_some()).then_some(ToolOutput::Text {
+            text: truncate(text),
+        }),
     };
 }
 
@@ -203,7 +221,10 @@ fn shell_output(text: String, finished: Option<bool>) -> ToolOutput {
         (_, Some(false)) => (text, Some(0)),
         _ => (text, None),
     };
-    ToolOutput::Shell { text, exit_code }
+    ToolOutput::Shell {
+        text: truncate_start(text),
+        exit_code,
+    }
 }
 
 /// The replacements of an `edit` call. Pi takes an `edits` array, but models
@@ -236,12 +257,14 @@ fn edit_changes(args: &Value) -> Vec<FileEdit> {
         .collect()
 }
 
-/// What identifies a Pi message both live and in its session file.
-fn message_key(message: &Value) -> Option<(String, i64)> {
-    Some((
-        message["role"].as_str()?.to_string(),
-        message["timestamp"].as_i64()?,
-    ))
+/// What identifies a Pi message both live and in its session file: its role
+/// and timestamp, or, for a message Pi did not stamp, its role and content.
+fn message_key(message: &Value) -> Option<String> {
+    let role = message["role"].as_str()?;
+    Some(match message["timestamp"].as_i64() {
+        Some(timestamp) => format!("{role}@{timestamp}"),
+        None => format!("{role}#{}", message["content"]),
+    })
 }
 
 /// Converts one Pi `AgentMessage`. System messages (prompt and tool
@@ -370,9 +393,13 @@ impl EventMapper {
         let kind = event["type"].as_str().unwrap_or_default();
         match kind {
             "agent_start" => vec![HarnessEvent::RunStarted],
-            "agent_settled" => vec![HarnessEvent::RunSettled {
-                aborted: event["aborted"].as_bool().unwrap_or(false),
-            }],
+            "agent_settled" => {
+                let mut events = self.end_unfinished_calls(now);
+                events.push(HarnessEvent::RunSettled {
+                    aborted: event["aborted"].as_bool().unwrap_or(false),
+                });
+                events
+            }
             "message_start" => {
                 self.counter += 1;
                 let id = format!("live-{}", self.counter);
@@ -394,7 +421,13 @@ impl EventMapper {
                     format!("live-{}", self.counter)
                 });
                 if let Some(key) = message_key(&event["message"]) {
-                    self.shared.live_ids.lock().unwrap().insert(key, id.clone());
+                    self.shared
+                        .live_ids
+                        .lock()
+                        .unwrap()
+                        .entry(key)
+                        .or_default()
+                        .push(id.clone());
                 }
                 message(&event["message"], id)
                     .map(|mut message| {
@@ -456,6 +489,33 @@ impl EventMapper {
             "turn_start" | "turn_end" | "agent_end" | "auto_retry_end" => Vec::new(),
             _ => vec![HarnessEvent::Raw { payload: event }],
         }
+    }
+
+    /// A run that has settled runs nothing any more. A call Pi never
+    /// reported the end of (it was aborted, or the event was lost) is closed
+    /// as failed, so it does not show as running forever. Approvals nobody
+    /// answered are moot for the same reason.
+    fn end_unfinished_calls(&mut self, now: i64) -> Vec<HarnessEvent> {
+        self.shared.approvals.lock().unwrap().clear();
+        let mut calls: Vec<ToolCall> = self.calls.drain().map(|(_, call)| call).collect();
+        calls.sort_by_key(|call| call.started_at);
+        calls
+            .into_iter()
+            .map(|mut call| {
+                call.status = ToolStatus::Failed;
+                call.ended_at = Some(now);
+                if let Some(started) = call.started_at {
+                    self.shared
+                        .tool_times
+                        .lock()
+                        .unwrap()
+                        .insert(call.id.clone(), (started, call.ended_at));
+                }
+                HarnessEvent::ToolCallUpdated {
+                    call: Box::new(call),
+                }
+            })
+            .collect()
     }
 
     /// Pi lists its queue by text alone. Each prompt keeps the id it was
@@ -663,12 +723,20 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) 
             call.ended_at = seen
                 .and_then(|(_, ended)| ended)
                 .or(result["timestamp"].as_i64());
-        } else if let Some((_, None)) = seen {
-            // Started, not yet finished: the result isn't written yet.
-            call.status = ToolStatus::Running;
+        } else if let Some((_, ended)) = seen {
+            // Started, and no result is written: either it still runs, or
+            // its run settled without one.
+            call.status = match ended {
+                None => ToolStatus::Running,
+                Some(_) => ToolStatus::Failed,
+            };
+            call.ended_at = ended;
         }
         call.started_at = seen.map(|(started, _)| started);
     };
+    // How many entries with each key came before, so messages that share a
+    // key take their live ids in order.
+    let mut seen_keys: HashMap<String, usize> = HashMap::new();
     path.into_iter()
         .filter_map(|entry| {
             let id = entry["id"].as_str()?.to_string();
@@ -676,7 +744,12 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) 
                 "message" => {
                     // Keep the id the message streamed under, if it did.
                     let id = message_key(&entry["message"])
-                        .and_then(|key| live_ids.get(&key).cloned())
+                        .and_then(|key| {
+                            let nth = seen_keys.entry(key.clone()).or_default();
+                            let live = live_ids.get(&key).and_then(|ids| ids.get(*nth));
+                            *nth += 1;
+                            live.cloned()
+                        })
                         .unwrap_or(id);
                     message(&entry["message"], id)
                 }
@@ -868,6 +941,123 @@ mod tests {
             shell_("a\n\nCommand timed out after 5 seconds", None)
         );
         assert_eq!(shell("partial", None), shell_("partial", None));
+    }
+
+    #[test]
+    fn long_failing_output_keeps_its_exit_code_and_its_end() {
+        let long = format!(
+            "first line\n{}\nerror: the real reason\n\nCommand exited with code 2",
+            "noise\n".repeat(MAX_OUTPUT / 6 + 100)
+        );
+        let ToolOutput::Shell { text, exit_code } = shell(&long, Some(true)) else {
+            unreachable!()
+        };
+        assert_eq!(exit_code, Some(2));
+        assert!(text.ends_with("error: the real reason"), "the end is kept");
+        assert!(text.starts_with("… (earlier output truncated)\n"));
+        assert!(!text.contains("first line"));
+        assert!(text.len() <= MAX_OUTPUT + 64);
+
+        // Other tools keep the start, as before.
+        let mut call = tool_call("r1", "read", json!({"path": "big.txt"}));
+        set_output(&mut call, &result(&"x".repeat(MAX_OUTPUT * 2)), Some(false));
+        let Some(ToolOutput::Text { text }) = call.output else {
+            unreachable!()
+        };
+        assert!(text.ends_with("… (output truncated)"));
+    }
+
+    /// One whole message, as Pi streams it.
+    fn stream(mapper: &mut EventMapper, message: Value) -> String {
+        let mut events = mapper.map(
+            json!({"type":"message_start","message":{"role":message["role"],"content":[]}}),
+            0,
+        );
+        events.extend(mapper.map(json!({"type":"message_end","message":message}), 0));
+        let Some(HarnessEvent::MessageCompleted { message }) = events.pop() else {
+            panic!("no completed message")
+        };
+        message.id
+    }
+
+    #[test]
+    fn messages_keep_their_ids_even_when_role_and_time_collide() {
+        let shared = Shared::default();
+        let mut mapper = EventMapper::new(shared.clone());
+        let text = |text: &str| json!([{"type":"text","text":text}]);
+        let messages = [
+            // Two user messages in the same millisecond.
+            json!({"role":"user","content":text("one"),"timestamp":5}),
+            json!({"role":"user","content":text("two"),"timestamp":5}),
+            // Messages Pi did not stamp at all.
+            json!({"role":"assistant","content":text("three")}),
+            json!({"role":"assistant","content":text("four")}),
+        ];
+        let live: Vec<String> = messages
+            .iter()
+            .map(|message| stream(&mut mapper, message.clone()))
+            .collect();
+        let entries: Vec<Value> = messages
+            .iter()
+            .enumerate()
+            .map(|(i, message)| {
+                let parent = (i > 0).then(|| format!("e{}", i - 1));
+                json!({"type":"message","id":format!("e{i}"),"parentId":parent,"message":message})
+            })
+            .collect();
+        let reloaded: Vec<String> = history(&entries, Some("e3"), &shared)
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        assert_eq!(reloaded, live);
+        // Reloading again gives the same answer.
+        let again: Vec<String> = history(&entries, Some("e3"), &shared)
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        assert_eq!(again, live);
+    }
+
+    #[test]
+    fn a_call_with_no_end_is_closed_when_its_run_settles() {
+        let (mut mapper, shared) = started();
+        tag(&mut mapper, "c1");
+        mapper.ui_request(&json!({"id":"q1","method":"confirm","title":"Run?"}), 0);
+        assert_eq!(shared.approvals.lock().unwrap().len(), 1);
+
+        let events = mapper.map(json!({"type":"agent_settled","aborted":true}), 4_000);
+        let [
+            HarnessEvent::ToolCallUpdated { call },
+            HarnessEvent::RunSettled { aborted: true },
+        ] = events.as_slice()
+        else {
+            panic!("unexpected events: {events:?}")
+        };
+        assert_eq!(
+            (call.status, call.started_at, call.ended_at),
+            (ToolStatus::Failed, Some(0), Some(4_000))
+        );
+        assert!(shared.approvals.lock().unwrap().is_empty());
+        // A second settle has nothing left to close.
+        assert_eq!(
+            mapper
+                .map(json!({"type":"agent_settled","aborted":false}), 5_000)
+                .len(),
+            1
+        );
+
+        // The history, which has no result for the call, agrees.
+        let entries = vec![
+            json!({"type":"message","id":"a","parentId":null,"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"rm -rf x"}}],"stopReason":"aborted"}}),
+        ];
+        let messages = history(&entries, Some("a"), &shared);
+        let Block::ToolCall(reloaded) = &messages[0].blocks[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            (reloaded.status, reloaded.ended_at),
+            (ToolStatus::Failed, Some(4_000))
+        );
     }
 
     /// A bash call from Pi's events: message, start, update, end.
