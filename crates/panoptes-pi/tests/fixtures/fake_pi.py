@@ -12,12 +12,18 @@ for the adapter's tests. Prompts select behaviour:
            answer
   "tool-ask"  starts a call whose tool asks its own Yes/No question, untagged,
            and replies with the answer
+  "spawn"  starts a long-running child, as a shell command would, and
+           replies with its process id
+  "orphan" starts a child outside its process group that keeps stdout
+           open, writes the child's process id to stderr, and exits with 7
   "tools"  replies with the tools it was started with ("all" by default)
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
 
 import json
+import os
+import subprocess
 import sys
 
 # Panoptes passes its approvals extension; only a real file counts.
@@ -109,6 +115,9 @@ def run(text, images):
         reply += f" [{len(images)} {images[0]['mimeType']}]"
     if text == "tools":
         reply = f"tools={tools}"
+    if text == "spawn":
+        child = subprocess.Popen(["sleep", "300"])
+        reply = f"child={child.pid}"
     if text == "tool":
         tool_run()
         reply = "ran it"
@@ -174,6 +183,11 @@ for line in sys.stdin:
         if command["message"] == "crash":
             sys.stderr.write("fake pi crashed\n")
             sys.exit(7)
+        if command["message"] == "orphan":
+            child = subprocess.Popen(["sleep", "300"], start_new_session=True)
+            sys.stderr.write(f"orphan={child.pid}\n")
+            sys.stderr.flush()
+            os._exit(7)
         respond(command, {"disposition": "started"})
         run(command["message"], command.get("images", []))
     elif kind == "get_entries":

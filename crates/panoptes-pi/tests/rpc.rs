@@ -359,6 +359,71 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
     );
 }
 
+/// Whether a process is still running. A killed process whose parent has
+/// not collected it yet (state `Z`) counts as gone.
+fn alive(pid: &str) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .unwrap();
+    let state = String::from_utf8_lossy(&output.stdout);
+    !state.trim().is_empty() && !state.trim().starts_with('Z')
+}
+
+async fn gone(pid: &str) -> bool {
+    for _ in 0..50 {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn shutdown_also_stops_what_pi_started() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("spawn".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    let reply = text_of(&events);
+    let pid = reply.strip_prefix("child=").expect("the child's id");
+    assert!(alive(pid), "the child should be running before shutdown");
+
+    session.shutdown().await;
+    assert!(gone(pid).await, "the child outlived its session");
+}
+
+#[tokio::test]
+async fn an_exit_is_reported_even_if_something_keeps_the_pipe_open() {
+    let (session, mut rx) = start().await;
+    let error = session
+        .prompt("orphan".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Exited)
+    );
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;
+    let Some(HarnessEvent::Exited { code, stderr_tail }) = events.last() else {
+        unreachable!()
+    };
+    assert_eq!(*code, Some(7));
+    // The fake left a process outside its group holding stdout; stop it.
+    let pid = stderr_tail
+        .trim()
+        .strip_prefix("orphan=")
+        .expect("the orphan's id");
+    assert!(alive(pid), "the orphan should still hold the pipe");
+    std::process::Command::new("kill")
+        .args(["-9", pid])
+        .status()
+        .unwrap();
+}
+
 #[tokio::test]
 async fn shutdown_ends_the_process_cleanly() {
     let (session, mut rx) = start().await;

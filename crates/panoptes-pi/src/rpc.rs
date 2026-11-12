@@ -20,6 +20,9 @@ use crate::map::EventMapper;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long Pi gets to exit after stdin closes before it is killed.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+/// How long output still in the pipe is read after Pi has exited. Only a
+/// descendant that escaped Pi's process group can keep the pipe open longer.
+const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(500);
 const STDERR_TAIL: usize = 4096;
 
 /// Commands waiting for their response, by id. `None` once Pi's stdout has
@@ -107,6 +110,11 @@ impl RpcProcess {
             // is left out.
             command.args(["--tools", READ_ONLY_TOOLS]);
         }
+        // Pi leads its own process group, so stopping the session also stops
+        // what Pi started (its launcher's node, a shell command still
+        // running), not only the one process Panoptes spawned.
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command
             .current_dir(cwd)
             .env("PATH", &install.path_env)
@@ -132,6 +140,7 @@ impl RpcProcess {
 
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
         let (exit_tx, exit_rx) = watch::channel::<ExitState>(None);
+        let group = child.id();
         tokio::spawn(async move {
             let status = tokio::select! {
                 status = child.wait() => status,
@@ -140,6 +149,9 @@ impl RpcProcess {
                     child.wait().await
                 }
             };
+            // However Pi ended, nothing it started may keep writing to the
+            // worktree after its session is gone.
+            kill_group(group);
             let _ = exit_tx.send(Some(status.ok().and_then(|status| status.code())));
         });
 
@@ -169,10 +181,20 @@ impl RpcProcess {
         {
             let pending = pending.clone();
             let mut exit = exit_rx.clone();
+            let mut exited = exit_rx.clone();
             tokio::spawn(async move {
-                read_stdout(stdout, &pending, &events, mapper).await;
-                // Stdout closed: Pi is gone or going. Dropping the waiters
-                // fails every outstanding command.
+                // Stdout normally closes when Pi exits. A descendant that
+                // inherited the pipe can hold it open, so Pi's exit also
+                // ends the reading, after a moment to drain what is left.
+                tokio::select! {
+                    () = read_stdout(stdout, &pending, &events, mapper) => {}
+                    () = async {
+                        let _ = exited.wait_for(Option::is_some).await;
+                        tokio::time::sleep(DRAIN_AFTER_EXIT).await;
+                    } => {}
+                }
+                // Pi is gone or going. Dropping the waiters fails every
+                // outstanding command.
                 pending.lock().await.take();
                 let code = wait_for_exit(&mut exit, SHUTDOWN_GRACE).await.flatten();
                 let _ = tokio::time::timeout(Duration::from_secs(1), stderr_done).await;
@@ -266,6 +288,21 @@ impl RpcProcess {
             wait_for_exit(&mut exit, SHUTDOWN_GRACE).await;
         }
     }
+}
+
+/// Kills every process left in the group Pi led. `None` if Pi's id was never
+/// known, which only happens once it has already been reaped.
+fn kill_group(leader: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(leader) = leader.and_then(|id| i32::try_from(id).ok()) {
+        // SAFETY: Pi was started as the leader of its own process group, so
+        // the negative id names that group and never Panoptes' own.
+        unsafe {
+            libc::kill(-leader, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = leader;
 }
 
 fn not_running() -> anyhow::Error {
