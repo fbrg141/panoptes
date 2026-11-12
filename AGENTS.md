@@ -89,5 +89,6 @@ are errors) and every test, and the pre-push hook runs it too. `pnpm format`
 fixes formatting of the UI code; `cargo fmt --all` fixes the Rust.
 
 To see the UI without an agent, run `pnpm dev` and open http://localhost:1420
-in a browser. `cargo run -p panoptes-pi --example smoke` does one real round
-trip with the installed Pi.
+in a browser. `pnpm smoke` does one real round trip with the installed Pi and
+fails if the event or history contract broke; run it after changing the
+adapter, since `pnpm check` only talks to the fake Pi.

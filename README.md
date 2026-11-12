@@ -1,12 +1,10 @@
 # Panoptes
 
-A desktop environment for coding agents on macOS. It starts with
-[Pi](https://github.com/earendil-works/pi) and is built so other agent
-harnesses can be added later.
-
-Early days: this is the walking skeleton. You get a session sidebar and a
-plain streaming chat. The styling is deliberately bare and will be replaced
-by a design system.
+A minimal macOS desktop app for the [Pi](https://github.com/earendil-works/pi)
+coding agent. It observes what the agent does and presents that work; it does
+not plan, delegate or coordinate agents. Sessions stay Pi's own files and
+lanes are plain git worktrees and branches. The direction is recorded in
+[docs/decisions.md](docs/decisions.md#observe-pi-do-not-orchestrate-agents).
 
 ## What works
 
@@ -17,21 +15,26 @@ by a design system.
 - Opens or resumes any session. New sessions start in a lane, as Panoptes
   sessions with their own id; their conversations are still Pi's own files,
   so the CLI (`pi --continue`, `/resume`) sees the same history.
-- Creates durable lanes with their own Git worktree and branch, including
-  project file copying and setup. Lanes exist without sessions; clean lanes
-  can be archived, and dirty work can be committed, stashed or saved as a
-  restorable private checkpoint. The main checkout is a marked opt-in.
-  Start a chat in a lane when creating it, or later with the lane's +
-  action. A session can be replaced with a fresh one on the same worktree,
-  or archived without touching its lane.
-- One session per lane edits at a time: the holder of the lane's write lock
-  runs with every tool, the others run read-only and queue for it.
-- Streams replies (rendered as markdown), thinking and tool calls. While the
-  agent is working, Enter steers it and Esc stops it.
-- Questions from Pi extensions (confirm, select, input, editor) appear above
-  the composer and are answered in place.
+- **+** on a project asks for a prompt and creates a lane with it: its own
+  Git worktree and branch, with project file copying and setup. The main
+  checkout is a marked opt-in. A lane holds exactly one session, so it has
+  one writer; a new task is a new lane.
+- Clean lanes can be archived, and dirty work can be committed, stashed or
+  saved as a restorable private checkpoint. A lane can also be deleted for
+  good, after a confirmation.
+- A lane that another lane's session is editing says so, and its own session
+  cannot start until that session is Done.
+- Streams replies (rendered as markdown), thinking and tool calls as a work
+  log. While the agent is working, Enter steers it, Option+Enter queues a
+  follow-up and Esc stops it.
+- Permission prompts and questions from Pi extensions (confirm, select,
+  input, editor) appear above the composer and are answered in place.
 - Each open session runs in its own `pi --mode rpc` process; opening the same
-  session twice never starts a second one.
+  session twice never starts a second one, and stopping a session stops what
+  it started.
+
+Decided but not built yet: per-turn checkpoints (#204) and nested Pi
+subagents (#227).
 
 ## Requirements
 
@@ -75,11 +78,13 @@ is useful for design work.
 
 ```bash
 pnpm check                                   # everything: lint, types, formatting, clippy, all tests
-cargo run -p panoptes-pi --example smoke     # one real round trip with your Pi
+pnpm smoke                                   # one real round trip with your Pi; fails if the contract broke
 ```
 
 There is no CI. A pre-push hook (installed by `pnpm install`) runs
-`pnpm check`. Agents: see [AGENTS.md](AGENTS.md); decisions are in
+`pnpm check`. That suite only talks to a scripted stand-in for Pi, so run
+`pnpm smoke` after updating Pi or changing the adapter: it needs an installed,
+logged-in Pi and makes one small model call. Agents: see [AGENTS.md](AGENTS.md); decisions are in
 [docs/decisions.md](docs/decisions.md).
 
 ## Layout
