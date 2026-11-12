@@ -1372,7 +1372,11 @@ impl Service {
                 let project = store.project(lane.project_id)?;
                 (lane, project)
             };
-            match lanes::archive(&project, &lane, strategy)? {
+            // The checkpoint ref is stored before the folder goes, so an
+            // archive that stops in between can be finished later.
+            let record =
+                |reference: Option<&str>| store.lock().unwrap().set_lane_checkpoint(id, reference);
+            match lanes::archive_recording(&project, &lane, strategy, &record)? {
                 ArchiveResult::Dirty => Ok(ArchiveLaneOutcome::Dirty { lane }),
                 ArchiveResult::Archived { checkpoint_ref } => {
                     store

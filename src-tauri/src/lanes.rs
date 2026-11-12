@@ -191,10 +191,24 @@ pub fn discard_created(project: &Project, new: &NewLane) {
 /// Archives only after inspecting the current tree. A dirty tree with no
 /// strategy is left completely untouched so the UI can offer the three
 /// recovery choices. The branch itself is never deleted.
+#[cfg(test)]
 pub fn archive(
     project: &Project,
     lane: &Lane,
     strategy: Option<ArchiveStrategy>,
+) -> anyhow::Result<ArchiveResult> {
+    archive_recording(project, lane, strategy, &|_| Ok(()))
+}
+
+/// Archives a lane, telling `record` which checkpoint ref holds its work
+/// before the worktree is removed (and `None` if that checkpoint turned out
+/// stale). The caller stores it, so an archive interrupted between removing
+/// the folder and marking the lane archived can still find the checkpoint.
+pub fn archive_recording(
+    project: &Project,
+    lane: &Lane,
+    strategy: Option<ArchiveStrategy>,
+    record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<ArchiveResult> {
     let worktree = sole_worktree(lane)?;
     if worktree.main_checkout {
@@ -208,9 +222,14 @@ pub fn archive(
     // Git's record of it so the branch can be checked out again later.
     if std::fs::symlink_metadata(&path).is_err() {
         run(repo, &["worktree", "prune"])?;
-        return Ok(ArchiveResult::Archived {
-            checkpoint_ref: None,
-        });
+        // Unless Panoptes itself removed it: an archive that stopped after
+        // removing the folder had already recorded its checkpoint, and that
+        // checkpoint is the lane's work.
+        let checkpoint_ref = match worktree.checkpoint_ref.as_deref() {
+            Some(reference) if ref_exists(repo, reference)? => Some(reference.to_string()),
+            _ => None,
+        };
+        return Ok(ArchiveResult::Archived { checkpoint_ref });
     }
     ensure_on_lane_branch(&path, lane)?;
     let before = worktree_status(&path)?;
@@ -245,6 +264,7 @@ pub fn archive(
             }
             Some(ArchiveStrategy::Checkpoint) => {
                 let (reference, tree) = checkpoint(project, lane, &path)?;
+                record(Some(&reference))?;
                 checkpoint_ref = Some(reference);
                 checkpoint_tree = Some(tree);
             }
@@ -257,6 +277,8 @@ pub fn archive(
         // again right before removal keeps the unprotected window minimal.
         (Some(ArchiveStrategy::Checkpoint), Some(tree)) if is_dirty => {
             if snapshot_tree(&path, lane)? != tree {
+                // The recorded checkpoint no longer holds the lane's work.
+                let _ = record(None);
                 bail!(
                     "The tree changed while its checkpoint was being taken; the worktree was left in place"
                 )
@@ -285,12 +307,13 @@ pub fn archive(
     Ok(ArchiveResult::Archived { checkpoint_ref })
 }
 
-/// Brings an archived lane's worktree back on its branch. For a checkpoint,
-/// the checkpoint's parent is the branch tip it was taken from, so the
-/// branch is fast-forwarded onto it, which recovers both tracked and
-/// untracked captured files. If the branch has moved since, nothing is
-/// changed: forcing it would drop those newer commits. Any later failure
-/// puts the branch back where it was.
+/// Brings an archived lane's worktree back on its branch. A checkpoint is
+/// put back as it was taken: as uncommitted changes in the worktree. The
+/// branch is not moved, so the work never turns into a commit the user did
+/// not make. If the branch has moved since the checkpoint was taken, nothing
+/// is changed: the checkpoint describes an older tree, and laying it over
+/// the newer one would undo those commits in the worktree. Any later failure
+/// removes the worktree again; the checkpoint ref stays either way.
 pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
     let worktree = sole_worktree(lane)?;
     if worktree.main_checkout {
@@ -303,28 +326,30 @@ pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
     let repo = Path::new(&project.repo);
     let full_ref = format!("refs/heads/{}", lane.branch);
     let mut branch_cleanup = BranchCleanup::Keep;
+    let mut checkpoint = None;
     if let Some(reference) = worktree.checkpoint_ref.as_deref() {
-        let checkpoint = run(
+        let commit = run(
             repo,
             &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
         )
         .context("The lane's checkpoint is missing from the repository")?;
-        let parent = run(repo, &["rev-parse", "--verify", &format!("{checkpoint}^")])?;
+        let parent = run(repo, &["rev-parse", "--verify", &format!("{commit}^")])?;
         if ref_exists(repo, &full_ref)? {
             let tip = run(repo, &["rev-parse", "--verify", &full_ref])?;
             if tip != parent {
                 bail!(
-                    "{} has new commits since the lane was archived; restoring the checkpoint would drop them. Its changes are kept at {reference}",
+                    "{} has new commits since the lane was archived, so its checkpoint no longer fits on top. Its changes are kept at {reference}",
                     lane.branch
                 );
             }
-            // The old-value argument makes this a compare-and-swap.
-            run(repo, &["update-ref", &full_ref, &checkpoint, &parent])?;
-            branch_cleanup = BranchCleanup::Reset(parent);
         } else {
-            run(repo, &["update-ref", &full_ref, &checkpoint, ""])?;
+            // The branch was deleted meanwhile: bring it back where the
+            // checkpoint was taken. The empty old value refuses to replace
+            // a branch that appeared in between.
+            run(repo, &["update-ref", &full_ref, &parent, ""])?;
             branch_cleanup = BranchCleanup::Delete;
         }
+        checkpoint = Some(commit);
     } else if !ref_exists(repo, &full_ref)? {
         bail!("The branch {} no longer exists", lane.branch);
     }
@@ -348,6 +373,14 @@ pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
             &lane.branch,
         ],
     )?;
+    if let Some(commit) = checkpoint {
+        // Only the working files change: modified files come back modified,
+        // new files untracked and deleted files deleted, with nothing staged.
+        run(
+            &path,
+            &["restore", "--source", &commit, "--worktree", "--", "."],
+        )?;
+    }
     restore_copy_files(project, lane, &path)?;
     copy_files(project, &path)?;
     run_setup(project, &path, None)?;
@@ -681,8 +714,6 @@ fn remove_worktree(repo: &Path, path: &Path, force: bool) -> anyhow::Result<()> 
 enum BranchCleanup {
     Keep,
     Delete,
-    /// Move it back to this commit (the tip before a restore advanced it).
-    Reset(String),
 }
 
 struct CreationCleanup {
@@ -713,9 +744,6 @@ impl Drop for CreationCleanup {
                 if ref_exists(&self.repo, &full_ref).unwrap_or(false) {
                     let _ = run(&self.repo, &["branch", "-D", &self.branch]);
                 }
-            }
-            BranchCleanup::Reset(commit) => {
-                let _ = run(&self.repo, &["update-ref", &full_ref, commit]);
             }
         }
     }
@@ -1076,7 +1104,17 @@ mod tests {
                 ref_exists(&f.repo, "refs/panoptes/lanes/fix-login/copy-files").unwrap(),
                 "{strategy:?}"
             );
-            assert_eq!(git(&path, &["status", "--porcelain"]), "", "{strategy:?}");
+            // A checkpoint comes back as the uncommitted change it was.
+            let expected = if strategy == Some(ArchiveStrategy::Checkpoint) {
+                "M tracked.txt"
+            } else {
+                ""
+            };
+            assert_eq!(
+                git(&path, &["status", "--porcelain"]).trim(),
+                expected,
+                "{strategy:?}"
+            );
         }
     }
 
@@ -1135,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_restore_puts_the_branch_back() {
+    fn a_failed_restore_leaves_the_branch_where_it_was() {
         let f = fixture(None);
         let new = create_lane(&f);
         let mut lane = lane(&f, 42, &new);
@@ -1635,13 +1673,18 @@ mod tests {
     }
 
     #[test]
-    fn a_checkpoint_archive_can_be_restored_onto_its_branch() {
+    fn a_checkpoint_comes_back_as_uncommitted_work_and_the_branch_stays_put() {
         let f = fixture(None);
+        std::fs::write(f.repo.join("doomed.txt"), "remove me\n").unwrap();
+        git(&f.repo, &["add", "doomed.txt"]);
+        git(&f.repo, &["commit", "--quiet", "-m", "doomed"]);
         let new = create_lane(&f);
         let mut lane = lane(&f, 42, &new);
         let path = PathBuf::from(&new.worktrees[0].path);
         std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
         std::fs::write(path.join("new.txt"), "new\n").unwrap();
+        std::fs::remove_file(path.join("doomed.txt")).unwrap();
+        let tip = git(&f.repo, &["rev-parse", "panoptes/fix-login"]);
 
         let result = archive(&f.project, &lane, Some(ArchiveStrategy::Checkpoint)).unwrap();
         let ArchiveResult::Archived { checkpoint_ref } = result else {
@@ -1660,10 +1703,81 @@ mod tests {
             std::fs::read_to_string(path.join("new.txt")).unwrap(),
             "new\n"
         );
+        assert!(!path.join("doomed.txt").exists());
         assert_eq!(
             git(&path, &["branch", "--show-current"]),
             "panoptes/fix-login"
         );
-        assert_eq!(git(&path, &["status", "--porcelain"]), "");
+        // Nothing was committed on the user's behalf.
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), tip);
+        let mut status: Vec<String> = git(&path, &["status", "--porcelain"])
+            .lines()
+            .map(|line| line.trim().to_string())
+            .collect();
+        status.sort();
+        assert_eq!(status, ["?? new.txt", "D doomed.txt", "M tracked.txt"]);
+    }
+
+    #[test]
+    fn a_checkpoint_restores_onto_a_branch_that_was_deleted() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let mut lane = lane(&f, 42, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
+        let tip = git(&f.repo, &["rev-parse", "panoptes/fix-login"]);
+        let ArchiveResult::Archived { checkpoint_ref } =
+            archive(&f.project, &lane, Some(ArchiveStrategy::Checkpoint)).unwrap()
+        else {
+            panic!("checkpoint archive should finish")
+        };
+        lane.worktrees[0].checkpoint_ref = checkpoint_ref;
+        lane.state = LaneState::Archived;
+        git(&f.repo, &["branch", "-D", "panoptes/fix-login"]);
+
+        restore(&f.project, &lane).unwrap();
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), tip);
+        assert_eq!(
+            std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
+            "work\n"
+        );
+    }
+
+    #[test]
+    fn an_interrupted_checkpoint_archive_is_found_again() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let mut lane = lane(&f, 42, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "work\n").unwrap();
+        // The archive records its checkpoint, removes the folder, and then
+        // Panoptes stops before the lane is marked archived.
+        let recorded = std::cell::RefCell::new(None);
+        archive_recording(
+            &f.project,
+            &lane,
+            Some(ArchiveStrategy::Checkpoint),
+            &|reference| {
+                *recorded.borrow_mut() = reference.map(str::to_string);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!path.exists());
+        lane.worktrees[0].checkpoint_ref = recorded.into_inner();
+        assert!(lane.worktrees[0].checkpoint_ref.is_some());
+
+        // Archiving the still-active lane again keeps the checkpoint.
+        let ArchiveResult::Archived { checkpoint_ref } = archive(&f.project, &lane, None).unwrap()
+        else {
+            panic!("the archive should finish")
+        };
+        assert_eq!(checkpoint_ref, lane.worktrees[0].checkpoint_ref);
+        lane.state = LaneState::Archived;
+        restore(&f.project, &lane).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
+            "work\n"
+        );
     }
 }

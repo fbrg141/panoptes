@@ -179,7 +179,8 @@ The sidebar has two tabs (#57):
      nothing until you pick one: **commit** the changes on the lane's branch,
      **stash** them onto the branch, or **keep it as a checkpoint**: the tree
      is saved to a checkpoint ref and the worktree is removed, and restoring
-     creates a fresh worktree from it (see
+     creates a fresh worktree with the same uncommitted changes, without
+     moving the branch (see
      [decisions.md](decisions.md#per-turn-checkpoints-on-plain-git-not-jujutsu)).
    - A main-checkout lane: only the lane record is archived; the checkout is
      left as it is.
