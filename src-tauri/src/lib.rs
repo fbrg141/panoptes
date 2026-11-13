@@ -1,6 +1,7 @@
 //! Tauri shell: loads the harnesses and exposes [`service::Service`] to the
 //! UI as commands, with session events emitted as `session-event`.
 
+mod eventlog;
 mod files;
 mod lanes;
 mod projects;
@@ -49,6 +50,14 @@ struct AppState {
     service: Service,
 }
 
+/// Records a command's error in the event log, then passes the result on.
+fn logged<T>(state: &AppState, command: &str, result: ServiceResult<T>) -> ServiceResult<T> {
+    if let Err(error) = &result {
+        state.service.record_error(command, error);
+    }
+    result
+}
+
 #[tauri::command]
 fn app_info(state: State<'_, AppState>) -> AppInfo {
     state.info.clone()
@@ -74,7 +83,11 @@ async fn open_session(
     locator: String,
     cwd: String,
 ) -> ServiceResult<OpenedSession> {
-    state.service.open(&harness, &key, locator, cwd).await
+    logged(
+        &state,
+        "open_session",
+        state.service.open(&harness, &key, locator, cwd).await,
+    )
 }
 
 #[tauri::command]
@@ -83,7 +96,11 @@ async fn new_session(
     lane_id: i64,
     harness: String,
 ) -> ServiceResult<OpenedSession> {
-    state.service.create(lane_id, &harness).await
+    logged(
+        &state,
+        "new_session",
+        state.service.create(lane_id, &harness).await,
+    )
 }
 
 #[tauri::command]
@@ -95,10 +112,14 @@ async fn adopt_session(
     cwd: String,
     lane_id: Option<i64>,
 ) -> ServiceResult<AdoptionOutcome> {
-    state
-        .service
-        .adopt(&harness, &key, locator, cwd, lane_id)
-        .await
+    logged(
+        &state,
+        "adopt_session",
+        state
+            .service
+            .adopt(&harness, &key, locator, cwd, lane_id)
+            .await,
+    )
 }
 
 #[tauri::command]
@@ -107,7 +128,11 @@ async fn archive_session(
     key: String,
     archived: bool,
 ) -> ServiceResult<()> {
-    state.service.set_archived(&key, archived).await
+    logged(
+        &state,
+        "archive_session",
+        state.service.set_archived(&key, archived).await,
+    )
 }
 
 #[tauri::command]
@@ -116,7 +141,11 @@ async fn rename_session(
     key: String,
     title: Option<String>,
 ) -> ServiceResult<()> {
-    state.service.rename(&key, title).await
+    logged(
+        &state,
+        "rename_session",
+        state.service.rename(&key, title).await,
+    )
 }
 
 #[tauri::command]
@@ -125,12 +154,16 @@ async fn set_session_tags(
     key: String,
     tags: Vec<String>,
 ) -> ServiceResult<()> {
-    state.service.set_tags(&key, tags).await
+    logged(
+        &state,
+        "set_session_tags",
+        state.service.set_tags(&key, tags).await,
+    )
 }
 
 #[tauri::command]
 async fn session_history(state: State<'_, AppState>, key: String) -> ServiceResult<Vec<Message>> {
-    state.service.history(&key).await
+    logged(&state, "session_history", state.service.history(&key).await)
 }
 
 #[tauri::command]
@@ -141,7 +174,11 @@ async fn send_prompt(
     images: Vec<ImageAttachment>,
     mode: PromptMode,
 ) -> ServiceResult<PromptOutcome> {
-    state.service.prompt(&key, text, images, mode).await
+    logged(
+        &state,
+        "send_prompt",
+        state.service.prompt(&key, text, images, mode).await,
+    )
 }
 
 #[tauri::command]
@@ -149,12 +186,16 @@ async fn session_settings(
     state: State<'_, AppState>,
     key: String,
 ) -> ServiceResult<SessionSettings> {
-    state.service.settings(&key).await
+    logged(
+        &state,
+        "session_settings",
+        state.service.settings(&key).await,
+    )
 }
 
 #[tauri::command]
 async fn list_models(state: State<'_, AppState>, key: String) -> ServiceResult<Vec<ModelInfo>> {
-    state.service.models(&key).await
+    logged(&state, "list_models", state.service.models(&key).await)
 }
 
 #[tauri::command]
@@ -163,7 +204,11 @@ async fn set_model(
     key: String,
     model_id: String,
 ) -> ServiceResult<SessionSettings> {
-    state.service.set_model(&key, model_id).await
+    logged(
+        &state,
+        "set_model",
+        state.service.set_model(&key, model_id).await,
+    )
 }
 
 #[tauri::command]
@@ -172,7 +217,11 @@ async fn set_thinking_level(
     key: String,
     level: String,
 ) -> ServiceResult<SessionSettings> {
-    state.service.set_thinking_level(&key, level).await
+    logged(
+        &state,
+        "set_thinking_level",
+        state.service.set_thinking_level(&key, level).await,
+    )
 }
 
 #[tauri::command]
@@ -192,7 +241,7 @@ async fn read_attachment(path: String) -> ServiceResult<files::Attachment> {
 
 #[tauri::command]
 async fn abort_run(state: State<'_, AppState>, key: String) -> ServiceResult<()> {
-    state.service.abort(&key).await
+    logged(&state, "abort_run", state.service.abort(&key).await)
 }
 
 #[tauri::command]
@@ -202,7 +251,11 @@ async fn answer_question(
     question_id: String,
     answer: Answer,
 ) -> ServiceResult<()> {
-    state.service.answer(&key, question_id, answer).await
+    logged(
+        &state,
+        "answer_question",
+        state.service.answer(&key, question_id, answer).await,
+    )
 }
 
 #[tauri::command]
@@ -213,12 +266,20 @@ async fn close_session(state: State<'_, AppState>, key: String) -> ServiceResult
 
 #[tauri::command]
 async fn set_pinned(state: State<'_, AppState>, key: String, pinned: bool) -> ServiceResult<()> {
-    state.service.set_pinned(key, pinned).await
+    logged(
+        &state,
+        "set_pinned",
+        state.service.set_pinned(key, pinned).await,
+    )
 }
 
 #[tauri::command]
 async fn add_project(state: State<'_, AppState>, folder: String) -> ServiceResult<Project> {
-    state.service.add_project(folder).await
+    logged(
+        &state,
+        "add_project",
+        state.service.add_project(folder).await,
+    )
 }
 
 #[tauri::command]
@@ -227,12 +288,20 @@ async fn update_project(
     id: i64,
     settings: ProjectSettings,
 ) -> ServiceResult<Project> {
-    state.service.update_project(id, settings).await
+    logged(
+        &state,
+        "update_project",
+        state.service.update_project(id, settings).await,
+    )
 }
 
 #[tauri::command]
 async fn remove_project(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
-    state.service.remove_project(id).await
+    logged(
+        &state,
+        "remove_project",
+        state.service.remove_project(id).await,
+    )
 }
 
 #[tauri::command]
@@ -242,10 +311,14 @@ async fn create_lane(
     task: String,
     main_checkout: bool,
 ) -> ServiceResult<Lane> {
-    state
-        .service
-        .create_lane(project_id, task, main_checkout)
-        .await
+    logged(
+        &state,
+        "create_lane",
+        state
+            .service
+            .create_lane(project_id, task, main_checkout)
+            .await,
+    )
 }
 
 #[tauri::command]
@@ -259,17 +332,21 @@ async fn archive_lane(
     id: i64,
     strategy: Option<lanes::ArchiveStrategy>,
 ) -> ServiceResult<ArchiveLaneOutcome> {
-    state.service.archive_lane(id, strategy).await
+    logged(
+        &state,
+        "archive_lane",
+        state.service.archive_lane(id, strategy).await,
+    )
 }
 
 #[tauri::command]
 async fn restore_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<Lane> {
-    state.service.restore_lane(id).await
+    logged(&state, "restore_lane", state.service.restore_lane(id).await)
 }
 
 #[tauri::command]
 async fn delete_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
-    state.service.delete_lane(id).await
+    logged(&state, "delete_lane", state.service.delete_lane(id).await)
 }
 
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
@@ -332,6 +409,18 @@ fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
             let _ = emitter.emit("session-event", event);
         }),
     );
+    let log = eventlog::EventLog::open(&data_dir.join("logs"));
+    log.record(
+        "appStarted",
+        serde_json::json!({
+            "version": app.package_info().version.to_string(),
+            "harnesses": info.harnesses.iter()
+                .map(|h| serde_json::json!({"id": h.id, "version": h.version}))
+                .collect::<Vec<_>>(),
+            "harnessErrors": info.errors,
+        }),
+    );
+    let service = service.with_event_log(log);
     Ok(AppState { info, service })
 }
 
