@@ -82,7 +82,13 @@ export interface State {
   /** Removes a project after explicit confirmation in the UI. */
   removeProject: (id: number) => Promise<boolean>;
   createLane: (projectId: number, task: string, mainCheckout: boolean) => Promise<Lane | null>;
-  createFromPrompt: (projectId: number, task: string, mainCheckout: boolean) => Promise<boolean>;
+  /** Creates a lane and starts its only session, configured by `options`. */
+  createFromPrompt: (
+    projectId: number,
+    task: string,
+    mainCheckout: boolean,
+    options?: { model?: string; thinking?: string },
+  ) => Promise<boolean>;
   cancelLaneCreation: (projectId: number) => Promise<void>;
   archiveLane: (id: number, strategy: ArchiveStrategy | null) => Promise<ArchiveLaneOutcome | null>;
   restoreLane: (id: number) => Promise<void>;
@@ -490,10 +496,10 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      createFromPrompt: async (projectId, task, mainCheckout) => {
+      createFromPrompt: async (projectId, task, mainCheckout, options) => {
         const lane = await get().createLane(projectId, task, mainCheckout);
         if (!lane) return false;
-        await get().create(lane.id, { prompt: task });
+        await get().create(lane.id, { ...options, prompt: task });
         return true;
       },
 
