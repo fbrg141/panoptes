@@ -686,11 +686,11 @@ export function installMockBackend() {
             });
           }
           open.add(a.key);
-          return { key: a.key, history };
+          return { key: a.key, history, status: "idle" as const, replay: [] };
         case "new_session": {
           const recorded = recordSession((args as { laneId: number }).laneId);
           open.add(recorded.key);
-          return { key: recorded.key, history: [] };
+          return { key: recorded.key, history: [], status: "idle", replay: [] };
         }
         case "adopt_session": {
           const request = args as unknown as { key: string; laneId: number | null };

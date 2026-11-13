@@ -151,11 +151,21 @@ export function createAppStore(backend: typeof api) {
       set({ activeKey: opened.key });
       // Keep anything the session already said (questions, notices) and
       // take the history as the authoritative message list.
-      patch(opened.key, (c) => ({
-        ...c,
-        messages: historyApplies(opened.key, epoch, c) ? opened.history : c.messages,
-        exited: null,
-      }));
+      patch(opened.key, (c) =>
+        // A reloaded window catches up on the run and on what is still
+        // waiting for an answer; anything it already has is kept once.
+        opened.replay.reduce(applyEvent, {
+          ...c,
+          messages: historyApplies(opened.key, epoch, c) ? opened.history : c.messages,
+          exited: null,
+        }),
+      );
+      // A status that arrived while opening is newer than this one.
+      set((s) =>
+        opened.key in s.statuses
+          ? {}
+          : { statuses: { ...s.statuses, [opened.key]: opened.status } },
+      );
       void loadSettings(opened.key);
     };
 
