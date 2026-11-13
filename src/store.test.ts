@@ -61,7 +61,7 @@ const lane: Lane = {
   ],
 };
 
-const opened: OpenedSession = { key: "pi:s1", history: [] };
+const opened: OpenedSession = { key: "pi:s1", history: [], status: "idle", replay: [] };
 
 /** A session recorded in `lane`, as the backend lists it. */
 const laneSession: Session = {
@@ -158,6 +158,35 @@ describe("store", () => {
   it("listens once even when initialised twice", () => {
     expect(fake.backend.onSessionEvent).toHaveBeenCalledTimes(1);
     expect(store.getState().sessions).toEqual([session]);
+  });
+
+  it("catches a reopened session up on its run, status and waiting questions", async () => {
+    const question = {
+      id: "q1",
+      title: "Ok?",
+      message: null,
+      kind: { type: "confirm" as const },
+      expiresAt: null,
+    };
+    fake.backend.openSession.mockResolvedValueOnce({
+      ...opened,
+      status: "waiting",
+      replay: [{ type: "runStarted" }, { type: "question", question }],
+    });
+    await store.getState().open(session);
+    const conversation = store.getState().conversations["pi:s1"];
+    expect(conversation.busy).toBe(true);
+    expect(conversation.questions).toEqual([question]);
+    expect(store.getState().statuses["pi:s1"]).toBe("waiting");
+  });
+
+  it("keeps a status that arrived while the session was opening", async () => {
+    fake.backend.openSession.mockImplementationOnce(async () => {
+      fake.emit({ key: "pi:s1", event: { type: "statusChanged", status: "done" } });
+      return { ...opened, status: "running" };
+    });
+    await store.getState().open(session);
+    expect(store.getState().statuses["pi:s1"]).toBe("done");
   });
 
   it("steers when the agent is already busy", async () => {
@@ -436,7 +465,12 @@ describe("store", () => {
   });
 
   it("creates a lane and its only session from the project prompt", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     const created = await store.getState().createFromPrompt(1, "Fix login", true);
     expect(created).toBe(true);
     expect(fake.backend.createLane).toHaveBeenCalledWith(1, "Fix login", true);
@@ -523,7 +557,12 @@ describe("store", () => {
   });
 
   it("starts a session in a lane and lists it at once, from its record", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     fake.backend.listSessions.mockResolvedValueOnce({
       sessions: [laneSession, session],
       projects: [project],
@@ -541,7 +580,12 @@ describe("store", () => {
   });
 
   it("starts a session with the chosen model, thinking level and first prompt", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().create(lane.id, {
       model: "p/small",
       thinking: "high",
@@ -561,7 +605,12 @@ describe("store", () => {
   });
 
   it("starts a bare session when no launch options are given", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().create(lane.id);
     expect(fake.backend.setModel).not.toHaveBeenCalled();
     expect(fake.backend.setThinkingLevel).not.toHaveBeenCalled();
@@ -569,7 +618,12 @@ describe("store", () => {
   });
 
   it("starts the session even when a launch choice is refused", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     fake.backend.setModel.mockRejectedValueOnce({ kind: "rejected", message: "No such model" });
     await store.getState().create(lane.id, { model: "p/missing", prompt: "Go" });
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:9", "Go", [], "start");
@@ -577,7 +631,12 @@ describe("store", () => {
   });
 
   it("reloads history when the launch prompt was handled synchronously", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     fake.backend.sendPrompt.mockResolvedValueOnce("handled");
     await store.getState().create(lane.id, { prompt: "Go" });
     expect(fake.backend.history).toHaveBeenCalledWith("panoptes:9");
@@ -605,7 +664,12 @@ describe("store", () => {
   });
 
   it("follows an adopted conversation to its Panoptes key", async () => {
-    fake.backend.openSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.openSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().open(session);
     expect(store.getState().activeKey).toBe("panoptes:7");
   });
@@ -618,7 +682,12 @@ describe("store", () => {
   });
 
   it("archives a session, closing it here", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().create(lane.id);
     await store.getState().setArchived("panoptes:7", true);
     expect(fake.backend.archiveSession).toHaveBeenCalledWith("panoptes:7", true);

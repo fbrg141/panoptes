@@ -270,6 +270,10 @@ export interface OpenedSession {
   /** Opening an adopted conversation by its harness key answers with its Panoptes key. */
   key: string;
   history: Message[];
+  /** The session's status now, so a reloaded window starts right. */
+  status: SessionStatus;
+  /** Events to apply over the history: the run's start while it runs, then waiting questions and approvals. */
+  replay: HarnessEvent[];
 }
 
 export interface HarnessInfo {

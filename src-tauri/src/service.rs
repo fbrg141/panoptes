@@ -155,6 +155,9 @@ struct StatusTracker {
     /// Open questions and approvals, with when the harness stops waiting
     /// (Unix ms).
     questions: HashMap<String, Option<i64>>,
+    /// The events that asked them, in order, so a reopened window can be
+    /// shown them again. Only those still in `questions` are open.
+    asked: Vec<HarnessEvent>,
     /// The latest assistant message in this run reported an error.
     errored: bool,
     /// How the last run ended: Idle before any, then Done or Failed.
@@ -167,6 +170,7 @@ impl Default for StatusTracker {
             status: SessionStatus::Idle,
             running: false,
             questions: HashMap::new(),
+            asked: Vec::new(),
             errored: false,
             settled: SessionStatus::Idle,
         }
@@ -188,10 +192,12 @@ impl StatusTracker {
             HarnessEvent::Question { question } => {
                 self.questions
                     .insert(question.id.clone(), question.expires_at);
+                self.asked.push(event.clone());
             }
             HarnessEvent::Approval { approval } => {
                 self.questions
                     .insert(approval.id.clone(), approval.expires_at);
+                self.asked.push(event.clone());
             }
             HarnessEvent::RunSettled { .. } => {
                 self.running = false;
@@ -217,10 +223,32 @@ impl StatusTracker {
         self.update(now)
     }
 
+    /// What a window that opens the session now needs to catch up: its
+    /// status, and the events that put it there (the run's start and the
+    /// questions and approvals still waiting).
+    fn snapshot(&mut self, now: i64) -> (SessionStatus, Vec<HarnessEvent>) {
+        self.update(now);
+        let mut replay = Vec::new();
+        if self.running {
+            replay.push(HarnessEvent::RunStarted);
+        }
+        replay.extend(self.asked.iter().cloned());
+        (self.status, replay)
+    }
+
     fn update(&mut self, now: i64) -> Option<SessionStatus> {
         // The harness picks a default once a question expires.
         self.questions
             .retain(|_, expires| expires.is_none_or(|at| at > now));
+        let questions = &self.questions;
+        self.asked.retain(|event| {
+            let id = match event {
+                HarnessEvent::Question { question } => &question.id,
+                HarnessEvent::Approval { approval } => &approval.id,
+                _ => return false,
+            };
+            questions.contains_key(id)
+        });
         let status = if !self.questions.is_empty() {
             SessionStatus::Waiting
         } else if self.running {
@@ -345,6 +373,12 @@ pub struct OpenedSession {
     /// Panoptes key.
     pub key: String,
     pub history: Vec<Message>,
+    /// The session's status now, so a reloaded window does not show a
+    /// Running or Waiting session as idle until its next change.
+    pub status: SessionStatus,
+    /// Events to apply over the history to catch up: the run's start while
+    /// it runs, then the questions and approvals still waiting.
+    pub replay: Vec<HarnessEvent>,
 }
 
 type Tracker = Arc<std::sync::Mutex<StatusTracker>>;
@@ -866,16 +900,27 @@ impl Service {
             }
         };
 
-        let existing = self.open.lock().await.get(&key).map(|o| o.session.clone());
+        let existing = self
+            .open
+            .lock()
+            .await
+            .get(&key)
+            .map(|o| (o.session.clone(), o.status.clone()));
         let result = match existing {
-            Some(session) => session
-                .history()
-                .await
-                .map(|history| OpenedSession {
-                    key: key.clone(),
-                    history,
-                })
-                .map_err(err),
+            Some((session, status)) => match session.history().await {
+                Ok(history) => {
+                    // Taken after the history, so nothing asked meanwhile
+                    // is missed; the UI drops what it already has by id.
+                    let (status, replay) = status.lock().unwrap().snapshot(now_ms());
+                    Ok(OpenedSession {
+                        key: key.clone(),
+                        history,
+                        status,
+                        replay,
+                    })
+                }
+                Err(error) => Err(err(error)),
+            },
             None => match panoptes_id(&key) {
                 Some(id) => match self.recorded_launch(id).await {
                     Ok(launch) => self.start(&key, launch, None).await,
@@ -1141,7 +1186,7 @@ impl Service {
                 return Err(error);
             }
         };
-        {
+        let (now, replay) = {
             let mut open = self.open.lock().await;
             let died = early_exit.lock().unwrap().take();
             if let Some(stderr_tail) = died {
@@ -1157,6 +1202,7 @@ impl Service {
                     },
                 ));
             }
+            let (now, replay) = status.lock().unwrap().snapshot(now_ms());
             open.insert(
                 key.to_string(),
                 OpenSession {
@@ -1166,10 +1212,13 @@ impl Service {
                     lane: launch.lane,
                 },
             );
-        }
+            (now, replay)
+        };
         Ok(OpenedSession {
             key: key.to_string(),
             history,
+            status: now,
+            replay,
         })
     }
 
@@ -2329,6 +2378,48 @@ mod tests {
         };
         assert_eq!(tracker.apply(&approval, 10), Some(SessionStatus::Waiting));
         assert_eq!(tracker.answered("a1", 20), Some(SessionStatus::Running));
+    }
+
+    #[test]
+    fn a_snapshot_replays_the_run_and_what_still_waits() {
+        let mut tracker = StatusTracker::default();
+        assert_eq!(tracker.snapshot(0), (SessionStatus::Idle, Vec::new()));
+        tracker.apply(&HarnessEvent::RunStarted, 0);
+        tracker.apply(&question("q1", None), 10);
+        tracker.apply(&question("q2", Some(100)), 10);
+        tracker.apply(&question("q3", None), 10);
+        tracker.answered("q3", 20);
+        // q2 has expired by now and q3 was answered: only q1 is shown again.
+        let (status, replay) = tracker.snapshot(200);
+        assert_eq!(status, SessionStatus::Waiting);
+        assert_eq!(replay, vec![HarnessEvent::RunStarted, question("q1", None)]);
+
+        tracker.apply(&HarnessEvent::RunSettled { aborted: false }, 300);
+        assert_eq!(tracker.snapshot(300), (SessionStatus::Done, Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn reopening_an_open_session_brings_back_its_status_and_questions() {
+        let f = fixture(FakeHarness::default());
+        let open = || {
+            f.service
+                .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+        };
+        let first = open().await.unwrap();
+        assert_eq!(first.status, SessionStatus::Idle);
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(question("q1", None)).unwrap();
+        settle().await;
+
+        // A reloaded window opens it again and gets the same process.
+        let again = open().await.unwrap();
+        assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(again.status, SessionStatus::Waiting);
+        assert_eq!(
+            again.replay,
+            vec![HarnessEvent::RunStarted, question("q1", None)]
+        );
     }
 
     #[test]

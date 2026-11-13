@@ -50,7 +50,9 @@ for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md
   the history is then reloaded as the authoritative message list; a message
   keeps the id it streamed under, so nothing is swapped. A session's status (Running,
   Waiting, Failed, Done) is worked out once, in the service, and sent as
-  `statusChanged`; the UI never derives it. Errors reach the UI as
+  `statusChanged`; the UI never derives it. Opening a session that is
+  already open also returns its status and the events to replay (the run's
+  start, waiting questions and approvals), so a reloaded window catches up. Errors reach the UI as
   `{ kind, message }`, and adapters mark theirs with `HarnessError` so the
   kind survives. Keep `src/types.ts` in step with the Rust types.
 - **Sessions belong to the harness.** Pi keeps its sessions in its own files
