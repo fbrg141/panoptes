@@ -1,5 +1,6 @@
 #!/bin/sh
-# Runs every check before a push (there is no CI). Skip once with
+# Runs every check before a push, so a red CI run is caught locally first.
+# CI runs the same `pnpm check` on every pull request. Skip once with
 # `git push --no-verify`.
 
 # Apple's /usr/bin/git sets SDKROOT for its hooks, which can point the Rust
