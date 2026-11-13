@@ -89,8 +89,16 @@ async fn check(
     if let Some(HarnessEvent::Exited { code, stderr_tail }) = events.last() {
         bail!("Pi exited during the run (code {code:?}): {stderr_tail}");
     }
+    // Extensions talk outside any run (Pi's `setWidget` and the like
+    // arrive as `Raw`, even before the prompt), so they are skipped here;
+    // every event of the run itself must follow RunStarted.
     ensure!(
-        matches!(events.first(), Some(HarnessEvent::RunStarted)),
+        matches!(
+            events
+                .iter()
+                .find(|event| !matches!(event, HarnessEvent::Raw { .. })),
+            Some(HarnessEvent::RunStarted)
+        ),
         "The run did not begin with RunStarted"
     );
     ensure!(
