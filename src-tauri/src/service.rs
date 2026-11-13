@@ -16,10 +16,12 @@ use panoptes_harness::{
 use serde::Serialize;
 use tokio::sync::Mutex;
 
+use crate::eventlog::EventLog;
 use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
 use crate::projects::{self, Location};
 use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
 use crate::writes;
+use serde_json::json;
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -417,6 +419,7 @@ struct Forwarder {
     /// Set if the process ended before `start` had listed the session as
     /// open, with what it last wrote to stderr.
     early_exit: EarlyExit,
+    log: EventLog,
 }
 
 /// Lanes other than its own that each open session has edited, by lane.
@@ -494,6 +497,23 @@ impl Forwarder {
                     continue;
                 }
                 open.remove(&self.key);
+                if let HarnessEvent::Exited { code, stderr_tail } = &event {
+                    self.log.record(
+                        "sessionExited",
+                        json!({"key": self.key, "code": code, "stderrTail": stderr_tail}),
+                    );
+                }
+            }
+            match &event {
+                HarnessEvent::Question { question } => self.log.record(
+                    "asked",
+                    json!({"key": self.key, "id": question.id, "kind": "question"}),
+                ),
+                HarnessEvent::Approval { approval } => self.log.record(
+                    "asked",
+                    json!({"key": self.key, "id": approval.id, "kind": "approval"}),
+                ),
+                _ => {}
             }
             {
                 // Holding the tracker while emitting keeps statuses in
@@ -505,6 +525,8 @@ impl Forwarder {
                     event: SessionUpdate::Harness(event),
                 });
                 if let Some(status) = changed {
+                    self.log
+                        .record("status", json!({"key": self.key, "status": status}));
                     (self.emit)(SessionEvent {
                         key: self.key.clone(),
                         event: SessionUpdate::Status(StatusChanged { status }),
@@ -564,6 +586,8 @@ pub struct Service {
     busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
     /// Open sessions seen editing a lane that is not their own.
     lane_writers: LaneWriters,
+    /// Panoptes' own record of what happened; disabled unless given one.
+    log: EventLog,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
@@ -590,9 +614,24 @@ impl Service {
             lane_cancellations: Arc::default(),
             busy_lanes: Arc::default(),
             lane_writers: Arc::default(),
+            log: EventLog::default(),
             locations: std::sync::Mutex::default(),
             emit,
         }
+    }
+
+    /// Records what happens from now on into `log`.
+    pub fn with_event_log(mut self, log: EventLog) -> Self {
+        self.log = log;
+        self
+    }
+
+    /// Records an error a command returned to the UI.
+    pub fn record_error(&self, command: &str, error: &ServiceError) {
+        self.log.record(
+            "error",
+            json!({"command": command, "kind": error.kind, "message": error.message}),
+        );
     }
 
     fn harness(&self, id: &str) -> ServiceResult<Arc<dyn Harness>> {
@@ -1148,10 +1187,12 @@ impl Service {
                     cwd: launch.cwd.clone(),
                 },
                 early_exit: early_exit.clone(),
+                log: self.log.clone(),
             }
             .run(rx),
         );
 
+        let resumed = launch.resume.is_some();
         let request = StartSession {
             cwd: launch.cwd,
             resume: launch.resume,
@@ -1202,6 +1243,16 @@ impl Service {
                     },
                 ));
             }
+            self.log.record(
+                "sessionStarted",
+                json!({
+                    "key": key,
+                    "harness": launch.harness,
+                    "lane": launch.lane,
+                    "resumed": resumed,
+                    "readOnly": launch.read_only,
+                }),
+            );
             let (now, replay) = status.lock().unwrap().snapshot(now_ms());
             open.insert(
                 key.to_string(),
@@ -1288,8 +1339,12 @@ impl Service {
             .answer(question_id.clone(), answer)
             .await
             .map_err(err)?;
+        self.log
+            .record("answered", json!({"key": key, "id": question_id}));
         let mut tracker = status.lock().unwrap();
         if let Some(status) = tracker.answered(&question_id, now_ms()) {
+            self.log
+                .record("status", json!({"key": key, "status": status}));
             (self.emit)(SessionEvent {
                 key: key.to_string(),
                 event: SessionUpdate::Status(StatusChanged { status }),
@@ -1305,6 +1360,7 @@ impl Service {
         let _guard = self.lifecycle(key).await;
         let open = self.open.lock().await.remove(key);
         if let Some(open) = open {
+            self.log.record("sessionClosed", json!({"key": key}));
             open.session.shutdown().await;
         }
     }
@@ -1455,7 +1511,17 @@ impl Service {
         .and_then(|result| result);
         self.lane_cancellations.lock().unwrap().remove(&project_id);
         match result {
-            Ok(lane) => Ok(lane),
+            Ok(lane) => {
+                self.log.record(
+                    "laneCreated",
+                    json!({
+                        "lane": lane.id,
+                        "project": lane.project_id,
+                        "mainCheckout": lane.worktrees.iter().any(|tree| tree.main_checkout),
+                    }),
+                );
+                Ok(lane)
+            }
             Err(_) if cancelled.load(Ordering::Relaxed) => Err(ServiceError::new(
                 ErrorKind::Cancelled,
                 "Lane creation cancelled",
@@ -1516,6 +1582,12 @@ impl Service {
         .context("The lane archive stopped")
         .and_then(|result| result)
         .map_err(err)
+        .inspect(|outcome| {
+            if matches!(outcome, ArchiveLaneOutcome::Archived) {
+                self.log
+                    .record("laneArchived", json!({"lane": id, "strategy": strategy}));
+            }
+        })
     }
 
     pub async fn restore_lane(&self, id: i64) -> ServiceResult<Lane> {
@@ -1543,6 +1615,7 @@ impl Service {
         .context("The lane restore stopped")
         .and_then(|result| result)
         .map_err(err)
+        .inspect(|_| self.log.record("laneRestored", json!({"lane": id})))
     }
 
     /// Permanently deletes a lane after the UI's explicit confirmation.
@@ -1570,6 +1643,7 @@ impl Service {
         .context("The lane deletion stopped")
         .and_then(|result| result)
         .map_err(err)
+        .inspect(|()| self.log.record("laneDeleted", json!({"lane": id})))
     }
 
     /// Marks a lane as being archived, restored or deleted until the guard drops.
@@ -1843,7 +1917,8 @@ mod tests {
             Store::open(dir.path()).unwrap(),
             dir.path().join("lanes"),
             Arc::new(move |event| sink.lock().unwrap().push(event)),
-        );
+        )
+        .with_event_log(EventLog::open(&dir.path().join("logs")));
         Fixture {
             service: Arc::new(service),
             harness,
@@ -2420,6 +2495,108 @@ mod tests {
             again.replay,
             vec![HarnessEvent::RunStarted, question("q1", None)]
         );
+    }
+
+    /// Every event line in the fixture's log, in order.
+    fn logged(f: &Fixture) -> Vec<serde_json::Value> {
+        let dir = f._dir.path().join("logs");
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .flat_map(|file| {
+                std::fs::read_to_string(file)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_session_leaves_a_record_without_its_words() {
+        let f = fixture(FakeHarness::default());
+        f.service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap();
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(question("q1", None)).unwrap();
+        settle().await;
+        f.service
+            .answer(
+                "fake:s1",
+                "q1".into(),
+                Answer::Confirmed { confirmed: true },
+            )
+            .await
+            .unwrap();
+        f.service.close("fake:s1").await;
+        f.service.record_error("send_prompt", &not_open());
+
+        let lines = logged(&f);
+        let events: Vec<&str> = lines
+            .iter()
+            .map(|line| line["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "sessionStarted",
+                "status",
+                "asked",
+                "status",
+                "answered",
+                "status",
+                "sessionClosed",
+                "error"
+            ]
+        );
+        assert_eq!(lines[0]["key"], "fake:s1");
+        assert_eq!(lines[0]["resumed"], true);
+        assert_eq!(lines[2]["kind"], "question");
+        assert_eq!(lines[7]["kind"], "notOpen");
+        // What the question said is not kept.
+        let text = serde_json::to_string(&lines).unwrap();
+        assert!(!text.contains("Proceed?"), "{text}");
+        assert!(lines.iter().all(|line| line["at"].is_i64()));
+    }
+
+    #[tokio::test]
+    async fn lane_changes_and_crashes_are_recorded() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let key = f.service.create(lane.id, "fake").await.unwrap().key;
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        sink.send(HarnessEvent::Exited {
+            code: Some(2),
+            stderr_tail: "boom\n".into(),
+        })
+        .unwrap();
+        settle().await;
+        f.service.archive_lane(lane.id, None).await.unwrap();
+        f.service.restore_lane(lane.id).await.unwrap();
+        f.service.delete_lane(lane.id).await.unwrap();
+
+        let lines = logged(&f);
+        let find = |event: &str| {
+            lines
+                .iter()
+                .find(|line| line["event"] == event)
+                .unwrap_or_else(|| panic!("no {event} in {lines:?}"))
+        };
+        assert_eq!(find("laneCreated")["lane"], lane.id);
+        assert_eq!(find("sessionStarted")["key"], key);
+        assert_eq!(find("sessionExited")["code"], 2);
+        assert_eq!(find("sessionExited")["stderrTail"], "boom\n");
+        assert_eq!(find("laneArchived")["lane"], lane.id);
+        assert_eq!(find("laneRestored")["lane"], lane.id);
+        assert_eq!(find("laneDeleted")["lane"], lane.id);
     }
 
     #[test]

@@ -88,6 +88,8 @@ export interface State {
   restoreLane: (id: number) => Promise<void>;
   /** Permanently deletes a lane after explicit confirmation in the UI. */
   deleteLane: (id: number) => Promise<boolean>;
+  /** Opens the event log folder in Finder. */
+  showLogs: () => Promise<void>;
   dismissError: () => void;
 }
 
@@ -532,6 +534,14 @@ export function createAppStore(backend: typeof api) {
         } catch (e) {
           fail(e);
           return false;
+        }
+      },
+
+      showLogs: async () => {
+        try {
+          await backend.showLogs();
+        } catch (e) {
+          fail(e);
         }
       },
 

@@ -16,6 +16,7 @@ export function SearchPalette() {
   const activeKey = useStore((s) => s.activeKey);
   const open = useStore((s) => s.open);
   const create = useStore((s) => s.create);
+  const showLogs = useStore((s) => s.showLogs);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
   const groups = useMemo(
@@ -63,6 +64,9 @@ export function SearchPalette() {
         break;
       case "shortcuts":
         show({ type: "shortcuts" });
+        break;
+      case "showLogs":
+        await showLogs();
         break;
     }
   };

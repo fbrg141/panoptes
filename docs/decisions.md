@@ -149,6 +149,13 @@ short list is [the gate](backlog.md#the-gate): bug-only intake lasts until it
 is closed, not until every P1 to P4 issue is. The rest is closed and kept as
 one "Later" list in [backlog.md](backlog.md).
 
+**Event log, 2026-11-13.** An exception to bug-only intake, made by the
+product owner: the 2026-12-05 bet review needs a record of how Panoptes
+behaved in daily use, not only memory and the observation log. The service
+writes one JSON line per event to `<app data>/logs/` (see `eventlog.rs`).
+It records what happened, never what was said, and never leaves the
+machine. It is the smallest part of #43; the rest of #43 stays parked.
+
 ## Lanes are the unit of work
 
 *Decided 2026-11-07.* The full model is in

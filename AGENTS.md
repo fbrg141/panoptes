@@ -16,6 +16,7 @@ this way.
 | `src-tauri/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
 | `src-tauri/src/projects.rs` | Which git repository a folder belongs to (worktrees included), a new project's defaults, and the rules its settings follow |
 | `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |
+| `src-tauri/src/eventlog.rs` | The local event log for evaluating the app: one JSON line per event, never prompt or file contents |
 | `src-tauri/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
 | `src/conversation.ts` | Pure reducer: harness events to conversation state |
 | `src/composer.ts` | Pure composer logic: mention parsing, fuzzy file matching, labels |
