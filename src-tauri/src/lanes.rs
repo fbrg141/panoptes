@@ -398,6 +398,16 @@ pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<()> {
     }
     let path = PathBuf::from(&worktree.path);
     let repo = Path::new(&project.repo);
+    if !repo.is_dir() {
+        // The repository was moved or deleted: its branch and refs went
+        // with it, and only the worktree folder can be left. It is removed
+        // only if it is a worktree (its `.git` is a file), never a checkout.
+        if path.join(".git").is_file() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("Could not remove {}", path.display()))?;
+        }
+        return Ok(());
+    }
     if std::fs::symlink_metadata(&path).is_ok() {
         ensure_on_lane_branch(&path, lane)?;
         // Deletion is explicitly destructive, including uncommitted files.
@@ -1309,6 +1319,32 @@ mod tests {
         assert!(!ref_exists(&f.repo, "refs/panoptes/lanes/fix-login/archive").unwrap());
         assert!(!ref_exists(&f.repo, "refs/panoptes/lanes/fix-login/copy-files").unwrap());
         assert_eq!(git(&f.repo, &["branch", "--show-current"]), "trunk");
+    }
+
+    #[test]
+    fn a_lane_can_be_deleted_after_its_repository_moved() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::rename(&f.repo, f.repo.with_file_name("moved")).unwrap();
+
+        delete(&f.project, &lane).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_worktree_is_kept_when_its_repository_is_gone() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::remove_file(path.join(".git")).unwrap();
+        std::fs::create_dir(path.join(".git")).unwrap();
+        std::fs::rename(&f.repo, f.repo.with_file_name("moved")).unwrap();
+
+        delete(&f.project, &lane).unwrap();
+        assert!(path.exists());
     }
 
     #[test]
