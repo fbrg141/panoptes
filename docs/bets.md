@@ -113,3 +113,4 @@ ideas here too instead of opening GitHub issues; they wait for the review above.
 | Date | What happened | Points to |
 |---|---|---|
 | 2026-11-12 | A session in lane A created lane B and did all of B's work itself. B looked empty and nothing tied its diff to the conversation. Attribution of edits, shell commands included, across lanes is prototyped on the `bet1-lane-attribution` branch | 1 |
+| 2026-11-13 | A project whose repository moved can only be cleared away (delete its lanes, remove it, add it again), which loses the lanes' history. Pointing the project at the new path would keep it (#84) | none |

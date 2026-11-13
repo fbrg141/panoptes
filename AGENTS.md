@@ -68,14 +68,17 @@ for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md
   migrated stops the app with an error, never a silent fresh start.
   Debug builds use their own store (`<app data>/dev`) and lanes folder
   (`~/Panoptes/dev/lanes`), so a step can be reworked freely until it ships.
-- **One process per open session.** `Service::open` serialises opens of the
-  same key. Never start a second process on a session that is already open.
+- **One process per open session.** Open, create, close and adopt each hold
+  the session key's lifecycle lock in `Service`, so a process never starts
+  while another for the same session is starting or shutting down. Never
+  start a second process on a session that is already open.
 - **Style only through the design system.** Use its components first
   (`Button`, `Input`, `AgentRow`, `StatusPill`, `LoopMark`, `Icon`, ...),
   then Tailwind utilities mapped to its tokens (`bg-surface`,
   `text-ink-muted`, `border-line`, `text-caption`). No raw colours, no
   Tailwind palette colours (`neutral-500` and the like), no emoji. Status
-  words are exactly Running, Waiting, Failed and Done. Files under
+  words are exactly Running, Waiting, Failed and Done; a session that has
+  not run yet is `idle` on the wire and shows no word. Files under
   `packages/design-system` are exported by the design tool; change the design
   system there and re-export rather than editing them here.
 - Logic goes where it can be tested without a window: the adapter, the

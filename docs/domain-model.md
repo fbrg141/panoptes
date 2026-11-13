@@ -123,6 +123,9 @@ system's words:
 | Failed | The process ended unexpectedly, or the last run errored |
 | Done | Idle and ready for the next prompt |
 
+A session whose process has just started and has not run yet is sent as
+`idle`, which the UI shows as a plain dot with no status word (#114).
+
 A session whose process is not running has no status. It is simply closed and
 can be reopened.
 
@@ -169,15 +172,17 @@ The sidebar has two tabs (#57):
    new branch from `baseBranch`, copies `copyFiles` from the main checkout,
    runs `setup`, then creates the lane's one session and sends the prompt.
    With the main-checkout opt-in, it uses the project's checkout instead.
-2. If worktree setup fails or you cancel, everything created so far is removed,
-   so nothing is left behind (#9). If session startup fails, its record is
+2. If worktree setup fails or you cancel, Panoptes removes the worktree and
+   the new branch it created (#9). A cleanup step that itself fails is not
+   reported, so in that rare case a folder or branch can be left behind. If session startup fails, its record is
    discarded and the empty lane offers a retry.
 3. **Use:** close and reopen the lane's one session as needed.
 4. **Archive**, on request. Archiving never touches the branch.
    - A clean tree: the worktree is removed.
    - A dirty tree never loses work. Panoptes offers three ways out and does
      nothing until you pick one: **commit** the changes on the lane's branch,
-     **stash** them onto the branch, or **keep it as a checkpoint**: the tree
+     **stash** them into the repository's stash (named after the lane;
+     restoring does not reapply it), or **keep it as a checkpoint**: the tree
      is saved to a checkpoint ref and the worktree is removed, and restoring
      creates a fresh worktree with the same uncommitted changes, without
      moving the branch (see
@@ -195,6 +200,9 @@ The sidebar has two tabs (#57):
      refs, then its lane and Panoptes session records. A main-checkout lane
      deletes only those records. Harness conversation files are never
      deleted. Once its last lane is deleted, the project can be removed.
+     If the repository has been moved or deleted, deleting a lane removes
+     only its worktree folder, since the branch and refs went with the
+     repository.
 
 ### Session
 
