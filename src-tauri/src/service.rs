@@ -2689,6 +2689,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_project_whose_repository_moved_can_still_be_cleared_away() {
+        let f = fixture(FakeHarness::default());
+        let (code, lane) = lane_of(&f).await;
+        let repo = PathBuf::from(&lane.worktrees[0].path);
+        std::fs::rename(&repo, code.path().join("moved")).unwrap();
+
+        f.service.list().await;
+        f.service.delete_lane(lane.id).await.unwrap();
+        f.service.remove_project(lane.project_id).await.unwrap();
+        assert!(f.service.list().await.projects.is_empty());
+    }
+
+    #[tokio::test]
     async fn deleting_a_lane_requires_a_closed_session_and_frees_the_project() {
         let f = fixture(FakeHarness::default());
         let (_code, lane) = lane_of(&f).await;
