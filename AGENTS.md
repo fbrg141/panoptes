@@ -73,7 +73,8 @@ for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md
   then Tailwind utilities mapped to its tokens (`bg-surface`,
   `text-ink-muted`, `border-line`, `text-caption`). No raw colours, no
   Tailwind palette colours (`neutral-500` and the like), no emoji. Status
-  words are exactly Running, Waiting, Failed and Done. Files under
+  words are exactly Running, Waiting, Failed and Done; a session that has
+  not run yet is `idle` on the wire and shows no word. Files under
   `packages/design-system` are exported by the design tool; change the design
   system there and re-export rather than editing them here.
 - Logic goes where it can be tested without a window: the adapter, the

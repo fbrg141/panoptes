@@ -169,8 +169,9 @@ discarded, and a new task gets a new lane.
    worktrees, so multi-repo lanes (#21) need no migration, but the UI only
    ever creates one. Room without complexity.
 3. **Archiving never destroys tracked or configured work.** A dirty tree is
-   never removed as it is: Panoptes offers commit, stash onto the branch, or
-   keeping it as a checkpoint (see the checkpoint decision below). Archive
+   never removed as it is: Panoptes offers commit, stash (into the
+   repository's own stash, named after the lane; restoring the lane does not
+   reapply it, so it stays in `git stash list`), or keeping it as a checkpoint (see the checkpoint decision below). Archive
    leaves the branch alone. Current `copyFiles` values are preserved separately
    under `refs/panoptes/lanes/<lane>/copy-files` and restored without staging
    them. Other ignored files are not captured and may be removed with the
