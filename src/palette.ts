@@ -8,7 +8,8 @@ export type PaletteTarget =
   | { kind: "project"; project: Project }
   | { kind: "newSession" }
   | { kind: "newProject" }
-  | { kind: "shortcuts" };
+  | { kind: "shortcuts" }
+  | { kind: "showLogs" };
 
 const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
 
@@ -102,6 +103,7 @@ export function paletteGroups(
           icon: "command",
           kbd: ["⌘", "/"],
         },
+        { id: "action:showLogs", label: "Show logs in Finder", icon: "folder-open" },
       ],
     },
   ];
@@ -132,6 +134,7 @@ export function paletteTarget(
       if (rest === "newSession") return { kind: "newSession" };
       if (rest === "newProject") return { kind: "newProject" };
       if (rest === "shortcuts") return { kind: "shortcuts" };
+      if (rest === "showLogs") return { kind: "showLogs" };
       return null;
     default:
       return null;

@@ -48,6 +48,26 @@ struct AppInfo {
 struct AppState {
     info: AppInfo,
     service: Service,
+    /// Where the event log writes, opened by "Show logs in Finder".
+    logs_dir: std::path::PathBuf,
+}
+
+/// Opens the event log's folder in Finder (made first, so there is always
+/// something to open).
+fn open_logs_folder(app: &AppHandle) -> ServiceResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app.state::<AppState>().logs_dir.clone();
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        service::ServiceError::other(format!("Could not create {}: {error}", dir.display()))
+    })?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|error| service::ServiceError::other(error.to_string()))
+}
+
+#[tauri::command]
+fn show_logs(app: AppHandle) -> ServiceResult<()> {
+    open_logs_folder(&app)
 }
 
 /// Records a command's error in the event log, then passes the result on.
@@ -409,7 +429,8 @@ fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
             let _ = emitter.emit("session-event", event);
         }),
     );
-    let log = eventlog::EventLog::open(&data_dir.join("logs"));
+    let logs_dir = data_dir.join("logs");
+    let log = eventlog::EventLog::open(&logs_dir);
     log.record(
         "appStarted",
         serde_json::json!({
@@ -421,7 +442,31 @@ fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
         }),
     );
     let service = service.with_event_log(log);
-    Ok(AppState { info, service })
+    Ok(AppState {
+        info,
+        service,
+        logs_dir,
+    })
+}
+
+const SHOW_LOGS: &str = "show-logs";
+
+/// The standard menu, with "Show Logs in Finder" in Help.
+fn add_logs_menu_item(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, Submenu};
+    let menu = Menu::default(app)?;
+    let item = MenuItem::with_id(app, SHOW_LOGS, "Show Logs in Finder", true, None::<&str>)?;
+    let help = menu
+        .items()?
+        .into_iter()
+        .filter_map(|entry| entry.as_submenu().cloned())
+        .find(|submenu| submenu.text().is_ok_and(|text| text == "Help"));
+    match help {
+        Some(help) => help.append(&item)?,
+        None => menu.append(&Submenu::with_items(app, "Help", true, &[&item])?)?,
+    }
+    app.set_menu(menu)?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -437,6 +482,7 @@ pub fn run() {
             match load_state(app.handle()) {
                 Ok(state) => {
                     app.manage(state);
+                    add_logs_menu_item(app.handle())?;
                 }
                 // Starting without the store would show an empty app and
                 // risk overwriting what could not be read, so stop instead.
@@ -458,8 +504,14 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_menu_event(|app, event| {
+            if event.id() == SHOW_LOGS {
+                let _ = open_logs_folder(app);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            show_logs,
             set_zoom,
             list_sessions,
             open_session,

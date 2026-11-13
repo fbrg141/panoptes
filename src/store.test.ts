@@ -126,6 +126,7 @@ function fakeBackend() {
     archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
     restoreLane: vi.fn(async (): Promise<Lane> => lane),
     deleteLane: vi.fn(async () => {}),
+    showLogs: vi.fn(async () => {}),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
       return () => {};
@@ -554,6 +555,15 @@ describe("store", () => {
     expect(deleted).toBe(false);
     expect(store.getState().lanes).toEqual([lane]);
     expect(store.getState().error).toBe("Close this lane's session before deleting it");
+  });
+
+  it("shows the error when the logs folder cannot be opened", async () => {
+    fake.backend.showLogs.mockRejectedValueOnce({ kind: "io", message: "No Finder" });
+
+    await store.getState().showLogs();
+
+    expect(fake.backend.showLogs).toHaveBeenCalled();
+    expect(store.getState().error).toBe("No Finder");
   });
 
   it("starts a session in a lane and lists it at once, from its record", async () => {

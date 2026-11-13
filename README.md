@@ -66,6 +66,8 @@ The event log is Panoptes' own record for evaluating it in daily use: one
 JSON line per session start, close or crash, status change, question asked
 or answered, lane change, and error shown in the window. It never holds
 prompts, replies or file contents, stays on your Mac, and keeps 30 days.
+To open the folder, choose Help → Show Logs in Finder, or press ⌘P and pick
+Show logs in Finder.
 
 Apps opened from Finder don't get your shell's `PATH`, so at startup the
 installed app reads it from your login shell. That is how it finds `pi`,
