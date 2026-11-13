@@ -80,7 +80,7 @@ export function Sidebar() {
         <Tabs
           tabs={[
             { id: "lanes", label: "Lanes", icon: "git-branch" },
-            { id: "all", label: "All sessions", icon: "list", count: sessions.length },
+            { id: "all", label: "All sessions", icon: "history", count: sessions.length },
           ]}
           value={tab}
           onChange={(id) => setTab(id as NavigationTab)}
@@ -185,10 +185,10 @@ function ProjectItem({
   onArchive: (lane: Lane) => void;
   onDelete: (lane: Lane) => void;
 }) {
-  const removeProject = useStore((s) => s.removeProject);
   const restoreLane = useStore((s) => s.restoreLane);
   const [collapsed, setCollapsed] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const active = lanes.filter((lane) => lane.state === "active");
   const archived = lanes.filter((lane) => lane.state === "archived");
 
@@ -222,13 +222,14 @@ function ProjectItem({
         <RowMenu
           label={`Actions for project ${project.name}`}
           className={`ml-1 flex flex-none ${REVEAL_ON_HOVER} group-hover/project:opacity-100 group-focus-within/project:opacity-100`}
-          items={projectMenuItems()}
+          items={projectMenuItems(lanes.length)}
           onSelect={(id) => {
             if (id === "new-lane") onNewLane();
-            if (id === "remove-project") void removeProject(project.id);
+            if (id === "remove-project") setRemoving(true);
           }}
         />
       </header>
+      {removing && <RemoveProjectDialog project={project} onClose={() => setRemoving(false)} />}
       {!collapsed && (
         <div className="ml-3 border-l border-line pl-1">
           <ul>
@@ -313,7 +314,7 @@ function LaneItem({
             {lane.task}
           </p>
           <p
-            className={`truncate text-caption ${main ? "text-waiting" : "text-ink-muted"}`}
+            className={`truncate ${main ? "text-caption text-waiting" : "text-code-sm text-ink-muted"}`}
             title={lane.worktrees[0]?.path}
           >
             {main ? "Main checkout" : lane.branch}
@@ -367,6 +368,41 @@ function LaneItem({
         </div>
       )}
     </li>
+  );
+}
+
+function RemoveProjectDialog({ project, onClose }: { project: Project; onClose: () => void }) {
+  const removeProject = useStore((s) => s.removeProject);
+  const [busy, setBusy] = useState(false);
+
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    if (await removeProject(project.id)) onClose();
+    else setBusy(false);
+  };
+
+  return (
+    <Dialog
+      title={`Remove ${project.name}?`}
+      width={480}
+      onClose={busy ? undefined : onClose}
+      actions={
+        <>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="danger" disabled={busy} onClick={() => void remove()}>
+            Remove project
+          </Button>
+        </>
+      }
+    >
+      <p>
+        Panoptes forgets this project and its settings. The repository at{" "}
+        <code>{project.repo}</code> and Pi conversation files are not changed.
+      </p>
+    </Dialog>
   );
 }
 

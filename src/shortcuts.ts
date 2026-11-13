@@ -1,22 +1,24 @@
 // Window shortcuts, in one place so the key handler and the cheatsheet never
-// drift apart. Detection works with ⌘ on macOS and Ctrl elsewhere; the
-// cheatsheet shows the macOS keys, as the rest of the UI does.
+// drift apart. Panoptes is a macOS app, so only ⌘ counts: Ctrl+P, Ctrl+N and
+// Ctrl+T are text-editing keys there and must reach the composer.
 
 /** The shortcuts this file knows how to detect. */
 export type ShortcutId = "search" | "newSession" | "newProject" | "shortcuts";
 
 /** The shortcut a keyboard event asks for, or null if it is none. */
 export function shortcutFor(
-  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "key">,
+  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key">,
 ): ShortcutId | null {
-  if (!e.metaKey && !e.ctrlKey) return null;
+  if (!e.metaKey || e.ctrlKey || e.altKey) return null;
+  // ⌘⇧P and the like are other shortcuts, not these.
+  const letter = (id: ShortcutId) => (e.shiftKey ? null : id);
   switch (e.key.toLowerCase()) {
     case "p":
-      return "search";
+      return letter("search");
     case "t":
-      return "newSession";
+      return letter("newSession");
     case "n":
-      return "newProject";
+      return letter("newProject");
     // ⌘/ arrives as "/" unshifted and "?" with shift held.
     case "/":
     case "?":

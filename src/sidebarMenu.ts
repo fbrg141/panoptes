@@ -1,10 +1,20 @@
 import type { MenuItem } from "@panoptes/design-system";
 import type { Lane, Session } from "./types";
 
-export const projectMenuItems = (): MenuItem[] => [
+/**
+ * A project can only be removed once it has no lanes, archived ones
+ * included, so the item is disabled until then.
+ */
+export const projectMenuItems = (laneCount = 0): MenuItem[] => [
   { id: "new-lane", label: "New lane", icon: "git-branch" },
   { separator: true },
-  { id: "remove-project", label: "Remove project", icon: "trash-2", danger: true },
+  {
+    id: "remove-project",
+    label: laneCount > 0 ? "Remove project (delete its lanes first)" : "Remove project",
+    icon: "trash-2",
+    danger: true,
+    disabled: laneCount > 0,
+  },
 ];
 
 export const laneMenuItems = (lane: Pick<Lane, "state">): MenuItem[] => [

@@ -65,9 +65,14 @@ describe("paletteGroups", () => {
     expect(groups[1].items).toHaveLength(1);
     expect(groups[1].items[0]).toMatchObject({
       id: "lane:4",
-      hint: "Web app · panoptes/fix-login",
+      hint: "Start a session · Web app · panoptes/fix-login",
     });
     expect(groups[2].items[0]).toMatchObject({ id: "project:1", hint: "New lane · /code/web" });
+  });
+
+  it("only warns that picking a lane starts a session when it has none", () => {
+    const [, lanes] = paletteGroups([{ ...session, laneId: 4 }], [project], [lane]);
+    expect(lanes.items[0].hint).toBe("Web app · panoptes/fix-login");
   });
 
   it("hints a lane session with its project and lane, an archived one first", () => {

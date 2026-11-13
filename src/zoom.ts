@@ -10,17 +10,17 @@ export type ZoomCommand = "in" | "out" | "reset";
 
 /** The zoom command a keyboard event asks for, or null if it is none. */
 export function zoomCommand(
-  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "key">,
+  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "key">,
 ): ZoomCommand | null {
-  if (!e.metaKey && !e.ctrlKey) return null;
+  // Only ⌘, as on every macOS app; shift is allowed because ⌘+ needs it on
+  // most layouts. The keypad's plus and minus arrive as "+" and "-".
+  if (!e.metaKey || e.ctrlKey || e.altKey) return null;
   switch (e.key) {
     case "+":
     case "=": // ⌘= is what macOS reports for the plus key, shifted or not
-    case "NumpadAdd":
       return "in";
     case "-":
     case "_":
-    case "NumpadSubtract":
       return "out";
     case "0":
       return "reset";
