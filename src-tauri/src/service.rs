@@ -481,13 +481,44 @@ impl Forwarder {
     }
 }
 
+/// Lists a session as starting for as long as it lives.
+struct Starting {
+    starting: Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
+    key: String,
+}
+
+impl Starting {
+    fn new(
+        starting: &Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
+        key: &str,
+        lane: Option<i64>,
+    ) -> Self {
+        starting.lock().unwrap().insert(key.to_string(), lane);
+        Self {
+            starting: starting.clone(),
+            key: key.to_string(),
+        }
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        self.starting.lock().unwrap().remove(&self.key);
+    }
+}
+
 pub struct Service {
     harnesses: HashMap<String, Arc<dyn Harness>>,
     open: Arc<Mutex<HashMap<String, OpenSession>>>,
-    /// One lock per session key while it is being opened, so concurrent
-    /// opens of one session start one process, never two writers on one
-    /// session file.
-    opening: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// One lifecycle lock per session key, held by every step that starts,
+    /// stops or re-homes its process: open, create, close and adopt. So a
+    /// session never gets a second process while its first one is starting
+    /// or shutting down. Entries are never removed, so two callers can never
+    /// hold different locks for one key.
+    lifecycle: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Sessions whose process is starting, with their lane. They are not in
+    /// `open` yet, and a lane must not be archived or deleted under them.
+    starting: Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
     generations: AtomicU64,
     /// Shared with the blocking threads that run every store call.
     store: Arc<std::sync::Mutex<Store>>,
@@ -517,7 +548,8 @@ impl Service {
                 .map(|harness| (harness.id().to_string(), harness))
                 .collect(),
             open: Arc::default(),
-            opening: Mutex::default(),
+            lifecycle: std::sync::Mutex::default(),
+            starting: Arc::default(),
             generations: AtomicU64::new(1),
             store: Arc::new(std::sync::Mutex::new(store)),
             lanes_root,
@@ -536,6 +568,33 @@ impl Service {
                 format!("The {id} harness is not available"),
             )
         })
+    }
+
+    /// Waits for, and holds, the lifecycle lock of `key`.
+    async fn lifecycle(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .lifecycle
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_default()
+            .clone();
+        lock.lock_owned().await
+    }
+
+    /// Whether a session in lane `id` is open or starting.
+    async fn lane_in_use(&self, id: i64) -> bool {
+        self.starting
+            .lock()
+            .unwrap()
+            .values()
+            .any(|lane| *lane == Some(id))
+            || self
+                .open
+                .lock()
+                .await
+                .values()
+                .any(|open| open.lane == Some(id))
     }
 
     async fn session(&self, key: &str) -> ServiceResult<Arc<dyn AgentSession>> {
@@ -779,9 +838,13 @@ impl Service {
         locator: String,
         cwd: String,
     ) -> ServiceResult<OpenedSession> {
+        let mut guard = self.lifecycle(key).await;
         let key = match panoptes_id(key) {
             Some(_) => key.to_string(),
             None => {
+                // Looked up under the conversation's own lock, which `adopt`
+                // holds while it records an adoption: an open never starts
+                // a raw process on a conversation a lane has just taken.
                 let harness_id = key
                     .strip_prefix(&format!("{harness}:"))
                     .unwrap_or_default()
@@ -791,17 +854,17 @@ impl Service {
                     .with_store(move |store| store.session_for(&name, &harness_id))
                     .await
                     .map_err(err)?;
-                adopted.map_or_else(|| key.to_string(), panoptes_key)
+                match adopted {
+                    Some(id) => {
+                        drop(guard);
+                        let key = panoptes_key(id);
+                        guard = self.lifecycle(&key).await;
+                        key
+                    }
+                    None => key.to_string(),
+                }
             }
         };
-        let lock = self
-            .opening
-            .lock()
-            .await
-            .entry(key.clone())
-            .or_default()
-            .clone();
-        let _guard = lock.lock().await;
 
         let existing = self.open.lock().await.get(&key).map(|o| o.session.clone());
         let result = match existing {
@@ -830,8 +893,7 @@ impl Service {
                 }
             },
         };
-        drop(_guard);
-        self.opening.lock().await.remove(&key);
+        drop(guard);
         result
     }
 
@@ -882,6 +944,7 @@ impl Service {
             })
             .await
             .map_err(err)?;
+        let _guard = self.lifecycle(&panoptes_key(record.id)).await;
         self.start_recorded(record.id, &lane, harness).await
     }
 
@@ -908,6 +971,9 @@ impl Service {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ServiceError::new(ErrorKind::Rejected, "Invalid harness session key"))?
             .to_string();
+        // Held until the adoption is recorded, so no open of this
+        // conversation can start a raw process in between.
+        let _guard = self.lifecycle(key).await;
         let name = harness.to_string();
         let id_for_lookup = harness_id.clone();
         if let Some(id) = self
@@ -998,6 +1064,18 @@ impl Service {
         status: Option<Tracker>,
     ) -> ServiceResult<OpenedSession> {
         let harness = self.harness(&launch.harness)?;
+        // Listed as starting before the busy check, while archive and
+        // delete mark the lane busy before checking for sessions: whichever
+        // comes second sees the other.
+        let _starting = Starting::new(&self.starting, key, launch.lane);
+        if let Some(lane) = launch.lane
+            && self.busy_lanes.lock().unwrap().contains(&lane)
+        {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "This lane is being archived, restored or deleted",
+            ));
+        }
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HarnessEvent>();
         let fresh = status.is_none();
@@ -1171,7 +1249,11 @@ impl Service {
         Ok(())
     }
 
+    /// Stops a session's process. It waits for a start in progress to
+    /// finish, so that process is stopped too, and holds the session's lock
+    /// until the process has gone, so a reopen never overlaps it.
     pub async fn close(&self, key: &str) {
+        let _guard = self.lifecycle(key).await;
         let open = self.open.lock().await.remove(key);
         if let Some(open) = open {
             open.session.shutdown().await;
@@ -1347,13 +1429,7 @@ impl Service {
         strategy: Option<ArchiveStrategy>,
     ) -> ServiceResult<ArchiveLaneOutcome> {
         let _busy = self.lane_busy(id)?;
-        if self
-            .open
-            .lock()
-            .await
-            .values()
-            .any(|open| open.lane == Some(id))
-        {
+        if self.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Close this lane's sessions before archiving it",
@@ -1424,13 +1500,7 @@ impl Service {
     /// Open sessions are refused rather than killed underneath their user.
     pub async fn delete_lane(&self, id: i64) -> ServiceResult<()> {
         let _busy = self.lane_busy(id)?;
-        if self
-            .open
-            .lock()
-            .await
-            .values()
-            .any(|open| open.lane == Some(id))
-        {
+        if self.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Close this lane's session before deleting it",
@@ -1567,6 +1637,15 @@ mod tests {
         requests: std::sync::Mutex<Vec<StartSession>>,
         /// Its process ends right after it reports its session.
         dies_on_start: bool,
+        /// Processes started and not yet shut down, and the most there ever
+        /// were at once.
+        live: Arc<Live>,
+    }
+
+    #[derive(Default)]
+    struct Live {
+        now: AtomicUsize,
+        most: AtomicUsize,
     }
 
     impl FakeHarness {
@@ -1581,6 +1660,8 @@ mod tests {
         id: String,
         cwd: String,
         events: EventSink,
+        live: Arc<Live>,
+        down: AtomicBool,
     }
 
     #[async_trait]
@@ -1623,6 +1704,8 @@ mod tests {
             events: EventSink,
         ) -> anyhow::Result<Box<dyn AgentSession>> {
             let start = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
+            let now = self.live.now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.live.most.fetch_max(now, Ordering::SeqCst);
             // Slow enough that concurrent opens overlap.
             tokio::time::sleep(Duration::from_millis(50)).await;
             let id = request
@@ -1644,7 +1727,13 @@ mod tests {
                 // would be listed as open.
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            Ok(Box::new(FakeSession { id, cwd, events }))
+            Ok(Box::new(FakeSession {
+                id,
+                cwd,
+                events,
+                live: self.live.clone(),
+                down: AtomicBool::new(false),
+            }))
         }
     }
 
@@ -1676,6 +1765,11 @@ mod tests {
             Ok(())
         }
         async fn shutdown(&self) {
+            // A process takes a moment to go, as Pi's does.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            if !self.down.swap(true, Ordering::SeqCst) {
+                self.live.now.fetch_sub(1, Ordering::SeqCst);
+            }
             let _ = self.events.send(HarnessEvent::Exited {
                 code: Some(0),
                 stderr_tail: String::new(),
@@ -1778,6 +1872,98 @@ mod tests {
         assert_eq!(a.unwrap().key, "fake:s1");
         assert_eq!(b.unwrap().key, "fake:s1");
         assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_reopen_waits_for_the_close_before_it() {
+        let f = fixture(FakeHarness::default());
+        let service = f.service.clone();
+        service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap();
+        let (_, reopened) = tokio::join!(
+            service.close("fake:s1"),
+            service.open("fake", "fake:s1", "s1".into(), "/tmp".into())
+        );
+        reopened.unwrap();
+        assert_eq!(f.harness.starts.load(Ordering::SeqCst), 2);
+        assert_eq!(f.harness.live.most.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_close_during_a_start_stops_that_process() {
+        let f = fixture(FakeHarness::default());
+        let service = f.service.clone();
+        let opening = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+                    .await
+            }
+        });
+        // The harness is still starting the process.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        service.close("fake:s1").await;
+        opening.await.unwrap().unwrap();
+        assert!(!service.list().await.sessions[0].open);
+        assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_starts_never_overlap() {
+        let f = fixture(FakeHarness {
+            dies_on_start: true,
+            ..FakeHarness::default()
+        });
+        let open = |service: Arc<Service>| async move {
+            service
+                .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+                .await
+        };
+        let s = f.service.clone();
+        let (a, b, c) = tokio::join!(open(s.clone()), open(s.clone()), open(s.clone()));
+        assert!(a.is_err() && b.is_err() && c.is_err());
+        assert_eq!(f.harness.live.most.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn adopting_waits_for_an_open_of_the_same_conversation() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let service = f.service.clone();
+        let opening = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // The open got there first, so adoption is refused rather than
+        // leaving its process running beside the lane's.
+        let adopted = service
+            .adopt("fake", "fake:s1", "s1".into(), "/tmp".into(), Some(lane.id))
+            .await;
+        opening.await.unwrap().unwrap();
+        assert!(adopted.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_lane_cannot_be_archived_while_its_session_starts() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let service = f.service.clone();
+        let creating = tokio::spawn({
+            let service = service.clone();
+            async move { service.create(lane.id, "fake").await }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(service.archive_lane(lane.id, None).await.is_err());
+        assert!(service.delete_lane(lane.id).await.is_err());
+        creating.await.unwrap().unwrap();
     }
 
     /// A registered repository with one main-checkout lane, which needs no
