@@ -195,6 +195,9 @@ The sidebar has two tabs (#57):
      refs, then its lane and Panoptes session records. A main-checkout lane
      deletes only those records. Harness conversation files are never
      deleted. Once its last lane is deleted, the project can be removed.
+     If the repository has been moved or deleted, deleting a lane removes
+     only its worktree folder, since the branch and refs went with the
+     repository.
 
 ### Session
 
