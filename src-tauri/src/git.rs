@@ -17,7 +17,7 @@ pub fn output(command: &mut Command, input: Option<&[u8]>) -> anyhow::Result<Out
     output_with_timeout(command, input, TIMEOUT)
 }
 
-fn output_with_timeout(
+pub(crate) fn output_with_timeout(
     command: &mut Command,
     input: Option<&[u8]>,
     timeout: Duration,

@@ -403,7 +403,11 @@ async fn create_lane(
 
 #[tauri::command]
 async fn lane_changes(state: State<'_, AppState>, lane_id: i64) -> ServiceResult<Changes> {
-    state.service.lane_changes(lane_id).await
+    logged(
+        &state,
+        "lane_changes",
+        state.service.lane_changes(lane_id).await,
+    )
 }
 
 #[tauri::command]
@@ -413,7 +417,11 @@ async fn file_hunks(
     path: String,
     range: TreeRange,
 ) -> ServiceResult<Vec<Hunk>> {
-    state.service.file_hunks(lane_id, path, range).await
+    logged(
+        &state,
+        "file_hunks",
+        state.service.file_hunks(lane_id, path, range).await,
+    )
 }
 
 #[tauri::command]

@@ -136,8 +136,11 @@ pub fn lane_range(project: &Project, lane: &Lane) -> anyhow::Result<TreeRange> {
                 .iter()
                 .find(|worktree| worktree.project_id == project.id)
                 .context("The lane has no worktree for this project")?;
-            let target = worktree.checkpoint_ref.as_deref().unwrap_or(&lane.branch);
-            let from = merge_base(repo, &base, target)?;
+            let target = worktree
+                .checkpoint_ref
+                .clone()
+                .unwrap_or_else(|| format!("refs/heads/{}", lane.branch));
+            let from = merge_base(repo, &base, &target)?;
             let to = resolve(repo, &format!("{target}^{{tree}}"))?;
             Ok(TreeRange { from, to })
         }
@@ -502,7 +505,12 @@ fn run_input(repo: &Path, args: &[&str], input: &[u8]) -> anyhow::Result<String>
 
 fn git_output(repo: &Path, args: &[&str], input: &[u8]) -> anyhow::Result<Output> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(repo).args(args);
+    // A file named `a*` is one literal path, never a pathspec matching `ab`.
+    command
+        .arg("--literal-pathspecs")
+        .arg("-C")
+        .arg(repo)
+        .args(args);
     crate::git::output(&mut command, Some(input))
         .with_context(|| format!("Could not run git {}", args.join(" ")))
 }
@@ -636,6 +644,22 @@ mod tests {
     }
 
     #[test]
+    fn paths_with_glob_characters_are_literal() {
+        let (_dir, project, lane) = fixture();
+        let repo = Path::new(&project.repo);
+        std::fs::write(repo.join("a*"), "literal\n").unwrap();
+        std::fs::write(repo.join("ab"), "other\n").unwrap();
+        let range = lane_range(&project, &lane).unwrap();
+
+        let literal = hunks(repo, &range, "a*", DiffOptions::default()).unwrap();
+        assert_eq!(literal.len(), 1);
+        assert_eq!(literal[0].lines[0].text, "literal");
+        let other = hunks(repo, &range, "ab", DiffOptions::default()).unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].lines[0].text, "other");
+    }
+
+    #[test]
     fn user_diff_and_status_configuration_cannot_hide_changes() {
         let (_dir, project, lane) = fixture();
         let repo = Path::new(&project.repo);
@@ -674,6 +698,27 @@ mod tests {
         .unwrap();
         assert_eq!(changes.files.len(), 1);
         assert_eq!(changes.files[0].path, "archived.txt");
+    }
+
+    #[test]
+    fn an_archived_branch_cannot_be_shadowed_by_a_tag() {
+        let (_dir, project, mut lane) = fixture();
+        let repo = Path::new(&project.repo);
+        std::fs::write(repo.join("branch.txt"), "branch\n").unwrap();
+        commit(repo, "branch work");
+        // The unqualified name would resolve to this tag instead.
+        git(repo, &["tag", "panoptes/review", "trunk"]);
+        lane.state = LaneState::Archived;
+        lane.worktrees[0].path = repo.join("removed").to_string_lossy().into_owned();
+
+        let changes = diff(
+            repo,
+            &lane_range(&project, &lane).unwrap(),
+            DiffOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(changes.files.len(), 1);
+        assert_eq!(changes.files[0].path, "branch.txt");
     }
 
     #[test]

@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::{Lane, LaneWorktree, NewLane, NewLaneWorktree, Project};
 
+/// Large worktrees can legitimately take a while to snapshot or archive.
+/// Keep those operations bounded without applying the diff reader's 30 s limit.
+const LANE_GIT_TIMEOUT: Duration = Duration::from_secs(600);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArchiveStrategy {
@@ -579,12 +583,13 @@ fn restore_copy_files(project: &Project, lane: &Lane, path: &Path) -> anyhow::Re
             continue;
         }
         let object = format!("{reference}:{relative}");
-        let output = crate::git::output(
+        let output = crate::git::output_with_timeout(
             Command::new("git")
                 .arg("-C")
                 .arg(repo)
                 .args(["show", &object]),
             None,
+            LANE_GIT_TIMEOUT,
         )?;
         if !output.status.success() {
             return Err(command_failed("git show", &output));
@@ -773,7 +778,7 @@ impl Drop for CreationCleanup {
 /// branch outlives archiving and new names skip existing branches.
 fn checkpoint(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<(String, String)> {
     let tree = snapshot_tree(path, lane)?;
-    let output = crate::git::output(
+    let output = crate::git::output_with_timeout(
         Command::new("git")
             .arg("-C")
             .arg(path)
@@ -784,6 +789,7 @@ fn checkpoint(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<(St
             .env("GIT_COMMITTER_NAME", "Panoptes")
             .env("GIT_COMMITTER_EMAIL", "panoptes@localhost"),
         None,
+        LANE_GIT_TIMEOUT,
     )
     .context("Could not write the lane checkpoint")?;
     let commit = checked_stdout("git commit-tree", output)?;
@@ -886,7 +892,7 @@ fn run_index(cwd: &Path, index: &Path, args: &[&str]) -> anyhow::Result<String> 
         .arg(cwd)
         .args(args)
         .env("GIT_INDEX_FILE", index);
-    let output = crate::git::output(&mut command, None)
+    let output = crate::git::output_with_timeout(&mut command, None, LANE_GIT_TIMEOUT)
         .with_context(|| format!("Could not run git {}", args.join(" ")))?;
     checked_stdout("git", output)
 }
@@ -894,7 +900,7 @@ fn run_index(cwd: &Path, index: &Path, args: &[&str]) -> anyhow::Result<String> 
 fn git(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).args(args);
-    crate::git::output(&mut command, None)
+    crate::git::output_with_timeout(&mut command, None, LANE_GIT_TIMEOUT)
         .with_context(|| format!("Could not run git {}", args.join(" ")))
 }
 
