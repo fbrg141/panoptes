@@ -6,6 +6,7 @@ import {
   groupLabel,
   looseApprovals,
   summarizeWork,
+  toolImages,
   toolSteps,
 } from "./turns";
 import type { Block, Message, ToolCall, ToolKind } from "./types";
@@ -104,6 +105,9 @@ describe("buildTurns", () => {
     ]);
     expect(turn.work.map((s) => s.type)).toEqual(["tool", "tool", "tool"]);
     expect(toolSteps(turn.work)[1].call.images).toEqual([shot]);
+    // A finished turn folds its work; the images stay listed for the fold.
+    expect(summarizeWork(turn.work)).not.toBeNull();
+    expect(toolImages(turn.work)).toEqual([shot]);
   });
 
   it("puts an approval on the call it is about, outside any group", () => {
