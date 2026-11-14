@@ -142,7 +142,7 @@ export function buildTurns(conversation: Source): Turn[] {
   return turns;
 }
 
-/** Runs of two or more successful read and search calls become one group. */
+/** Runs of two or more successful read and search calls without images become one group. */
 function groupQuiet(steps: Step[]): Step[] {
   const out: Step[] = [];
   let run: ToolStep[] = [];
@@ -156,7 +156,10 @@ function groupQuiet(steps: Step[]): Step[] {
       step.type === "tool" &&
       QUIET.includes(step.call.kind) &&
       step.call.status !== "failed" &&
-      !step.approval
+      !step.approval &&
+      // A call that returned an image stays on its own row, so the image
+      // shows without opening a group.
+      step.call.images.length === 0
     ) {
       run.push(step);
     } else {

@@ -39,6 +39,7 @@ const call = (
   input: {},
   status: "done",
   output: null,
+  images: [],
   startedAt: null,
   endedAt: null,
   ...over,
@@ -89,6 +90,20 @@ describe("buildTurns", () => {
     expect(group.type === "group" && groupLabel(group.steps)).toBe(
       "Read 1 file, searched 1 pattern",
     );
+  });
+
+  it("keeps a read that returned an image out of a group", () => {
+    const shot = { mimeType: "image/png", data: "aGVsbG8=" };
+    const [turn] = turnsOf([
+      message("u1", "user", [text("look")]),
+      message("a1", "assistant", [
+        call("c1", "read", "a.ts"),
+        call("c2", "read", "shot.png", { images: [shot] }),
+        call("c3", "read", "b.ts"),
+      ]),
+    ]);
+    expect(turn.work.map((s) => s.type)).toEqual(["tool", "tool", "tool"]);
+    expect(toolSteps(turn.work)[1].call.images).toEqual([shot]);
   });
 
   it("puts an approval on the call it is about, outside any group", () => {

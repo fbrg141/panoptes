@@ -214,13 +214,25 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
       </div>
     </Disclosure>
   );
-  if (!step.approval) return row;
+  if (!step.approval && call.images.length === 0) return row;
   return (
     <div className="flex flex-col gap-1">
       {row}
-      <div className="pl-6">
-        <ApprovalCard approval={step.approval} pill={false} />
-      </div>
+      {call.images.length > 0 && (
+        // Images stay in view, like an approval: what the agent saw is the point.
+        <div className="flex flex-wrap gap-2 py-1 pl-6">
+          {call.images.map((image, i) => (
+            // Images are positional within the call.
+            // biome-ignore lint/suspicious/noArrayIndexKey: see above
+            <Thumbnail key={i} mimeType={image.mimeType} data={image.data} />
+          ))}
+        </div>
+      )}
+      {step.approval && (
+        <div className="pl-6">
+          <ApprovalCard approval={step.approval} pill={false} />
+        </div>
+      )}
     </div>
   );
 }
