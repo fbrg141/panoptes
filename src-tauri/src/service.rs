@@ -16,11 +16,10 @@ use panoptes_harness::{
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::changes::{self, Changes, DiffOptions, Hunk, TreeRange};
 use crate::eventlog::EventLog;
 use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
 use crate::projects::{self, Location};
-use crate::store::{Lane, LaneState, Preferences, ProfileInput, Project, ProjectSettings, Store};
+use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
 use crate::writes;
 use serde_json::json;
 
@@ -406,8 +405,6 @@ struct Launch {
     lane: Option<i64>,
     /// Read-only for archived lanes or a missing-folder resume.
     read_only: bool,
-    /// Extra system-prompt instructions for a newly created session.
-    instructions: Option<String>,
 }
 
 /// Forwards one process's events, tagged with its session's key, and works
@@ -975,7 +972,6 @@ impl Service {
                         resume: Some(locator),
                         lane: None,
                         read_only: false,
-                        instructions: None,
                     };
                     self.start(&key, launch, None).await
                 }
@@ -1005,7 +1001,6 @@ impl Service {
             // An archived lane has no worktree to edit; its session stays
             // readable without editing tools.
             read_only: !active,
-            instructions: None,
         })
     }
 
@@ -1013,18 +1008,7 @@ impl Service {
     /// its key, exist before the harness starts.
     /// A lane that another Running or Waiting session has edited gets no
     /// session of its own until that one is Done: two writers otherwise.
-    #[cfg(test)]
     pub async fn create(&self, lane_id: i64, harness: &str) -> ServiceResult<OpenedSession> {
-        self.create_with(lane_id, harness, None).await
-    }
-
-    /// Creates a session with instructions to append to its system prompt.
-    pub async fn create_with(
-        &self,
-        lane_id: i64,
-        harness: &str,
-        instructions: Option<String>,
-    ) -> ServiceResult<OpenedSession> {
         self.harness(harness)?;
         let busy = {
             let open = self.open.lock().await;
@@ -1045,8 +1029,7 @@ impl Service {
             .await
             .map_err(err)?;
         let _guard = self.lifecycle(&panoptes_key(record.id)).await;
-        self.start_recorded(record.id, &lane, harness, instructions)
-            .await
+        self.start_recorded(record.id, &lane, harness).await
     }
 
     /// Adopts a discovered harness conversation. With no explicit lane, a
@@ -1139,7 +1122,6 @@ impl Service {
         id: i64,
         lane: &Lane,
         harness: &str,
-        instructions: Option<String>,
     ) -> ServiceResult<OpenedSession> {
         let launch = Launch {
             harness: harness.to_string(),
@@ -1147,7 +1129,6 @@ impl Service {
             resume: None,
             lane: Some(lane.id),
             read_only: false,
-            instructions,
         };
         let result = self.start(&panoptes_key(id), launch, None).await;
         if result.is_err() {
@@ -1216,7 +1197,6 @@ impl Service {
             cwd: launch.cwd,
             resume: launch.resume,
             read_only: launch.read_only,
-            instructions: launch.instructions,
         };
         let started = async {
             let session: Arc<dyn AgentSession> =
@@ -1318,91 +1298,6 @@ impl Service {
 
     pub async fn models(&self, key: &str) -> ServiceResult<Vec<ModelInfo>> {
         self.session(key).await?.models().await.map_err(err)
-    }
-
-    pub async fn preferences(&self) -> ServiceResult<Preferences> {
-        self.with_store(|store| store.preferences())
-            .await
-            .map_err(err)
-    }
-
-    pub async fn save_profile(
-        &self,
-        id: Option<i64>,
-        input: ProfileInput,
-    ) -> ServiceResult<Preferences> {
-        self.with_store(move |store| store.save_profile(id, &input))
-            .await?;
-        self.preferences().await
-    }
-
-    pub async fn delete_profile(&self, id: i64) -> ServiceResult<Preferences> {
-        self.with_store(move |store| store.delete_profile(id))
-            .await?;
-        self.preferences().await
-    }
-
-    pub async fn set_model_favorite(
-        &self,
-        model_id: String,
-        favorite: bool,
-    ) -> ServiceResult<Preferences> {
-        self.with_store(move |store| store.set_model_favorite(&model_id, favorite))
-            .await?;
-        self.preferences().await
-    }
-
-    pub async fn set_model_hidden(
-        &self,
-        model_id: String,
-        hidden: bool,
-    ) -> ServiceResult<Preferences> {
-        self.with_store(move |store| store.set_model_hidden(&model_id, hidden))
-            .await?;
-        self.preferences().await
-    }
-
-    /// The lane's complete diff against its merge-base, without patch text.
-    pub async fn lane_changes(&self, lane_id: i64) -> ServiceResult<Changes> {
-        let (project, lane) = self
-            .with_store(move |store| {
-                let lane = store.lane(lane_id)?;
-                let project = store.project(lane.project_id)?;
-                Ok((project, lane))
-            })
-            .await
-            .map_err(err)?;
-        tokio::task::spawn_blocking(move || {
-            let range = changes::lane_range(&project, &lane)?;
-            changes::diff(Path::new(&project.repo), &range, DiffOptions::default())
-        })
-        .await
-        .context("The lane diff stopped")
-        .and_then(|result| result)
-        .map_err(err)
-    }
-
-    /// Patch hunks for one file in the range the lane list returned.
-    pub async fn file_hunks(
-        &self,
-        lane_id: i64,
-        path: String,
-        range: TreeRange,
-    ) -> ServiceResult<Vec<Hunk>> {
-        let repo = self
-            .with_store(move |store| {
-                let lane = store.lane(lane_id)?;
-                Ok(store.project(lane.project_id)?.repo)
-            })
-            .await
-            .map_err(err)?;
-        tokio::task::spawn_blocking(move || {
-            changes::hunks(Path::new(&repo), &range, &path, DiffOptions::default())
-        })
-        .await
-        .context("The file diff stopped")
-        .and_then(|result| result)
-        .map_err(err)
     }
 
     /// Switches the session's model and returns its settings after the
@@ -2220,31 +2115,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lane_changes_and_file_hunks_come_from_the_lane_tree() {
-        let f = fixture(FakeHarness::default());
-        let (_code, lane) = lane_of(&f).await;
-        std::fs::write(
-            Path::new(&lane.worktrees[0].path).join("untracked.txt"),
-            "review me\n",
-        )
-        .unwrap();
-        let changes = f.service.lane_changes(lane.id).await.unwrap();
-        assert_eq!(changes.files.len(), 1);
-        assert_eq!(changes.files[0].path, "untracked.txt");
-        let range = TreeRange {
-            from: changes.from,
-            to: changes.to,
-        };
-        let hunks = f
-            .service
-            .file_hunks(lane.id, "untracked.txt".into(), range)
-            .await
-            .unwrap();
-        assert_eq!(hunks.len(), 1);
-        assert_eq!(hunks[0].lines[0].text, "review me");
-    }
-
-    #[tokio::test]
     async fn a_lane_session_has_its_key_before_the_harness_starts() {
         let f = fixture(FakeHarness::default());
         let (_code, lane) = lane_of(&f).await;
@@ -2284,30 +2154,6 @@ mod tests {
             .unwrap();
         assert_eq!(again.key, opened.key);
         assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn a_new_session_receives_profile_instructions_once() {
-        let f = fixture(FakeHarness::default());
-        let (_code, lane) = lane_of(&f).await;
-        f.service
-            .create_with(lane.id, "fake", Some("Prefer small changes.".into()))
-            .await
-            .unwrap();
-        assert_eq!(
-            f.harness.requests.lock().unwrap()[0]
-                .instructions
-                .as_deref(),
-            Some("Prefer small changes.")
-        );
-
-        let opened = f.service.list().await.sessions[0].clone();
-        f.service.close(&opened.key).await;
-        f.service
-            .open("fake", &opened.key, String::new(), String::new())
-            .await
-            .unwrap();
-        assert_eq!(f.harness.requests.lock().unwrap()[1].instructions, None);
     }
 
     #[tokio::test]

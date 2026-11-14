@@ -14,8 +14,6 @@ import type {
   LaneNavigation,
   ModelInfo,
   OpenedSession,
-  Preferences,
-  ProfileInput,
   Project,
   PromptMode,
   Session,
@@ -28,14 +26,6 @@ export interface SendOptions {
   images?: ImageAttachment[];
   /** While the agent runs, deliver once it finishes instead of steering. */
   queue?: boolean;
-}
-
-export interface SessionOptions {
-  model?: string;
-  thinking?: string;
-  /** Additional system-prompt instructions, for a new session only. */
-  instructions?: string;
-  prompt?: string;
 }
 
 export interface State {
@@ -56,8 +46,6 @@ export interface State {
   settings: Record<string, SessionSettings>;
   /** Models each open session can switch to, once asked for. */
   models: Record<string, ModelInfo[]>;
-  /** Panoptes' profiles and model-picker presentation. */
-  preferences: Preferences;
   /** Composer drafts kept for sessions the user switched away from. */
   drafts: Record<string, Draft>;
   activeKey: string | null;
@@ -69,7 +57,10 @@ export interface State {
   refresh: () => Promise<void>;
   open: (session: Session) => Promise<void>;
   /** Starts a new session in a lane's worktree, configured and prompted. */
-  create: (laneId: number, options?: SessionOptions) => Promise<void>;
+  create: (
+    laneId: number,
+    options?: { model?: string; thinking?: string; prompt?: string },
+  ) => Promise<void>;
   /** Adopts a discovered conversation into a matching or explicitly chosen lane. */
   adopt: (session: Session, laneId?: number | null) => Promise<AdoptionOutcome | null>;
   /** Hides a lane session (closing it first) or brings it back; its lane is untouched. */
@@ -81,10 +72,6 @@ export interface State {
   /** Keeps a composer draft under its session, or drops it once it is empty. */
   saveDraft: (key: string, draft: Draft) => void;
   loadModels: () => Promise<void>;
-  saveProfile: (id: number | null, input: ProfileInput) => Promise<boolean>;
-  deleteProfile: (id: number) => Promise<void>;
-  setModelFavorite: (modelId: string, favorite: boolean) => Promise<void>;
-  setModelHidden: (modelId: string, hidden: boolean) => Promise<void>;
   setModel: (modelId: string) => Promise<void>;
   setThinkingLevel: (level: string) => Promise<void>;
   abort: () => Promise<void>;
@@ -100,7 +87,7 @@ export interface State {
     projectId: number,
     task: string,
     mainCheckout: boolean,
-    options?: Omit<SessionOptions, "prompt">,
+    options?: { model?: string; thinking?: string },
   ) => Promise<boolean>;
   cancelLaneCreation: (projectId: number) => Promise<void>;
   archiveLane: (id: number, strategy: ArchiveStrategy | null) => Promise<ArchiveLaneOutcome | null>;
@@ -253,7 +240,6 @@ export function createAppStore(backend: typeof api) {
       sending: {},
       settings: {},
       models: {},
-      preferences: { profiles: [], favoriteModels: [], hiddenModels: [] },
       drafts: {},
       activeKey: null,
       listErrors: [],
@@ -272,11 +258,6 @@ export function createAppStore(backend: typeof api) {
           return;
         }
         await get().refresh();
-        try {
-          set({ preferences: await backend.preferences() });
-        } catch (e) {
-          fail(e);
-        }
       },
 
       refresh: async () => {
@@ -305,7 +286,7 @@ export function createAppStore(backend: typeof api) {
       create: async (laneId, options) => {
         try {
           // The session is recorded before it starts, so it is listed at once.
-          const opened = await backend.newSession(laneId, "pi", options?.instructions);
+          const opened = await backend.newSession(laneId, "pi");
           adopt(opened);
           await get().refresh();
           // Everything the form chose is applied to the new session by its own
@@ -420,40 +401,6 @@ export function createAppStore(backend: typeof api) {
         try {
           const models = await backend.listModels(key);
           set((s) => ({ models: { ...s.models, [key]: models } }));
-        } catch (e) {
-          fail(e);
-        }
-      },
-
-      saveProfile: async (id, input) => {
-        try {
-          set({ preferences: await backend.saveProfile(id, input) });
-          return true;
-        } catch (e) {
-          fail(e);
-          return false;
-        }
-      },
-
-      deleteProfile: async (id) => {
-        try {
-          set({ preferences: await backend.deleteProfile(id) });
-        } catch (e) {
-          fail(e);
-        }
-      },
-
-      setModelFavorite: async (modelId, favorite) => {
-        try {
-          set({ preferences: await backend.setModelFavorite(modelId, favorite) });
-        } catch (e) {
-          fail(e);
-        }
-      },
-
-      setModelHidden: async (modelId, hidden) => {
-        try {
-          set({ preferences: await backend.setModelHidden(modelId, hidden) });
         } catch (e) {
           fail(e);
         }
