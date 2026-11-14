@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use panoptes_harness::{
     Approval, Block, ContextUsage, DeltaKind, FileEdit, HarnessEvent, Message, ModelInfo,
-    NoticeLevel, PromptMode, Question, QuestionKind, QueuedPrompt, Role, ToolCall, ToolKind,
-    ToolOutput, ToolStatus,
+    NoticeLevel, PromptMode, Question, QuestionKind, QueuedPrompt, Role, ToolCall, ToolImage,
+    ToolKind, ToolOutput, ToolStatus,
 };
 use serde_json::Value;
 
@@ -85,6 +85,26 @@ fn truncate_start(text: String) -> String {
         cut += 1;
     }
     format!("… (earlier output truncated)\n{}", &text[cut..])
+}
+
+/// The images among a tool result's `content` blocks, such as a screenshot
+/// or an image file `read` loaded. Kept whole: they are not text to cut.
+fn result_images(result: &Value) -> Vec<ToolImage> {
+    result["content"]
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block["type"] == "image")
+                .filter_map(|block| {
+                    Some(ToolImage {
+                        mime_type: block["mimeType"].as_str()?.to_string(),
+                        data: block["data"].as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Joined text of a tool result's `content` blocks, in full.
@@ -167,6 +187,7 @@ fn tool_call(id: &str, name: &str, args: Value) -> ToolCall {
         input: args,
         status: ToolStatus::Pending,
         output: (!edits.is_empty()).then_some(ToolOutput::Edits { edits, text: None }),
+        images: Vec::new(),
         started_at: None,
         ended_at: None,
     }
@@ -180,6 +201,7 @@ const EXIT_PREFIX: &str = "Command exited with code ";
 /// `Some(is_error)` once the tool has ended.
 fn set_output(call: &mut ToolCall, result: &Value, finished: Option<bool>) {
     let text = result_text(result);
+    call.images = result_images(result);
     call.status = match finished {
         None => ToolStatus::Running,
         Some(false) => ToolStatus::Done,
@@ -915,6 +937,29 @@ mod tests {
 
     fn result(text: &str) -> Value {
         json!({"content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn tool_results_keep_their_images() {
+        let mut call = tool_call("c1", "read", json!({"path": "shot.png"}));
+        let result = json!({"content": [
+            {"type": "text", "text": "Read image file [image/png]"},
+            {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="},
+        ]});
+        set_output(&mut call, &result, Some(false));
+        assert_eq!(
+            call.images,
+            vec![ToolImage {
+                mime_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }]
+        );
+        assert_eq!(
+            call.output,
+            Some(ToolOutput::Text {
+                text: "Read image file [image/png]".into()
+            })
+        );
     }
 
     fn shell(text: &str, finished: Option<bool>) -> ToolOutput {

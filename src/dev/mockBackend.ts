@@ -188,9 +188,14 @@ const call = (
   input,
   status: "done",
   output,
+  images: [],
   startedAt: now - tookMs,
   endedAt: now,
 });
+
+/** A small generated PNG standing in for a screenshot a tool returned. */
+const SCREENSHOT =
+  "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAA2UlEQVR42u3ZMQ1AIQxAQZQwoQVNzF8dhggrIjqQXy55CnpT21JrU+KKEQAWYAEWYAEWYAEGLMACLMACLMAC/CzwWluJAwxYgAVYgAVYgAUYsAALsAALsAArDjx7VyTAgAEDBgwYMGDAgAVYgAEDBgwYMGDAgF8HlnehAAuwAAuwAAMWYAEWYAEWYIWAx/h0K8CAAQMGDFh5gWVNEmABFmABFmDAAizfJBclwIABAwYMGDBgWZMEWIAFWIAFGLARABZgARZgARZgAQYswAIswAIswAIMWID1vw7pu4Ggx/h9qQAAAABJRU5ErkJggg==";
 
 const text = (text: string): ToolOutput => ({ type: "text", text });
 const shell = (text: string, exitCode: number | null = 0): ToolOutput => ({
@@ -303,6 +308,17 @@ const history: Message[] = [
         "src/conversation.ts",
         text("export interface Conversation {\n  messages: Message[];\n}"),
       ),
+      {
+        ...call(
+          "t3s",
+          "read",
+          "read",
+          { path: "screenshots/error-banner.png" },
+          "screenshots/error-banner.png",
+          text("Read image file [image/png]"),
+        ),
+        images: [{ mimeType: "image/png", data: SCREENSHOT }],
+      },
       call(
         "t4",
         "grep",
@@ -470,6 +486,7 @@ async function stream(key: string, text: string) {
     input: { command: "pnpm test" },
     status: "pending",
     output: null,
+    images: [],
     startedAt: null,
     endedAt: null,
   };

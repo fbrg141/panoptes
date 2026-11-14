@@ -3205,6 +3205,7 @@ mod tests {
                 input: serde_json::Value::Null,
                 status: panoptes_harness::ToolStatus::Done,
                 output: None,
+                images: Vec::new(),
                 started_at: None,
                 ended_at: None,
             }),

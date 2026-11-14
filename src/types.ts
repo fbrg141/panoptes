@@ -24,9 +24,17 @@ export interface ToolCall {
   status: ToolStatus;
   /** Null until there is something to show; edits carry their changes from the start. */
   output: ToolOutput | null;
+  /** Images the tool returned, such as a screenshot, in order. */
+  images: ToolImage[];
   /** Unix ms, when the harness reports them. */
   startedAt: number | null;
   endedAt: number | null;
+}
+
+/** An image a tool returned; `data` is base64-encoded. */
+export interface ToolImage {
+  mimeType: string;
+  data: string;
 }
 
 /** `pending`: written by the model but not started yet. */

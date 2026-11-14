@@ -11,8 +11,9 @@ import {
   summarizeWork,
   type ToolStep,
   type Turn,
+  toolImages,
 } from "../turns";
-import type { Message, ToolKind } from "../types";
+import type { Message, ToolImage, ToolKind } from "../types";
 import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 
@@ -37,7 +38,7 @@ export function TurnView({ turn }: { turn: Turn }) {
       {turn.prompt && <Prompt message={turn.prompt} />}
       <div className="flex flex-col gap-1 pt-1">
         {summary ? (
-          <Folded title={summary.title} detail={summary.detail}>
+          <Folded title={summary.title} detail={summary.detail} images={toolImages(turn.work)}>
             <Steps steps={turn.work} live={false} />
           </Folded>
         ) : (
@@ -214,13 +215,17 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
       </div>
     </Disclosure>
   );
-  if (!step.approval) return row;
+  if (!step.approval && call.images.length === 0) return row;
   return (
     <div className="flex flex-col gap-1">
       {row}
-      <div className="pl-6">
-        <ApprovalCard approval={step.approval} pill={false} />
-      </div>
+      {/* Images stay in view, like an approval: what the agent saw is the point. */}
+      <ToolImages images={call.images} />
+      {step.approval && (
+        <div className="pl-6">
+          <ApprovalCard approval={step.approval} pill={false} />
+        </div>
+      )}
     </div>
   );
 }
@@ -337,6 +342,7 @@ function Disclosure({
   subject,
   right,
   defaultOpen = false,
+  closed,
   children,
 }: {
   icon: string;
@@ -345,6 +351,8 @@ function Disclosure({
   subject?: string;
   right?: ReactNode;
   defaultOpen?: boolean;
+  /** Shown under the row while it is closed. */
+  closed?: ReactNode;
   children: ReactNode;
 }) {
   // Null until the user toggles it, so the default can follow the call's
@@ -365,7 +373,21 @@ function Disclosure({
         <span className="text-code-sm min-w-0 flex-1 truncate">{subject}</span>
         {right}
       </button>
-      {open && children}
+      {open ? children : closed}
+    </div>
+  );
+}
+
+/** Images tool calls returned, as thumbnails under their row. */
+function ToolImages({ images }: { images: ToolImage[] }) {
+  if (images.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2 py-1 pl-6">
+      {images.map((image, i) => (
+        // Images are positional within their calls.
+        // biome-ignore lint/suspicious/noArrayIndexKey: see above
+        <Thumbnail key={i} mimeType={image.mimeType} data={image.data} />
+      ))}
     </div>
   );
 }
@@ -374,14 +396,22 @@ function Disclosure({
 function Folded({
   title,
   detail,
+  images,
   children,
 }: {
   title: string;
   detail: string;
+  /** Images the folded calls returned, kept in view while the row is closed. */
+  images: ToolImage[];
   children: ReactNode;
 }) {
   return (
-    <Disclosure icon="history" title={title} subject={detail}>
+    <Disclosure
+      icon="history"
+      title={title}
+      subject={detail}
+      closed={<ToolImages images={images} />}
+    >
       <div className="flex flex-col gap-1 border-l border-line pl-3">{children}</div>
     </Disclosure>
   );
