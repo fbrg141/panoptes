@@ -1,6 +1,7 @@
 import { Button, Input, StatusPill } from "@panoptes/design-system";
 import { useEffect, useState } from "react";
 import { useStore } from "../store";
+import { proseField } from "../textFields";
 import type { Question } from "../types";
 
 /** A question from the harness, shown until answered or until it expires. */
@@ -46,6 +47,7 @@ export function QuestionCard({
       {kind.type === "input" && (
         <Input
           className="mt-3"
+          {...proseField}
           aria-label={question.title}
           placeholder={kind.placeholder ?? ""}
           value={text}
@@ -56,6 +58,7 @@ export function QuestionCard({
       {kind.type === "editor" && (
         <textarea
           aria-label={question.title}
+          {...proseField}
           className="text-code mt-3 min-h-24 w-full rounded-sm border border-line-strong bg-surface-sunken p-2 text-ink focus:border-focus focus:outline-2 focus:outline-offset-1 focus:outline-focus"
           value={text}
           onChange={(e) => setText(e.target.value)}

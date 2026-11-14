@@ -188,9 +188,14 @@ const call = (
   input,
   status: "done",
   output,
+  images: [],
   startedAt: now - tookMs,
   endedAt: now,
 });
+
+/** A small generated PNG standing in for a screenshot a tool returned. */
+const SCREENSHOT =
+  "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAA2UlEQVR42u3ZMQ1AIQxAQZQwoQVNzF8dhggrIjqQXy55CnpT21JrU+KKEQAWYAEWYAEWYAEGLMACLMACLMAC/CzwWluJAwxYgAVYgAVYgAUYsAALsAALsAArDjx7VyTAgAEDBgwYMGDAgAVYgAEDBgwYMGDAgF8HlnehAAuwAAuwAAMWYAEWYAEWYIWAx/h0K8CAAQMGDFh5gWVNEmABFmABFmDAAizfJBclwIABAwYMGDBgWZMEWIAFWIAFGLARABZgARZgARZgAQYswAIswAIswAIMWID1vw7pu4Ggx/h9qQAAAABJRU5ErkJggg==";
 
 const text = (text: string): ToolOutput => ({ type: "text", text });
 const shell = (text: string, exitCode: number | null = 0): ToolOutput => ({
@@ -303,6 +308,17 @@ const history: Message[] = [
         "src/conversation.ts",
         text("export interface Conversation {\n  messages: Message[];\n}"),
       ),
+      {
+        ...call(
+          "t3s",
+          "read",
+          "read",
+          { path: "screenshots/error-banner.png" },
+          "screenshots/error-banner.png",
+          text("Read image file [image/png]"),
+        ),
+        images: [{ mimeType: "image/png", data: SCREENSHOT }],
+      },
       call(
         "t4",
         "grep",
@@ -470,6 +486,7 @@ async function stream(key: string, text: string) {
     input: { command: "pnpm test" },
     status: "pending",
     output: null,
+    images: [],
     startedAt: null,
     endedAt: null,
   };
@@ -671,6 +688,8 @@ export function installMockBackend() {
           );
           return { type: "archived" };
         }
+        case "create_lane_branch":
+          return null;
         case "restore_lane": {
           const id = (args as { id: number }).id;
           const lane = lanes.find((item) => item.id === id);
@@ -692,7 +711,7 @@ export function installMockBackend() {
           }
           sessions = sessions.filter((session) => session.laneId !== id);
           lanes = lanes.filter((lane) => lane.id !== id);
-          return null;
+          return { type: "deleted" };
         }
         case "open_session":
           if (!open.has(a.key)) {
@@ -866,6 +885,16 @@ async function showcase(open: Set<string>) {
       title: "Run the migration tests",
       updatedAt: now - 40 * 60_000,
     }),
+    session({
+      name: "lane-summary",
+      key: "panoptes:100",
+      id: 100,
+      laneId: 1,
+      cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
+      title: "Review the lane summary",
+      parentLocator: "/sessions/a.jsonl",
+      updatedAt: now - 40 * 60_000,
+    }),
   );
   const statuses: [string, string][] = [
     ["panoptes:1", "running"],
@@ -874,6 +903,7 @@ async function showcase(open: Set<string>) {
     ["pi:b", "done"],
     ["pi:c", "running"],
     ["pi:d", "waiting"],
+    ["panoptes:100", "done"],
   ];
   // Give the store a moment to subscribe before the events arrive.
   await new Promise((resolve) => setTimeout(resolve, 600));

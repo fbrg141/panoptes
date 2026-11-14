@@ -1,5 +1,5 @@
 import type { Conversation } from "./conversation";
-import type { Approval, Block, FileEdit, Message, ToolKind } from "./types";
+import type { Approval, Block, FileEdit, Message, ToolImage, ToolKind } from "./types";
 
 export type ToolCallBlock = Extract<Block, { type: "toolCall" }>;
 
@@ -142,7 +142,7 @@ export function buildTurns(conversation: Source): Turn[] {
   return turns;
 }
 
-/** Runs of two or more successful read and search calls become one group. */
+/** Runs of two or more successful read and search calls without images become one group. */
 function groupQuiet(steps: Step[]): Step[] {
   const out: Step[] = [];
   let run: ToolStep[] = [];
@@ -156,7 +156,10 @@ function groupQuiet(steps: Step[]): Step[] {
       step.type === "tool" &&
       QUIET.includes(step.call.kind) &&
       step.call.status !== "failed" &&
-      !step.approval
+      !step.approval &&
+      // A call that returned an image stays on its own row, so the image
+      // shows without opening a group.
+      step.call.images.length === 0
     ) {
       run.push(step);
     } else {
@@ -177,6 +180,11 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 /** The tool calls among a turn's steps, groups opened up. */
 export function toolSteps(steps: Step[]): ToolStep[] {
   return steps.flatMap((s) => (s.type === "tool" ? [s] : s.type === "group" ? s.steps : []));
+}
+
+/** Every image the steps' tool calls returned, in order. */
+export function toolImages(steps: Step[]): ToolImage[] {
+  return toolSteps(steps).flatMap((s) => s.call.images);
 }
 
 /** Approvals whose tool call no message holds, to show on their own. */

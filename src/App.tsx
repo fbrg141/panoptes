@@ -45,7 +45,10 @@ export default function App() {
   // keyboard, so a second shortcut does not yank it away from under the user.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const id = shortcutFor(e);
+      const editing =
+        e.target instanceof HTMLElement &&
+        (e.target.isContentEditable || e.target.closest("input, textarea") !== null);
+      const id = shortcutFor(e, editing);
       if (!id || useUi.getState().overlay) return;
       e.preventDefault();
       if (id === "newProject") {

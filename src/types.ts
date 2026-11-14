@@ -24,9 +24,17 @@ export interface ToolCall {
   status: ToolStatus;
   /** Null until there is something to show; edits carry their changes from the start. */
   output: ToolOutput | null;
+  /** Images the tool returned, such as a screenshot, in order. */
+  images: ToolImage[];
   /** Unix ms, when the harness reports them. */
   startedAt: number | null;
   endedAt: number | null;
+}
+
+/** An image a tool returned; `data` is base64-encoded. */
+export interface ToolImage {
+  mimeType: string;
+  data: string;
 }
 
 /** `pending`: written by the model but not started yet. */
@@ -225,7 +233,25 @@ export interface Lane {
 }
 
 export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
-export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
+export interface UnreachableCommit {
+  hash: string;
+  subject: string;
+}
+export interface DetachedHead {
+  commit: string;
+  dirty: boolean;
+  unreachableCommits: UnreachableCommit[];
+}
+export type DetachedHeadOutcome<T extends string> = {
+  type: T;
+  lane: Lane;
+  detachedHead: DetachedHead;
+};
+export type ArchiveLaneOutcome =
+  | { type: "archived" }
+  | { type: "dirty"; lane: Lane }
+  | DetachedHeadOutcome<"detachedHead">;
+export type DeleteLaneOutcome = { type: "deleted" } | DetachedHeadOutcome<"detachedHead">;
 export type AdoptionOutcome = { type: "adopted"; key: string } | { type: "chooseLane" };
 
 /** Two full Git tree/commit ids; the same range is used to fetch lazy hunks. */

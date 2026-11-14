@@ -1,6 +1,7 @@
 // Window shortcuts, in one place so the key handler and the cheatsheet never
-// drift apart. Most window shortcuts use ⌘ because this is a macOS app; pane
-// splits also accept Ctrl by request, including while a composer has focus.
+// drift apart. Window shortcuts use ⌘ because this is a macOS app. Pane
+// splits also accept Ctrl, but never in a text field, where Ctrl+D is the
+// system's delete-forward and must keep working.
 
 /** The shortcuts this file knows how to detect. */
 export type ShortcutId =
@@ -14,8 +15,10 @@ export type ShortcutId =
 /** The shortcut a keyboard event asks for, or null if it is none. */
 export function shortcutFor(
   e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key">,
+  /** Whether the key went to a text field. */
+  editing = false,
 ): ShortcutId | null {
-  const primary = e.metaKey !== e.ctrlKey;
+  const primary = e.metaKey ? !e.ctrlKey : e.ctrlKey && !editing;
   if (primary && !e.altKey && e.key.toLowerCase() === "d") {
     return e.shiftKey ? "splitHorizontal" : "splitVertical";
   }

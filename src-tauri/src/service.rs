@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 
 use crate::changes::{self, Changes, DiffOptions, Hunk, TreeRange};
 use crate::eventlog::EventLog;
-use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
+use crate::lanes::{self, ArchiveResult, ArchiveStrategy, DeleteResult, DetachedHead, LaneWork};
 use crate::projects::{self, Location};
 use crate::store::{Lane, LaneState, Preferences, ProfileInput, Project, ProjectSettings, Store};
 use crate::writes;
@@ -366,7 +366,23 @@ pub enum AdoptionOutcome {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ArchiveLaneOutcome {
     Archived,
-    Dirty { lane: Lane },
+    Dirty {
+        lane: Lane,
+    },
+    DetachedHead {
+        lane: Lane,
+        detached_head: DetachedHead,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum DeleteLaneOutcome {
+    Deleted,
+    DetachedHead {
+        lane: Lane,
+        detached_head: DetachedHead,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -1644,10 +1660,22 @@ impl Service {
 
     /// Archives a clean lane immediately. A dirty one is returned unchanged
     /// until the caller picks how its work should be preserved.
+    #[cfg(test)]
     pub async fn archive_lane(
         &self,
         id: i64,
         strategy: Option<ArchiveStrategy>,
+    ) -> ServiceResult<ArchiveLaneOutcome> {
+        self.archive_lane_recovering(id, strategy, false).await
+    }
+
+    /// Archives after optionally performing the branch recovery the user
+    /// explicitly chose in the detached-HEAD dialog.
+    pub async fn archive_lane_recovering(
+        &self,
+        id: i64,
+        strategy: Option<ArchiveStrategy>,
+        recreate_branch: bool,
     ) -> ServiceResult<ArchiveLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         if self.lane_in_use(id).await {
@@ -1673,8 +1701,14 @@ impl Service {
             // archive that stops in between can be finished later.
             let record =
                 |reference: Option<&str>| store.lock().unwrap().set_lane_checkpoint(id, reference);
-            match lanes::archive_recording(&project, &lane, strategy, &record)? {
+            match lanes::archive_recovering(&project, &lane, strategy, recreate_branch, &record)? {
                 ArchiveResult::Dirty => Ok(ArchiveLaneOutcome::Dirty { lane }),
+                ArchiveResult::DetachedHead(detached_head) => {
+                    Ok(ArchiveLaneOutcome::DetachedHead {
+                        lane,
+                        detached_head,
+                    })
+                }
                 ArchiveResult::Archived { checkpoint_ref } => {
                     store
                         .lock()
@@ -1694,6 +1728,39 @@ impl Service {
                     .record("laneArchived", json!({"lane": id, "strategy": strategy}));
             }
         })
+    }
+
+    /// Saves a detached HEAD on the lane branch without removing the
+    /// worktree, so the user can then choose how to archive its changes.
+    pub async fn create_lane_branch(&self, id: i64) -> ServiceResult<()> {
+        let _busy = self.lane_busy(id)?;
+        if self.lane_in_use(id).await {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "Close this lane's sessions before recovering its branch",
+            ));
+        }
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || {
+            let lane = {
+                let store = store.lock().unwrap();
+                let lane = store.lane(id)?;
+                if lane.state != LaneState::Active {
+                    anyhow::bail!("That lane is archived; restore it before recovering its branch");
+                }
+                lane
+            };
+            let worktree = lane
+                .worktrees
+                .first()
+                .filter(|_| lane.worktrees.len() == 1)
+                .context("This operation needs exactly one worktree")?;
+            lanes::create_branch_here(Path::new(&worktree.path), &lane)
+        })
+        .await
+        .context("The lane branch recovery stopped")
+        .and_then(|result| result)
+        .map_err(err)
     }
 
     pub async fn restore_lane(&self, id: i64) -> ServiceResult<Lane> {
@@ -1726,7 +1793,18 @@ impl Service {
 
     /// Permanently deletes a lane after the UI's explicit confirmation.
     /// Open sessions are refused rather than killed underneath their user.
-    pub async fn delete_lane(&self, id: i64) -> ServiceResult<()> {
+    #[cfg(test)]
+    pub async fn delete_lane(&self, id: i64) -> ServiceResult<DeleteLaneOutcome> {
+        self.delete_lane_detached(id, false).await
+    }
+
+    /// `allow_detached` is accepted only for a clean, reachable detached HEAD
+    /// and is checked again by the lane operation.
+    pub async fn delete_lane_detached(
+        &self,
+        id: i64,
+        allow_detached: bool,
+    ) -> ServiceResult<DeleteLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         if self.lane_in_use(id).await {
             return Err(ServiceError::new(
@@ -1742,14 +1820,26 @@ impl Service {
                 let project = store.project(lane.project_id)?;
                 (lane, project)
             };
-            lanes::delete(&project, &lane)?;
-            store.lock().unwrap().delete_lane(id)
+            match lanes::delete_detached(&project, &lane, allow_detached)? {
+                DeleteResult::Deleted => {
+                    store.lock().unwrap().delete_lane(id)?;
+                    Ok(DeleteLaneOutcome::Deleted)
+                }
+                DeleteResult::DetachedHead(detached_head) => Ok(DeleteLaneOutcome::DetachedHead {
+                    lane,
+                    detached_head,
+                }),
+            }
         })
         .await
         .context("The lane deletion stopped")
         .and_then(|result| result)
         .map_err(err)
-        .inspect(|()| self.log.record("laneDeleted", json!({"lane": id})))
+        .inspect(|outcome| {
+            if matches!(outcome, DeleteLaneOutcome::Deleted) {
+                self.log.record("laneDeleted", json!({"lane": id}));
+            }
+        })
     }
 
     /// Marks a lane as being archived, restored or deleted until the guard drops.
@@ -3032,6 +3122,48 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_detached_lane_waits_for_recovery_before_its_store_record_changes() {
+        let code = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(code.path()).unwrap().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let f = fixture(FakeHarness::default());
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let lane = f
+            .service
+            .create_lane(project.id, "Detached work".into(), false)
+            .await
+            .unwrap();
+        let path = PathBuf::from(&lane.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+        std::fs::write(path.join("work.txt"), "keep me").unwrap();
+        git(&path, &["add", "work.txt"]);
+        git(&path, &["commit", "--quiet", "-m", "detached work"]);
+
+        let outcome = f.service.archive_lane(lane.id, None).await.unwrap();
+        let ArchiveLaneOutcome::DetachedHead { detached_head, .. } = outcome else {
+            panic!("a detached HEAD should need recovery");
+        };
+        assert_eq!(detached_head.unreachable_commits.len(), 1);
+        assert_eq!(f.service.list().await.lanes[0].state, LaneState::Active);
+        assert!(path.exists());
+
+        f.service.create_lane_branch(lane.id).await.unwrap();
+        let outcome = f.service.archive_lane(lane.id, None).await.unwrap();
+        assert!(matches!(outcome, ArchiveLaneOutcome::Archived));
+        assert_eq!(f.service.list().await.lanes[0].state, LaneState::Archived);
+        assert!(!path.exists());
+    }
+
     /// A project with two worktree lanes, and a session started in the first.
     async fn two_lanes(f: &Fixture) -> (tempfile::TempDir, Lane, Lane, EventSink) {
         let code = tempfile::tempdir().unwrap();
@@ -3073,6 +3205,7 @@ mod tests {
                 input: serde_json::Value::Null,
                 status: panoptes_harness::ToolStatus::Done,
                 output: None,
+                images: Vec::new(),
                 started_at: None,
                 ended_at: None,
             }),

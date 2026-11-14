@@ -26,6 +26,13 @@ describe("shortcutFor", () => {
     expect(key("d", { ctrl: true })).toBe("splitVertical");
     expect(key("d", { ctrl: true, shift: true })).toBe("splitHorizontal");
     expect(key("d", { meta: true, ctrl: true })).toBeNull();
+  });
+
+  it("leaves Ctrl+D to a text field, where it deletes forward", () => {
+    const ctrlD = { metaKey: false, ctrlKey: true, altKey: false, shiftKey: false, key: "d" };
+    expect(shortcutFor(ctrlD, true)).toBeNull();
+    expect(shortcutFor({ ...ctrlD, shiftKey: true, key: "D" }, true)).toBeNull();
+    expect(shortcutFor({ ...ctrlD, metaKey: true, ctrlKey: false }, true)).toBe("splitVertical");
     expect(key("d", { meta: true, alt: true })).toBeNull();
     expect(key("d")).toBeNull();
   });

@@ -1,6 +1,7 @@
 import { Icon, Kbd } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
 import { filterShortcuts, SHORTCUT_GROUPS } from "../shortcuts";
+import { plainField } from "../textFields";
 import { useUi } from "../ui";
 import { Overlay, OverlayHeader } from "./Overlay";
 
@@ -21,6 +22,7 @@ export function ShortcutsDialog() {
       <div className="mx-4 flex h-[var(--control)] flex-none items-center gap-2 rounded-sm border border-line bg-surface-sunken px-2 text-ink-muted focus-within:border-line-strong">
         <Icon name="search" size={14} className="flex-none" />
         <input
+          {...plainField}
           aria-label="Filter shortcuts"
           placeholder="Filter shortcuts"
           value={query}
