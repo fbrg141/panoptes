@@ -405,7 +405,7 @@ struct Launch {
     lane: Option<i64>,
     /// Read-only for archived lanes or a missing-folder resume.
     read_only: bool,
-    /// Extra system-prompt instructions for a newly created session.
+    /// Extra system-prompt instructions stored by a newly created session.
     instructions: Option<String>,
 }
 
@@ -1004,7 +1004,7 @@ impl Service {
             // An archived lane has no worktree to edit; its session stays
             // readable without editing tools.
             read_only: !active,
-            instructions: None,
+            instructions: record.instructions,
         })
     }
 
@@ -1036,9 +1036,10 @@ impl Service {
             ));
         }
         let name = harness.to_string();
+        let stored = instructions.clone();
         let (record, lane) = self
             .with_store(move |store| {
-                let record = store.add_session(lane_id, &name)?;
+                let record = store.add_session_configured(lane_id, &name, stored.as_deref())?;
                 Ok((record, store.lane(lane_id)?))
             })
             .await
@@ -2218,7 +2219,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_session_receives_profile_instructions_once() {
+    async fn a_new_session_keeps_profile_instructions_across_reopen() {
         let f = fixture(FakeHarness::default());
         let (_code, lane) = lane_of(&f).await;
         f.service
@@ -2238,7 +2239,12 @@ mod tests {
             .open("fake", &opened.key, String::new(), String::new())
             .await
             .unwrap();
-        assert_eq!(f.harness.requests.lock().unwrap()[1].instructions, None);
+        assert_eq!(
+            f.harness.requests.lock().unwrap()[1]
+                .instructions
+                .as_deref(),
+            Some("Prefer small changes.")
+        );
     }
 
     #[tokio::test]

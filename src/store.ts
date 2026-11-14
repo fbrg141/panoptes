@@ -33,7 +33,7 @@ export interface SendOptions {
 export interface SessionOptions {
   model?: string;
   thinking?: string;
-  /** Additional system-prompt instructions, for a new session only. */
+  /** Stored with a new session and appended again when its process resumes. */
   instructions?: string;
   prompt?: string;
 }

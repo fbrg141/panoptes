@@ -233,12 +233,20 @@ async fn save_profile(
     id: Option<i64>,
     input: ProfileInput,
 ) -> ServiceResult<Preferences> {
-    logged(&state, "save_profile", state.service.save_profile(id, input).await)
+    logged(
+        &state,
+        "save_profile",
+        state.service.save_profile(id, input).await,
+    )
 }
 
 #[tauri::command]
 async fn delete_profile(state: State<'_, AppState>, id: i64) -> ServiceResult<Preferences> {
-    logged(&state, "delete_profile", state.service.delete_profile(id).await)
+    logged(
+        &state,
+        "delete_profile",
+        state.service.delete_profile(id).await,
+    )
 }
 
 #[tauri::command]

@@ -70,6 +70,16 @@ describe("model pickers", () => {
     );
   });
 
+  it("keeps the current model visible even when it is hidden", () => {
+    const groups = modelGroups(
+      [model("local/qwen", "Qwen", "local"), model("openai/gpt", "GPT", "openai")],
+      "local/qwen",
+      { favoriteModels: [], hiddenModels: ["local/qwen"] },
+    );
+    expect(groups.map((group) => group.label)).toEqual([undefined, "local", "openai"]);
+    expect(groups[1].items[0]).toMatchObject({ id: "local/qwen", current: true });
+  });
+
   it("offers no profile before the saved profiles", () => {
     const [group] = profileGroups(
       [

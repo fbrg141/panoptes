@@ -29,7 +29,7 @@ export function modelGroups(
     },
   ];
   const hidden = new Set(preferences?.hiddenModels ?? []);
-  const visible = models.filter((model) => !hidden.has(model.id));
+  const visible = models.filter((model) => !hidden.has(model.id) || model.id === modelId);
   const byId = new Map(visible.map((model) => [model.id, model]));
   const favorites = (preferences?.favoriteModels ?? [])
     .map((id) => byId.get(id))

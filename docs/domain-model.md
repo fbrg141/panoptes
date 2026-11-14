@@ -100,9 +100,11 @@ a profile before its first prompt, and its individual fields can still be
 overridden.
 
 Additional instructions are appended to the harness's system prompt at
-startup, never used to replace it and never reapplied when a conversation
-resumes. The harness adapter owns how that neutral request maps to its CLI or
-protocol.
+startup, never used to replace it. Panoptes stores the chosen instructions on
+its session record and appends them again when the process resumes, so closing
+the app does not silently drop them. Later profile edits do not change an
+existing session. The harness adapter owns how this neutral request maps to
+its CLI or protocol.
 
 ### Model preferences
 

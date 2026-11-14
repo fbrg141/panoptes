@@ -154,6 +154,17 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             onChange={setMainCheckout}
           />
           <Picker
+            label="Profile"
+            icon="agent"
+            title="Apply saved model, thinking and additional instructions to this new session"
+            value={chosenProfile?.name ?? "No profile"}
+            groups={profileGroups(preferences.profiles, profileId)}
+            searchable={preferences.profiles.length > 6}
+            disabled={busy}
+            returnFocus={focusTask}
+            onSelect={chooseProfile}
+          />
+          <Picker
             label="Model"
             icon="agent"
             title={
@@ -197,17 +208,6 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
               onSelect={setThinking}
             />
           )}
-          <Picker
-            label="Profile"
-            icon="agent"
-            title="Apply saved model, thinking and additional instructions to this new session"
-            value={chosenProfile?.name ?? "No profile"}
-            groups={profileGroups(preferences.profiles, profileId)}
-            searchable={preferences.profiles.length > 6}
-            disabled={busy}
-            returnFocus={focusTask}
-            onSelect={chooseProfile}
-          />
           <Button
             type="submit"
             variant="primary"

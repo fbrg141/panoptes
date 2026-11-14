@@ -385,8 +385,8 @@ pub struct StartSession {
     /// Gives the agent only tools that cannot change files (reading,
     /// searching, listing). Used for archived lanes and safe history fallback.
     pub read_only: bool,
-    /// Extra instructions for a new session, appended to the harness's own
-    /// system prompt. Never reapplied when an existing conversation resumes.
+    /// Extra instructions for the session, appended to the harness's own
+    /// system prompt both when it starts and when its conversation resumes.
     pub instructions: Option<String>,
 }
 

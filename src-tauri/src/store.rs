@@ -67,6 +67,10 @@ const MIGRATIONS: &[Migration] = &[
         apply: v5_profiles_and_model_preferences,
         committed: |_| {},
     },
+    Migration {
+        apply: v6_session_instructions,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -189,6 +193,16 @@ fn v5_profiles_and_model_preferences(tx: &Transaction, _: &Path) -> anyhow::Resu
             favorite_position INTEGER UNIQUE,
             hidden INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0, 1))
         ) STRICT;",
+    )?;
+    Ok(())
+}
+
+/// The instructions chosen at creation stay with the session when its
+/// harness process is reopened. They do not follow later profile edits.
+fn v6_session_instructions(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE sessions ADD COLUMN instructions TEXT
+         CHECK (instructions IS NULL OR instructions <> '');",
     )?;
     Ok(())
 }
@@ -326,6 +340,8 @@ pub struct SessionRecord {
     pub pinned: bool,
     pub archived: bool,
     pub created_at: i64,
+    /// Additional system-prompt instructions retained across process restarts.
+    pub instructions: Option<String>,
 }
 
 /// A reusable choice for a new session. Empty fields keep harness defaults.
@@ -822,15 +838,27 @@ impl Store {
 
     /// Gives a session its Panoptes id before any harness process exists.
     /// Only an active lane with no session takes one.
+    #[cfg(test)]
     pub fn add_session(&self, lane_id: i64, harness: &str) -> anyhow::Result<SessionRecord> {
+        self.add_session_configured(lane_id, harness, None)
+    }
+
+    pub fn add_session_configured(
+        &self,
+        lane_id: i64,
+        harness: &str,
+        instructions: Option<&str>,
+    ) -> anyhow::Result<SessionRecord> {
         let tx = self.write()?;
         if self.lane(lane_id)?.state != LaneState::Active {
             bail!("That lane is archived; restore it to start a session");
         }
         self.ensure_lane_has_no_session(lane_id)?;
+        let instructions = instructions.map(str::trim).filter(|text| !text.is_empty());
         tx.execute(
-            "INSERT INTO sessions (lane_id, harness, created_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![lane_id, harness, now_ms()],
+            "INSERT INTO sessions (lane_id, harness, instructions, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![lane_id, harness, instructions, now_ms()],
         )?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
@@ -1008,7 +1036,7 @@ fn lane_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Lane> {
 }
 
 const SESSION_COLUMNS: &str =
-    "id, lane_id, harness, harness_id, locator, title, pinned, archived, created_at";
+    "id, lane_id, harness, harness_id, locator, title, pinned, archived, created_at, instructions";
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {
@@ -1022,6 +1050,7 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
         pinned: row.get(6)?,
         archived: row.get(7)?,
         created_at: row.get(8)?,
+        instructions: row.get(9)?,
     })
 }
 
@@ -1894,7 +1923,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         let lane = lane_in(&store);
-        let session = store.add_session(lane.id, "pi").unwrap();
+        let session = store
+            .add_session_configured(lane.id, "pi", Some("  Run the tests.  "))
+            .unwrap();
         assert_eq!(session.lane_id, lane.id);
         assert_eq!(session.harness_id, None);
         assert_eq!(store.session_for("pi", "abc").unwrap(), None);
@@ -1917,6 +1948,7 @@ mod tests {
         assert_eq!(session.harness_id.as_deref(), Some("abc"));
         assert_eq!(session.locator.as_deref(), Some("/s/abc.jsonl"));
         assert_eq!(session.title.as_deref(), Some("Fix it"));
+        assert_eq!(session.instructions.as_deref(), Some("Run the tests."));
         assert_eq!(session.tags, ["bug", "ui"]);
         assert!(session.pinned && session.archived);
         assert_eq!(store.session_for("pi", "abc").unwrap(), Some(session.id));
