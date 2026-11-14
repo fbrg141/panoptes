@@ -16,6 +16,7 @@ use panoptes_harness::{
 use serde::Serialize;
 use tokio::sync::Mutex;
 
+use crate::changes::{self, Changes, DiffOptions, Hunk, TreeRange};
 use crate::eventlog::EventLog;
 use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
 use crate::projects::{self, Location};
@@ -1361,6 +1362,49 @@ impl Service {
         self.preferences().await
     }
 
+    /// The lane's complete diff against its merge-base, without patch text.
+    pub async fn lane_changes(&self, lane_id: i64) -> ServiceResult<Changes> {
+        let (project, lane) = self
+            .with_store(move |store| {
+                let lane = store.lane(lane_id)?;
+                let project = store.project(lane.project_id)?;
+                Ok((project, lane))
+            })
+            .await
+            .map_err(err)?;
+        tokio::task::spawn_blocking(move || {
+            let range = changes::lane_range(&project, &lane)?;
+            changes::diff(Path::new(&project.repo), &range, DiffOptions::default())
+        })
+        .await
+        .context("The lane diff stopped")
+        .and_then(|result| result)
+        .map_err(err)
+    }
+
+    /// Patch hunks for one file in the range the lane list returned.
+    pub async fn file_hunks(
+        &self,
+        lane_id: i64,
+        path: String,
+        range: TreeRange,
+    ) -> ServiceResult<Vec<Hunk>> {
+        let repo = self
+            .with_store(move |store| {
+                let lane = store.lane(lane_id)?;
+                Ok(store.project(lane.project_id)?.repo)
+            })
+            .await
+            .map_err(err)?;
+        tokio::task::spawn_blocking(move || {
+            changes::hunks(Path::new(&repo), &range, &path, DiffOptions::default())
+        })
+        .await
+        .context("The file diff stopped")
+        .and_then(|result| result)
+        .map_err(err)
+    }
+
     /// Switches the session's model and returns its settings after the
     /// switch, since the thinking levels on offer depend on the model.
     pub async fn set_model(&self, key: &str, model_id: String) -> ServiceResult<SessionSettings> {
@@ -2173,6 +2217,31 @@ mod tests {
             .await
             .unwrap();
         (code, lane)
+    }
+
+    #[tokio::test]
+    async fn lane_changes_and_file_hunks_come_from_the_lane_tree() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        std::fs::write(
+            Path::new(&lane.worktrees[0].path).join("untracked.txt"),
+            "review me\n",
+        )
+        .unwrap();
+        let changes = f.service.lane_changes(lane.id).await.unwrap();
+        assert_eq!(changes.files.len(), 1);
+        assert_eq!(changes.files[0].path, "untracked.txt");
+        let range = TreeRange {
+            from: changes.from,
+            to: changes.to,
+        };
+        let hunks = f
+            .service
+            .file_hunks(lane.id, "untracked.txt".into(), range)
+            .await
+            .unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].lines[0].text, "review me");
     }
 
     #[tokio::test]
