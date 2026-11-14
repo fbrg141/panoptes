@@ -1,6 +1,7 @@
 import { Icon, Kbd } from "@panoptes/design-system";
 import { type ComponentProps, Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { filterPicker, initialPick, type PickerGroup, pickable } from "../picker";
+import { plainField } from "../textFields";
 
 type IconName = ComponentProps<typeof Icon>["name"];
 
@@ -172,10 +173,7 @@ export function Picker({
               aria-expanded
               aria-controls={listId}
               aria-activedescendant={rows.length > 0 ? rowId(picked) : undefined}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
+              {...plainField}
               aria-label={`Search ${label.toLowerCase()}s`}
               placeholder={`Search ${label.toLowerCase()}s`}
               value={query}
