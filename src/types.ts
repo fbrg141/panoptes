@@ -228,6 +228,50 @@ export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
 export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
 export type AdoptionOutcome = { type: "adopted"; key: string } | { type: "chooseLane" };
 
+/** Two full Git tree/commit ids; the same range is used to fetch lazy hunks. */
+export interface TreeRange {
+  from: string;
+  to: string;
+}
+
+export interface ChangeTotals {
+  files: number;
+  added: number;
+  removed: number;
+}
+
+export interface FileChange {
+  path: string;
+  oldPath: string | null;
+  status: "added" | "modified" | "deleted" | "renamed" | "typeChanged";
+  added: number;
+  removed: number;
+  binary: boolean;
+  tooLarge: boolean;
+  blob: { before: string | null; after: string | null };
+}
+
+export interface Changes extends TreeRange {
+  files: FileChange[];
+  totals: ChangeTotals;
+}
+
+export interface DiffLine {
+  kind: "context" | "add" | "remove";
+  text: string;
+  oldLine: number | null;
+  newLine: number | null;
+}
+
+export interface Hunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  header: string;
+  lines: DiffLine[];
+}
+
 /** What an active lane's worktree holds (`LaneWork` in src-tauri/src/lanes.rs). */
 export interface LaneWork {
   /** Uncommitted files, untracked ones included. */
@@ -330,6 +374,25 @@ export interface SessionSettings {
   /** Levels the current model supports, lowest first. */
   thinkingLevels: string[];
   context: ContextUsage | null;
+}
+
+/** Panoptes-owned setup for new sessions; empty fields use harness defaults. */
+export interface AgentProfile {
+  id: number;
+  name: string;
+  modelId: string | null;
+  thinkingLevel: string | null;
+  /** Appended to the harness's system prompt at session creation. */
+  instructions: string | null;
+}
+
+export type ProfileInput = Omit<AgentProfile, "id">;
+
+export interface Preferences {
+  profiles: AgentProfile[];
+  /** Model ids in favorite order. */
+  favoriteModels: string[];
+  hiddenModels: string[];
 }
 
 /** A file dropped onto the composer: images inline, anything else by path. */
