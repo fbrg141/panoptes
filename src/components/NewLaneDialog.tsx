@@ -31,6 +31,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   const [model, setModel] = useState(DEFAULT_CHOICE);
   const [thinking, setThinking] = useState(DEFAULT_CHOICE);
   const [busy, setBusy] = useState(false);
+  const [modelsFailed, setModelsFailed] = useState(false);
   const field = useRef<HTMLInputElement>(null);
 
   // Model and thinking choices are read from an open session: listing them
@@ -45,7 +46,9 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   }, [activeKey, settingsByKey]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: asks once, when the panel opens
   useEffect(() => {
-    if (!models && activeKey) void loadModels();
+    if (!models && activeKey) {
+      void loadModels().then((loaded) => setModelsFailed(!loaded));
+    }
   }, []);
 
   if (!project) {
@@ -142,9 +145,11 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             title={
               models
                 ? undefined
-                : activeKey
-                  ? "Loading models"
-                  : "Models are listed from an open session; switch in the composer once this one runs"
+                : modelsFailed
+                  ? "Could not load models. Close and reopen this panel to retry."
+                  : activeKey
+                    ? "Loading models"
+                    : "Models are listed from an open session; switch in the composer once this one runs"
             }
             value={
               chosenModel ? (
@@ -155,7 +160,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             }
             valueText={chosenModel?.name ?? "Default model"}
             groups={models ? modelGroups(models, model) : []}
-            emptyText="Loading models…"
+            emptyText={modelsFailed ? "Could not load models" : "Loading models…"}
             disabled={busy || !models}
             returnFocus={focusTask}
             onSelect={(id) => {

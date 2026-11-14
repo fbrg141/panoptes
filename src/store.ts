@@ -71,7 +71,7 @@ export interface State {
   send: (text: string, options?: SendOptions) => Promise<boolean>;
   /** Keeps a composer draft under its session, or drops it once it is empty. */
   saveDraft: (key: string, draft: Draft) => void;
-  loadModels: () => Promise<void>;
+  loadModels: () => Promise<boolean>;
   setModel: (modelId: string) => Promise<void>;
   setThinkingLevel: (level: string) => Promise<void>;
   abort: () => Promise<void>;
@@ -397,12 +397,14 @@ export function createAppStore(backend: typeof api) {
 
       loadModels: async () => {
         const key = get().activeKey;
-        if (!key) return;
+        if (!key) return false;
         try {
           const models = await backend.listModels(key);
           set((s) => ({ models: { ...s.models, [key]: models } }));
+          return true;
         } catch (e) {
           fail(e);
+          return false;
         }
       },
 
