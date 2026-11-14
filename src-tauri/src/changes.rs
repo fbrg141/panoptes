@@ -150,36 +150,19 @@ pub fn lane_range(project: &Project, lane: &Lane) -> anyhow::Result<TreeRange> {
 /// File metadata and totals for a tree range. Patch text is deliberately not
 /// included: callers fetch one file's hunks only when they open it.
 pub fn diff(repo: &Path, range: &TreeRange, opts: DiffOptions) -> anyhow::Result<Changes> {
+    diff_paths(repo, range, opts, &[])
+}
+
+/// The same metadata read, optionally scoped to literal paths for lazy hunks.
+fn diff_paths(
+    repo: &Path,
+    range: &TreeRange,
+    opts: DiffOptions,
+    paths: &[&str],
+) -> anyhow::Result<Changes> {
     validate_range(range)?;
-    let raw = run(
-        repo,
-        &[
-            "diff-tree",
-            "-r",
-            "-z",
-            "--raw",
-            "--no-abbrev",
-            "--no-commit-id",
-            "--find-renames",
-            "--end-of-options",
-            &range.from,
-            &range.to,
-        ],
-    )?;
-    let numstat = run(
-        repo,
-        &[
-            "diff-tree",
-            "-r",
-            "-z",
-            "--numstat",
-            "--no-commit-id",
-            "--find-renames",
-            "--end-of-options",
-            &range.from,
-            &range.to,
-        ],
-    )?;
+    let raw = diff_metadata(repo, range, "--raw", paths)?;
+    let numstat = diff_metadata(repo, range, "--numstat", paths)?;
     let counts = parse_numstat(&numstat)?;
     let mut files = parse_raw(&raw)?;
     let sizes = blob_sizes(repo, &files)?;
@@ -233,7 +216,7 @@ pub fn hunks(
     path: &str,
     opts: DiffOptions,
 ) -> anyhow::Result<Vec<Hunk>> {
-    let changes = diff(repo, range, opts)?;
+    let changes = diff_paths(repo, range, opts, &[path])?;
     let file = changes
         .files
         .iter()
@@ -263,6 +246,31 @@ pub fn hunks(
         args.push(old_path);
     }
     parse_hunks(&run(repo, &args)?)
+}
+
+fn diff_metadata(
+    repo: &Path,
+    range: &TreeRange,
+    format: &str,
+    paths: &[&str],
+) -> anyhow::Result<String> {
+    let mut args = vec![
+        "diff-tree",
+        "-r",
+        "-z",
+        format,
+        "--no-abbrev",
+        "--no-commit-id",
+        "--find-renames",
+        "--end-of-options",
+        &range.from,
+        &range.to,
+    ];
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths.iter().copied());
+    }
+    run(repo, &args)
 }
 
 fn validate_range(range: &TreeRange) -> anyhow::Result<()> {
