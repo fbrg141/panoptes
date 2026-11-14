@@ -1,6 +1,7 @@
 import { Button, Icon, Input, LoopMark, StatusPill } from "@panoptes/design-system";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
+import { plainField } from "../textFields";
 import { buildTurns, looseApprovals } from "../turns";
 import type { Session } from "../types";
 import { ApprovalCard } from "./ApprovalCard";
@@ -227,6 +228,7 @@ function SessionTitle({ session }: { session: Session }) {
       <Input
         className="max-w-md"
         aria-label="Session name"
+        {...plainField}
         value={draft}
         autoFocus
         onChange={(event) => setDraft(event.target.value)}
