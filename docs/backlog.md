@@ -6,7 +6,7 @@ misleads, or is hit every day.*
 
 ## The gate
 
-These 22 issues are the open fix list. Bug-only intake (see
+These 21 issues are the open fix list. Bug-only intake (see
 [AGENTS.md](../AGENTS.md#issue-intake)) lasts until they are closed.
 
 - Add CI that runs `pnpm check` on PRs and main (#3)
@@ -30,7 +30,6 @@ These 22 issues are the open fix list. Bug-only intake (see
 - The "All sessions" tab has a blank icon (#175)
 - Branch names are shown uppercased (#176)
 - Docs describe behaviour the code does not have (#197)
-- A renamed file opens as a new file with every line added (#263)
 
 ## Later
 

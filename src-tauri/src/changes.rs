@@ -216,7 +216,19 @@ pub fn hunks(
     path: &str,
     opts: DiffOptions,
 ) -> anyhow::Result<Vec<Hunk>> {
-    let changes = diff_paths(repo, range, opts, &[path])?;
+    validate_range(range)?;
+    // Git pairs a rename only when both of its paths are in the pathspec, so
+    // the old path comes from the unscoped listing first. Scoping to the new
+    // path alone would show a renamed file as added, every line new.
+    let listed = parse_raw(&diff_metadata(repo, range, "--raw", &[])?)?;
+    let old_path = listed
+        .into_iter()
+        .find(|file| file.path == path)
+        .context("That file is not in this change range")?
+        .old_path;
+    let mut paths = vec![path];
+    paths.extend(old_path.as_deref());
+    let changes = diff_paths(repo, range, opts, &paths)?;
     let file = changes
         .files
         .iter()
@@ -225,7 +237,6 @@ pub fn hunks(
     if file.binary || file.too_large {
         return Ok(Vec::new());
     }
-    let old_path = file.old_path.clone();
     let mut args = vec![
         "diff-tree",
         "-r",
@@ -642,12 +653,22 @@ mod tests {
         assert_eq!(file("-leading.txt").status, FileStatus::Added);
         #[cfg(unix)]
         assert_eq!(file("type.txt").status, FileStatus::TypeChanged);
+        // A rename's hunks hold only its edit, not the whole file as added.
+        let renamed = hunks(repo, &range, "renamed.txt", DiffOptions::default()).unwrap();
+        assert_eq!(renamed.len(), 1);
+        let lines = renamed[0]
+            .lines
+            .iter()
+            .map(|line| (line.kind, line.text.as_str()))
+            .collect::<Vec<_>>();
         assert_eq!(
-            hunks(repo, &range, "renamed.txt", DiffOptions::default())
-                .unwrap()
-                .len(),
-            1
+            lines,
+            [
+                (DiffLineKind::Context, "rename me"),
+                (DiffLineKind::Add, "changed")
+            ]
         );
+        assert_eq!(renamed[0].old_start, 1);
         assert!(hunks(repo, &range, "-leading.txt", DiffOptions::default()).is_ok());
     }
 
