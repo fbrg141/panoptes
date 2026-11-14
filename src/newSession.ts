@@ -6,6 +6,15 @@ import type { ModelInfo } from "./types";
 /** The picker's first row: leave the choice to the harness. */
 export const DEFAULT_CHOICE = "";
 
+/** Borrow a populated list from the active session, or another open one. */
+export function borrowedModels(
+  bySession: Record<string, ModelInfo[]>,
+  activeKey: string | null,
+): ModelInfo[] | undefined {
+  const active = activeKey ? bySession[activeKey] : undefined;
+  return active?.length ? active : Object.values(bySession).find((list) => list.length > 0);
+}
+
 /** Models by provider, after a row that keeps the harness's default. */
 export function modelGroups(models: ModelInfo[], modelId: string): PickerGroup[] {
   const groups: PickerGroup[] = [

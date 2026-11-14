@@ -229,8 +229,15 @@ describe("store", () => {
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("pi:s1", "high");
     expect(store.getState().settings["pi:s1"].thinkingLevel).toBe("high");
 
-    await store.getState().loadModels();
+    expect(await store.getState().loadModels()).toBe(true);
     expect(store.getState().models["pi:s1"]).toHaveLength(1);
+  });
+
+  it("reports model loading failure instead of leaving a perpetual loading state", async () => {
+    await store.getState().open(session);
+    fake.backend.listModels.mockRejectedValueOnce({ kind: "other", message: "No catalog" });
+    expect(await store.getState().loadModels()).toBe(false);
+    expect(store.getState().error).toBe("No catalog");
   });
 
   it("reloads history when a run settles", async () => {

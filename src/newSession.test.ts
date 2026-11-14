@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CHOICE, modelGroups, shortModelId, thinkingGroups } from "./newSession";
+import {
+  borrowedModels,
+  DEFAULT_CHOICE,
+  modelGroups,
+  shortModelId,
+  thinkingGroups,
+} from "./newSession";
 import type { ModelInfo } from "./types";
 
 const model = (id: string, name: string, provider: string): ModelInfo => ({
@@ -27,6 +33,14 @@ describe("model pickers", () => {
       "claude-haiku-4-5",
     ]);
     expect(groups[2].items[0].current).toBe(true);
+  });
+
+  it("borrows a populated model list when the active session has none", () => {
+    const small = model("p/small", "Small", "p");
+    const large = model("p/large", "Large", "p");
+    expect(borrowedModels({ active: [], other: [small, large] }, "active")).toEqual([small, large]);
+    expect(borrowedModels({ active: [small], other: [large] }, "active")).toEqual([small]);
+    expect(borrowedModels({}, null)).toBeUndefined();
   });
 
   it("shortens a model id only when it carries its provider", () => {

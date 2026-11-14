@@ -1,6 +1,12 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_CHOICE, modelGroups, shortModelId, thinkingGroups } from "../newSession";
+import {
+  borrowedModels,
+  DEFAULT_CHOICE,
+  modelGroups,
+  shortModelId,
+  thinkingGroups,
+} from "../newSession";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
 import { useUi } from "../ui";
@@ -25,17 +31,13 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   const [model, setModel] = useState(DEFAULT_CHOICE);
   const [thinking, setThinking] = useState(DEFAULT_CHOICE);
   const [busy, setBusy] = useState(false);
+  const [modelsFailed, setModelsFailed] = useState(false);
   const field = useRef<HTMLInputElement>(null);
 
   // Model and thinking choices are read from an open session: listing them
   // needs a harness process. Without one, the harness default is the only
   // honest choice, and the composer offers the rest once the session runs.
-  const models = useMemo(
-    () =>
-      (activeKey ? modelsByKey[activeKey] : undefined) ??
-      Object.values(modelsByKey).find((list) => list.length > 0),
-    [activeKey, modelsByKey],
-  );
+  const models = useMemo(() => borrowedModels(modelsByKey, activeKey), [activeKey, modelsByKey]);
   const levels = useMemo(() => {
     const settings =
       (activeKey ? settingsByKey[activeKey] : undefined) ??
@@ -44,7 +46,9 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   }, [activeKey, settingsByKey]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: asks once, when the panel opens
   useEffect(() => {
-    if (!models && activeKey) void loadModels();
+    if (!models && activeKey) {
+      void loadModels().then((loaded) => setModelsFailed(!loaded));
+    }
   }, []);
 
   if (!project) {
@@ -141,9 +145,11 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             title={
               models
                 ? undefined
-                : activeKey
-                  ? "Loading models"
-                  : "Models are listed from an open session; switch in the composer once this one runs"
+                : modelsFailed
+                  ? "Could not load models. Close and reopen this panel to retry."
+                  : activeKey
+                    ? "Loading models"
+                    : "Models are listed from an open session; switch in the composer once this one runs"
             }
             value={
               chosenModel ? (
@@ -154,10 +160,15 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             }
             valueText={chosenModel?.name ?? "Default model"}
             groups={models ? modelGroups(models, model) : []}
-            emptyText="Loading models…"
+            emptyText={modelsFailed ? "Could not load models" : "Loading models…"}
             disabled={busy || !models}
             returnFocus={focusTask}
-            onSelect={setModel}
+            onSelect={(id) => {
+              setModel(id);
+              // The borrowed levels belong to the previously active model.
+              // A new choice starts with that model's own default.
+              setThinking(DEFAULT_CHOICE);
+            }}
           />
           {levels.length > 0 && (
             <Picker
