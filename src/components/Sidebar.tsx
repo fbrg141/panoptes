@@ -1,5 +1,6 @@
 import { Button, Dialog, LoopMark, Tabs } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
+import { laneMainSession } from "../laneCard";
 import { emptyLane, workLabel } from "../laneRow";
 import { pickProjectFolder } from "../pickProject";
 import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
@@ -322,8 +323,8 @@ function ProjectItem({
   );
 }
 
-/** A lane and its backend-assigned sessions, both independently collapsible. */
-function LaneItem({
+/** A lane's root session is its card; only extra sessions disclose. */
+export function LaneItem({
   lane,
   navigation,
   onWork,
@@ -336,39 +337,102 @@ function LaneItem({
   onAction: () => void;
   onDelete: () => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
+  const mainCheckout = lane.worktrees.some((worktree) => worktree.mainCheckout);
   const archived = lane.state === "archived";
   const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
   const sessions = navigation?.sessions ?? [];
   const archivedSessions = navigation?.archivedSessions ?? [];
   const empty = emptyLane(lane, navigation);
   const work = workLabel(navigation?.work ?? null);
+  const location = mainCheckout ? "Main checkout" : lane.branch;
+  const detail = [
+    `${location}${archived ? (checkpoint ? " · archived with a checkpoint" : " · archived") : ""}`,
+    work,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const laneSessions = [...sessions, ...archivedSessions];
+  const mainSession = laneMainSession(laneSessions);
+  const extraSessions = laneSessions.filter((session) => session.key !== mainSession?.key);
+  const subsessions = archived
+    ? extraSessions
+    : extraSessions.filter((session) => !session.archived);
+  const archivedExtras = archived ? [] : extraSessions.filter((session) => session.archived);
+  const expandable = extraSessions.length > 0;
+  const selectLaneAction = (id: string) => {
+    if (id === "archive-lane" || id === "restore-lane") onAction();
+    if (id === "delete-lane") onDelete();
+  };
+  const archivedSessionList = archivedExtras.length > 0 && (
+    <>
+      <Button variant="ghost" size="sm" onClick={() => setShowArchived((shown) => !shown)}>
+        {showArchived ? "Hide archived sessions" : `${archivedExtras.length} archived sessions`}
+      </Button>
+      {showArchived && (
+        <ul>
+          {archivedExtras.map((session) => (
+            <SessionItem key={session.key} session={session} laneActions nested />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+
+  if (mainSession) {
+    return (
+      <SessionItem
+        session={mainSession}
+        title={lane.task}
+        context={detail}
+        laneActions
+        className={archived ? "text-ink-muted" : ""}
+        menuLabel={`Actions for lane ${lane.name}`}
+        extraMenuItems={laneMenuItems(lane)}
+        onExtraMenuSelect={selectLaneAction}
+        expand={
+          expandable
+            ? {
+                expanded,
+                label: `lane ${lane.name}`,
+                onToggle: () => setExpanded((value) => !value),
+              }
+            : undefined
+        }
+      >
+        {expanded && expandable && (
+          <div className="ml-4">
+            {subsessions.length > 0 && (
+              <ul>
+                {subsessions.map((session) => (
+                  <SessionItem key={session.key} session={session} laneActions nested />
+                ))}
+              </ul>
+            )}
+            {archivedSessionList}
+          </div>
+        )}
+      </SessionItem>
+    );
+  }
 
   return (
     <li className={archived ? "text-ink-muted" : ""}>
       <div className="group/lane relative flex min-h-12 items-center px-1">
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={collapsed ? "chevron-right" : "chevron-down"}
-          aria-label={`${collapsed ? "Expand" : "Collapse"} lane ${lane.name}`}
-          onClick={() => setCollapsed((value) => !value)}
-        />
         <button
           type="button"
-          className="min-w-0 flex-1 py-1 pr-8 text-left"
-          onClick={() => setCollapsed((value) => !value)}
+          className="min-w-0 flex-1 py-1 pl-2 pr-8 text-left"
+          onClick={empty?.kind === "startable" ? onWork : undefined}
         >
           <p className="truncate" title={lane.task}>
             {lane.task}
           </p>
           <p
-            className={`truncate ${main ? "text-caption text-waiting" : "text-code-sm text-ink-muted"}`}
+            className={`truncate ${mainCheckout ? "text-caption text-waiting" : "text-code-sm text-ink-muted"}`}
             title={lane.worktrees[0]?.path}
           >
-            {main ? "Main checkout" : lane.branch}
+            {location}
             {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
           </p>
           {work && <p className="truncate text-xs text-ink-muted">{work}</p>}
@@ -377,47 +441,22 @@ function LaneItem({
           label={`Actions for lane ${lane.name}`}
           className={`absolute inset-y-0 right-1 flex items-center ${REVEAL_ON_HOVER} group-hover/lane:opacity-100 group-focus-within/lane:opacity-100`}
           items={laneMenuItems(lane)}
-          onSelect={(id) => {
-            if (id === "archive-lane" || id === "restore-lane") onAction();
-            if (id === "delete-lane") onDelete();
-          }}
+          onSelect={selectLaneAction}
         />
       </div>
-      {!collapsed && (
-        <div className="ml-4">
-          <ul>
-            {(archived ? [...sessions, ...archivedSessions] : sessions).map((session) => (
-              <SessionItem key={session.key} session={session} laneActions nested />
-            ))}
-          </ul>
-          {!archived && archivedSessions.length > 0 && (
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setShowArchived((shown) => !shown)}>
-                {showArchived
-                  ? "Hide archived sessions"
-                  : `${archivedSessions.length} archived sessions`}
-              </Button>
-              {showArchived && (
-                <ul>
-                  {archivedSessions.map((session) => (
-                    <SessionItem key={session.key} session={session} laneActions nested />
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-          {empty?.kind === "startable" && onWork && (
-            <Button variant="ghost" size="sm" className="ml-2" onClick={onWork}>
-              Start session
-            </Button>
-          )}
-          {empty?.kind === "busy" && (
-            <p className="ml-2 py-1 text-xs text-ink-muted">
-              “{empty.writer}” is changing this lane. Start a session here once it is Done.
-            </p>
-          )}
-        </div>
-      )}
+      <div className="ml-4">
+        {archivedSessionList}
+        {empty?.kind === "startable" && onWork && (
+          <Button variant="ghost" size="sm" className="ml-2" onClick={onWork}>
+            Start session
+          </Button>
+        )}
+        {empty?.kind === "busy" && (
+          <p className="ml-2 py-1 text-xs text-ink-muted">
+            “{empty.writer}” is changing this lane. Start a session here once it is Done.
+          </p>
+        )}
+      </div>
     </li>
   );
 }
