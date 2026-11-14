@@ -1,6 +1,7 @@
 import { Icon, Kbd } from "@panoptes/design-system";
 import { type ComponentProps, Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { filterPicker, initialPick, type PickerGroup, pickable } from "../picker";
+import { plainField } from "../textFields";
 
 type IconName = ComponentProps<typeof Icon>["name"];
 
@@ -8,8 +9,8 @@ type IconName = ComponentProps<typeof Icon>["name"];
  * A button that opens a list to pick one value from, driven entirely from the
  * keyboard: the list opens on the current value, typing narrows it, arrows
  * move, Enter picks and Escape backs out without closing whatever the picker
- * sits in. The composer's model menu and the new session form's menus are
- * all this one control, so they look and behave the same.
+ * sits in. The composer's model menu and the new lane and settings forms'
+ * menus are all this one control, so they look and behave the same.
  */
 export function Picker({
   label,
@@ -172,6 +173,7 @@ export function Picker({
               aria-expanded
               aria-controls={listId}
               aria-activedescendant={rows.length > 0 ? rowId(picked) : undefined}
+              {...plainField}
               aria-label={`Search ${label.toLowerCase()}s`}
               placeholder={`Search ${label.toLowerCase()}s`}
               value={query}

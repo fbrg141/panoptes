@@ -4,7 +4,14 @@ import { emptyLane, workLabel } from "../laneRow";
 import { pickProjectFolder } from "../pickProject";
 import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
-import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
+import type {
+  ArchiveStrategy,
+  DetachedHead,
+  Lane,
+  LaneNavigation,
+  Project,
+  Session,
+} from "../types";
 import { useUi } from "../ui";
 import { RowMenu } from "./RowMenu";
 import { SessionItem } from "./SessionItem";
@@ -12,6 +19,12 @@ import { SessionItem } from "./SessionItem";
 type NavigationTab = "lanes" | "all";
 
 const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
+
+type DetachedLaneRecovery = {
+  lane: Lane;
+  detachedHead: DetachedHead;
+  operation: "archive" | "delete";
+};
 
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
@@ -26,6 +39,7 @@ export function Sidebar() {
   const [tab, setTab] = useState<NavigationTab>("lanes");
   const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
   const [deletingLane, setDeletingLane] = useState<Lane | null>(null);
+  const [detachedRecovery, setDetachedRecovery] = useState<DetachedLaneRecovery | null>(null);
   const [adopting, setAdopting] = useState<Session | null>(null);
   const navigationByLane = useMemo(
     () => new Map(navigation.map((entry) => [entry.laneId, entry])),
@@ -39,6 +53,13 @@ export function Sidebar() {
   const requestArchive = async (lane: Lane) => {
     const outcome = await archiveLane(lane.id, null);
     if (outcome?.type === "dirty") setDirtyLane(outcome.lane);
+    if (outcome?.type === "detachedHead") {
+      setDetachedRecovery({
+        lane: outcome.lane,
+        detachedHead: outcome.detachedHead,
+        operation: "archive",
+      });
+    }
   };
 
   const requestAdoption = async (session: Session) => {
@@ -66,6 +87,14 @@ export function Sidebar() {
           aria-label="Keyboard shortcuts"
           title="Keyboard shortcuts (⌘/)"
           onClick={() => show({ type: "shortcuts" })}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="settings"
+          aria-label="Settings"
+          title="Profiles and model preferences"
+          onClick={() => show({ type: "settings" })}
         />
         <Button
           variant="ghost"
@@ -140,10 +169,32 @@ export function Sidebar() {
           lane={dirtyLane}
           onClose={() => setDirtyLane(null)}
           onArchived={() => setDirtyLane(null)}
+          onDetached={(lane, detachedHead) => {
+            setDirtyLane(null);
+            setDetachedRecovery({ lane, detachedHead, operation: "archive" });
+          }}
         />
       )}
       {deletingLane && (
-        <DeleteLaneDialog lane={deletingLane} onClose={() => setDeletingLane(null)} />
+        <DeleteLaneDialog
+          lane={deletingLane}
+          onClose={() => setDeletingLane(null)}
+          onDetached={(lane, detachedHead) => {
+            setDeletingLane(null);
+            setDetachedRecovery({ lane, detachedHead, operation: "delete" });
+          }}
+        />
+      )}
+      {detachedRecovery && (
+        <DetachedHeadDialog
+          recovery={detachedRecovery}
+          onChange={setDetachedRecovery}
+          onClose={() => setDetachedRecovery(null)}
+          onDirty={(lane) => {
+            setDetachedRecovery(null);
+            setDirtyLane(lane);
+          }}
+        />
       )}
       {adopting && (
         <AdoptSessionDialog
@@ -445,7 +496,15 @@ function RemoveProjectDialog({ project, onClose }: { project: Project; onClose: 
   );
 }
 
-function DeleteLaneDialog({ lane, onClose }: { lane: Lane; onClose: () => void }) {
+function DeleteLaneDialog({
+  lane,
+  onClose,
+  onDetached,
+}: {
+  lane: Lane;
+  onClose: () => void;
+  onDetached: (lane: Lane, detachedHead: DetachedHead) => void;
+}) {
   const deleteLane = useStore((s) => s.deleteLane);
   const [busy, setBusy] = useState(false);
   const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
@@ -453,7 +512,9 @@ function DeleteLaneDialog({ lane, onClose }: { lane: Lane; onClose: () => void }
   const remove = async () => {
     if (busy) return;
     setBusy(true);
-    if (await deleteLane(lane.id)) onClose();
+    const outcome = await deleteLane(lane.id);
+    if (outcome?.type === "deleted") onClose();
+    else if (outcome?.type === "detachedHead") onDetached(outcome.lane, outcome.detachedHead);
     else setBusy(false);
   };
 
@@ -490,14 +551,146 @@ function DeleteLaneDialog({ lane, onClose }: { lane: Lane; onClose: () => void }
   );
 }
 
+function DetachedHeadDialog({
+  recovery,
+  onChange,
+  onClose,
+  onDirty,
+}: {
+  recovery: DetachedLaneRecovery;
+  onChange: (recovery: DetachedLaneRecovery) => void;
+  onClose: () => void;
+  onDirty: (lane: Lane) => void;
+}) {
+  const archiveLane = useStore((s) => s.archiveLane);
+  const deleteLane = useStore((s) => s.deleteLane);
+  const createLaneBranch = useStore((s) => s.createLaneBranch);
+  const [busy, setBusy] = useState(false);
+  const { lane, detachedHead, operation } = recovery;
+  const safe = !detachedHead.dirty && detachedHead.unreachableCommits.length === 0;
+
+  const archive = async () => {
+    if (busy) return;
+    setBusy(true);
+    const outcome = await archiveLane(lane.id, null, true);
+    setBusy(false);
+    if (outcome?.type === "archived") onClose();
+    else if (outcome?.type === "dirty") onDirty(outcome.lane);
+    else if (outcome?.type === "detachedHead") {
+      onChange({ lane: outcome.lane, detachedHead: outcome.detachedHead, operation });
+    }
+  };
+
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    const outcome = await deleteLane(lane.id, true);
+    setBusy(false);
+    if (outcome?.type === "deleted") onClose();
+    else if (outcome?.type === "detachedHead") {
+      onChange({ lane: outcome.lane, detachedHead: outcome.detachedHead, operation });
+    }
+  };
+
+  const saveBranch = async () => {
+    if (busy) return;
+    setBusy(true);
+    if (await createLaneBranch(lane.id)) onClose();
+    else setBusy(false);
+  };
+
+  return (
+    <Dialog
+      title={`${safe ? "Recover" : "Save"} ${lane.name} before ${
+        operation === "archive" ? "archiving" : "deletion"
+      }`}
+      width={560}
+      onClose={busy ? undefined : onClose}
+      actions={
+        <>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          {!safe && (
+            <Button disabled={busy} onClick={() => void saveBranch()}>
+              Create branch here
+            </Button>
+          )}
+          {safe && operation === "archive" && (
+            <Button disabled={busy} onClick={() => void archive()}>
+              Recreate branch and archive
+            </Button>
+          )}
+          {safe && (
+            <Button variant="danger" disabled={busy} onClick={() => void remove()}>
+              Delete lane
+            </Button>
+          )}
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <p>
+          The worktree HEAD is detached at <code>{detachedHead.commit.slice(0, 12)}</code>.{" "}
+          {safe
+            ? "Its tree is clean, and this commit is already reachable from a local or remote branch. Removing the worktree would not lose that work."
+            : "Nothing has been changed or removed, because archiving or deleting now could lose work."}
+        </p>
+        {detachedHead.unreachableCommits.length > 0 && (
+          <div>
+            <p>
+              {operation === "delete"
+                ? `These commits are not on any local or remote branch other than ${lane.branch}, which deleting the lane removes:`
+                : "These commits exist only at detached HEAD and are not on any local or remote branch:"}
+            </p>
+            <ul className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto">
+              {detachedHead.unreachableCommits.map((commit) => (
+                <li key={commit.hash}>
+                  <code>{commit.hash.slice(0, 12)}</code> {commit.subject || "No commit subject"}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {detachedHead.dirty && (
+          <p>The worktree has uncommitted changes that removal would also delete.</p>
+        )}
+        {safe && operation === "archive" ? (
+          <p>
+            Recreate <code>{lane.branch}</code> at this commit, then archive as usual. If the branch
+            already exists elsewhere, Panoptes will advance it only when this commit is ahead of it;
+            a diverged branch is never reset. Deleting the lane instead permanently removes its
+            worktree, local branch and recovery refs. Commits that exist only on that local branch
+            will be lost.
+          </p>
+        ) : safe ? (
+          <p>
+            Delete the lane to permanently remove its worktree, local branch and recovery refs.
+            Commits that exist only on that local branch will be lost. The detached commit remains
+            on its existing local or remote branch.
+          </p>
+        ) : (
+          <p>
+            Create <code>{lane.branch}</code> at HEAD to keep the detached commits on a branch. The
+            worktree stays in place, and you can then choose how to preserve any uncommitted
+            changes. An existing diverged branch will not be moved.
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
 function ArchiveLaneDialog({
   lane,
   onClose,
   onArchived,
+  onDetached,
 }: {
   lane: Lane;
   onClose: () => void;
   onArchived: () => void;
+  onDetached: (lane: Lane, detachedHead: DetachedHead) => void;
 }) {
   const archiveLane = useStore((s) => s.archiveLane);
   const [busy, setBusy] = useState(false);
@@ -508,6 +701,7 @@ function ArchiveLaneDialog({
     const outcome = await archiveLane(lane.id, strategy);
     setBusy(false);
     if (outcome?.type === "archived") onArchived();
+    else if (outcome?.type === "detachedHead") onDetached(outcome.lane, outcome.detachedHead);
   };
 
   return (

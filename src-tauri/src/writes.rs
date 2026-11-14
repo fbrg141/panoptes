@@ -129,6 +129,7 @@ mod tests {
             input: Value::Null,
             status,
             output: None,
+            images: Vec::new(),
             started_at: None,
             ended_at: None,
         }

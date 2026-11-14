@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   composePrompt,
   contextLabel,
+  continueList,
   formatTokens,
   insertMention,
   matchFiles,
@@ -69,6 +70,43 @@ describe("matchFiles", () => {
 
   it("lists the shortest paths for an empty query, up to the limit", () => {
     expect(matchFiles("", files, 2)).toEqual(["src/store.ts", "docs/decisions.md"]);
+  });
+});
+
+describe("continueList", () => {
+  it("continues a bullet on the next line, keeping the marker and caret", () => {
+    expect(continueList("- first", 8)).toEqual({ text: "- first\n- ", caret: 11 });
+    expect(continueList("* a\nb", 3)).toEqual({ text: "* a\n* \nb", caret: 6 });
+  });
+
+  it("counts ordered numbers on, in either marker style", () => {
+    expect(continueList("1. one", 6)).toEqual({ text: "1. one\n2. ", caret: 10 });
+    expect(continueList("10) ten", 7)).toEqual({ text: "10) ten\n11) ", caret: 12 });
+  });
+
+  it("keeps indentation and continues a task item unchecked", () => {
+    expect(continueList("  - [ ] a", 9)).toEqual({ text: "  - [ ] a\n  - [ ] ", caret: 18 });
+  });
+
+  it("ends the list when the item is empty", () => {
+    expect(continueList("- one\n- ", 8)).toEqual({ text: "- one\n", caret: 6 });
+    expect(continueList("- one\n- \n- two", 8)).toEqual({
+      text: "- one\n\n- two",
+      caret: 6,
+    });
+    expect(continueList("1. ", 4)).toEqual({ text: "", caret: 0 });
+  });
+
+  it("replaces a selection and moves the rest of a split item without its space", () => {
+    expect(continueList("- first item", 7)).toEqual({ text: "- first\n- item", caret: 10 });
+    expect(continueList("- keep this drop", 6, 11)).toEqual({ text: "- keep\n- drop", caret: 9 });
+  });
+
+  it("leaves other lines to the field", () => {
+    expect(continueList("just text", 9)).toBeNull();
+    expect(continueList("-5 stars", 8)).toBeNull();
+    expect(continueList("-", 1)).toBeNull();
+    expect(continueList("- item", 0)).toBeNull();
   });
 });
 

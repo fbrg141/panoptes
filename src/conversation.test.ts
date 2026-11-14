@@ -146,6 +146,7 @@ describe("applyEvent", () => {
       input: null,
       status: "pending",
       output: null,
+      images: [],
       startedAt: null,
       endedAt: null,
     };

@@ -4,9 +4,12 @@ import { createAppStore, describeError } from "./store";
 import type {
   AdoptionOutcome,
   ArchiveLaneOutcome,
+  DeleteLaneOutcome,
   Lane,
   Listing,
   OpenedSession,
+  Preferences,
+  ProfileInput,
   Project,
   PromptOutcome,
   Session,
@@ -83,6 +86,12 @@ const settings: SessionSettings = {
   context: { tokens: 1200, window: 32_000 },
 };
 
+const preferences: Preferences = {
+  profiles: [],
+  favoriteModels: [],
+  hiddenModels: [],
+};
+
 function fakeBackend() {
   let emit: (event: SessionEvent) => void = () => {};
   const backend = {
@@ -107,6 +116,20 @@ function fakeBackend() {
     sendPrompt: vi.fn(async (): Promise<PromptOutcome> => "started"),
     settings: vi.fn(async () => settings),
     listModels: vi.fn(async () => (settings.model ? [settings.model] : [])),
+    preferences: vi.fn(async () => preferences),
+    saveProfile: vi.fn(async (_id: number | null, input: ProfileInput) => ({
+      ...preferences,
+      profiles: [{ id: 1, ...input }],
+    })),
+    deleteProfile: vi.fn(async () => preferences),
+    setModelFavorite: vi.fn(async (modelId: string, favorite: boolean) => ({
+      ...preferences,
+      favoriteModels: favorite ? [modelId] : [],
+    })),
+    setModelHidden: vi.fn(async (modelId: string, hidden: boolean) => ({
+      ...preferences,
+      hiddenModels: hidden ? [modelId] : [],
+    })),
     setModel: vi.fn(async () => settings),
     setThinkingLevel: vi.fn(async (_key: string, level: string) => ({
       ...settings,
@@ -124,8 +147,9 @@ function fakeBackend() {
     createLane: vi.fn(async (): Promise<Lane> => lane),
     cancelLaneCreation: vi.fn(async () => {}),
     archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
+    createLaneBranch: vi.fn(async () => {}),
     restoreLane: vi.fn(async (): Promise<Lane> => lane),
-    deleteLane: vi.fn(async () => {}),
+    deleteLane: vi.fn(async (): Promise<DeleteLaneOutcome> => ({ type: "deleted" })),
     showLogs: vi.fn(async () => {}),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
@@ -223,14 +247,42 @@ describe("store", () => {
     await vi.waitFor(() => expect(fake.backend.settings).toHaveBeenCalledTimes(2));
   });
 
+  it("saves profiles and model presentation as Panoptes preferences", async () => {
+    const saved = await store.getState().saveProfile(null, {
+      name: "Careful",
+      modelId: "p/small",
+      thinkingLevel: "high",
+      instructions: "Run the tests.",
+    });
+    expect(saved).toBe(true);
+    expect(store.getState().preferences.profiles[0]).toMatchObject({
+      id: 1,
+      name: "Careful",
+    });
+
+    await store.getState().setModelFavorite("p/small", true);
+    expect(store.getState().preferences.favoriteModels).toEqual(["p/small"]);
+    await store.getState().setModelHidden("p/large", true);
+    expect(store.getState().preferences.hiddenModels).toEqual(["p/large"]);
+    await store.getState().deleteProfile(1);
+    expect(fake.backend.deleteProfile).toHaveBeenCalledWith(1);
+  });
+
   it("changes the thinking level and keeps the reported settings", async () => {
     await store.getState().open(session);
     await store.getState().setThinkingLevel("high");
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("pi:s1", "high");
     expect(store.getState().settings["pi:s1"].thinkingLevel).toBe("high");
 
-    await store.getState().loadModels();
+    expect(await store.getState().loadModels()).toBe(true);
     expect(store.getState().models["pi:s1"]).toHaveLength(1);
+  });
+
+  it("reports model loading failure instead of leaving a perpetual loading state", async () => {
+    await store.getState().open(session);
+    fake.backend.listModels.mockRejectedValueOnce({ kind: "other", message: "No catalog" });
+    expect(await store.getState().loadModels()).toBe(false);
+    expect(store.getState().error).toBe("No catalog");
   });
 
   it("reloads history when a run settles", async () => {
@@ -475,10 +527,11 @@ describe("store", () => {
     const created = await store.getState().createFromPrompt(1, "Fix login", true, {
       model: "p/small",
       thinking: "high",
+      instructions: "Run the tests.",
     });
     expect(created).toBe(true);
     expect(fake.backend.createLane).toHaveBeenCalledWith(1, "Fix login", true);
-    expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi", "Run the tests.");
     expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:7", "p/small");
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:7", "high");
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:7", "Fix login", [], "start");
@@ -497,7 +550,7 @@ describe("store", () => {
     fake.backend.archiveLane.mockResolvedValueOnce({ type: "dirty", lane });
     const dirty = await store.getState().archiveLane(1, null);
     expect(dirty).toEqual({ type: "dirty", lane });
-    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, null);
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, null, false);
 
     fake.backend.archiveLane.mockResolvedValueOnce({ type: "archived" });
     fake.backend.listSessions.mockResolvedValueOnce({
@@ -510,6 +563,44 @@ describe("store", () => {
     const archived = await store.getState().archiveLane(1, "checkpoint");
     expect(archived).toEqual({ type: "archived" });
     expect(store.getState().lanes[0].state).toBe("archived");
+  });
+
+  it("returns detached-head recovery without archiving, and forwards the explicit choices", async () => {
+    const detachedHead = {
+      commit: "abc123",
+      dirty: false,
+      unreachableCommits: [],
+    };
+    fake.backend.archiveLane.mockResolvedValueOnce({
+      type: "detachedHead",
+      lane,
+      detachedHead,
+    });
+    const listings = fake.backend.listSessions.mock.calls.length;
+    const detached = await store.getState().archiveLane(1, null);
+    expect(detached).toEqual({ type: "detachedHead", lane, detachedHead });
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings);
+
+    fake.backend.archiveLane.mockResolvedValueOnce({ type: "archived" });
+    await store.getState().archiveLane(1, null, true);
+    expect(fake.backend.archiveLane).toHaveBeenLastCalledWith(1, null, true);
+
+    fake.backend.deleteLane.mockResolvedValueOnce({
+      type: "detachedHead",
+      lane,
+      detachedHead: { ...detachedHead, dirty: true },
+    });
+    const refused = await store.getState().deleteLane(1, true);
+    expect(refused).toMatchObject({ type: "detachedHead" });
+    expect(fake.backend.deleteLane).toHaveBeenLastCalledWith(1, true);
+    expect(store.getState().sessions).toEqual([session]);
+  });
+
+  it("creates a branch for a detached head and refreshes the lane work", async () => {
+    const listings = fake.backend.listSessions.mock.calls.length;
+    expect(await store.getState().createLaneBranch(1)).toBe(true);
+    expect(fake.backend.createLaneBranch).toHaveBeenCalledWith(1);
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings + 1);
   });
 
   it("deletes a lane, forgets its sessions and refreshes the projects", async () => {
@@ -534,8 +625,8 @@ describe("store", () => {
 
     const deleted = await store.getState().deleteLane(lane.id);
 
-    expect(deleted).toBe(true);
-    expect(fake.backend.deleteLane).toHaveBeenCalledWith(lane.id);
+    expect(deleted).toEqual({ type: "deleted" });
+    expect(fake.backend.deleteLane).toHaveBeenCalledWith(lane.id, false);
     expect(store.getState().activeKey).toBeNull();
     expect(store.getState().sessions).toEqual([]);
     expect(store.getState().lanes).toEqual([]);
@@ -557,7 +648,7 @@ describe("store", () => {
 
     const deleted = await store.getState().deleteLane(lane.id);
 
-    expect(deleted).toBe(false);
+    expect(deleted).toBeNull();
     expect(store.getState().lanes).toEqual([lane]);
     expect(store.getState().error).toBe("Close this lane's session before deleting it");
   });
@@ -588,7 +679,7 @@ describe("store", () => {
       errors: [],
     });
     await store.getState().create(lane.id);
-    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi", undefined);
     expect(store.getState().activeKey).toBe("panoptes:7");
     expect(store.getState().sessions[0]).toEqual(laneSession);
     expect(store.getState().navigation[0].sessions).toEqual([laneSession]);
@@ -604,9 +695,10 @@ describe("store", () => {
     await store.getState().create(lane.id, {
       model: "p/small",
       thinking: "high",
+      instructions: "Run the tests.",
       prompt: "Fix the login redirect",
     });
-    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi", "Run the tests.");
     expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:9", "p/small");
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:9", "high");
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith(

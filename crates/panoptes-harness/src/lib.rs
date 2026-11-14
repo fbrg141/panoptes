@@ -80,9 +80,21 @@ pub struct ToolCall {
     /// `None` until there is something to show. Edits carry their changes
     /// from the start, since the input already says what they will be.
     pub output: Option<ToolOutput>,
+    /// Images the tool returned, such as a screenshot or an image file it
+    /// read, in the order it returned them.
+    pub images: Vec<ToolImage>,
     /// Unix milliseconds, when the harness reports them.
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
+}
+
+/// An image a tool returned.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolImage {
+    pub mime_type: String,
+    /// The image bytes, base64-encoded.
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -385,6 +397,9 @@ pub struct StartSession {
     /// Gives the agent only tools that cannot change files (reading,
     /// searching, listing). Used for archived lanes and safe history fallback.
     pub read_only: bool,
+    /// Extra instructions for the session, appended to the harness's own
+    /// system prompt both when it starts and when its conversation resumes.
+    pub instructions: Option<String>,
 }
 
 impl StartSession {
@@ -393,6 +408,7 @@ impl StartSession {
             cwd: cwd.into(),
             resume: None,
             read_only: false,
+            instructions: None,
         }
     }
 }

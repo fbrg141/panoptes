@@ -1,8 +1,10 @@
 //! Tauri shell: loads the harnesses and exposes [`service::Service`] to the
 //! UI as commands, with session events emitted as `session-event`.
 
+mod changes;
 mod eventlog;
 mod files;
+mod git;
 mod lanes;
 mod projects;
 mod service;
@@ -23,10 +25,12 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
+use changes::{Changes, Hunk, TreeRange};
 use service::{
-    AdoptionOutcome, ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult,
+    AdoptionOutcome, ArchiveLaneOutcome, DeleteLaneOutcome, Listing, OpenedSession, Service,
+    ServiceResult,
 };
-use store::{Lane, Project, ProjectSettings, Store};
+use store::{Lane, Preferences, ProfileInput, Project, ProjectSettings, Store};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,11 +119,15 @@ async fn new_session(
     state: State<'_, AppState>,
     lane_id: i64,
     harness: String,
+    instructions: Option<String>,
 ) -> ServiceResult<OpenedSession> {
     logged(
         &state,
         "new_session",
-        state.service.create(lane_id, &harness).await,
+        state
+            .service
+            .create_with(lane_id, &harness, instructions)
+            .await,
     )
 }
 
@@ -216,6 +224,59 @@ async fn session_settings(
 #[tauri::command]
 async fn list_models(state: State<'_, AppState>, key: String) -> ServiceResult<Vec<ModelInfo>> {
     logged(&state, "list_models", state.service.models(&key).await)
+}
+
+#[tauri::command]
+async fn preferences(state: State<'_, AppState>) -> ServiceResult<Preferences> {
+    logged(&state, "preferences", state.service.preferences().await)
+}
+
+#[tauri::command]
+async fn save_profile(
+    state: State<'_, AppState>,
+    id: Option<i64>,
+    input: ProfileInput,
+) -> ServiceResult<Preferences> {
+    logged(
+        &state,
+        "save_profile",
+        state.service.save_profile(id, input).await,
+    )
+}
+
+#[tauri::command]
+async fn delete_profile(state: State<'_, AppState>, id: i64) -> ServiceResult<Preferences> {
+    logged(
+        &state,
+        "delete_profile",
+        state.service.delete_profile(id).await,
+    )
+}
+
+#[tauri::command]
+async fn set_model_favorite(
+    state: State<'_, AppState>,
+    model_id: String,
+    favorite: bool,
+) -> ServiceResult<Preferences> {
+    logged(
+        &state,
+        "set_model_favorite",
+        state.service.set_model_favorite(model_id, favorite).await,
+    )
+}
+
+#[tauri::command]
+async fn set_model_hidden(
+    state: State<'_, AppState>,
+    model_id: String,
+    hidden: bool,
+) -> ServiceResult<Preferences> {
+    logged(
+        &state,
+        "set_model_hidden",
+        state.service.set_model_hidden(model_id, hidden).await,
+    )
 }
 
 #[tauri::command]
@@ -342,6 +403,29 @@ async fn create_lane(
 }
 
 #[tauri::command]
+async fn lane_changes(state: State<'_, AppState>, lane_id: i64) -> ServiceResult<Changes> {
+    logged(
+        &state,
+        "lane_changes",
+        state.service.lane_changes(lane_id).await,
+    )
+}
+
+#[tauri::command]
+async fn file_hunks(
+    state: State<'_, AppState>,
+    lane_id: i64,
+    path: String,
+    range: TreeRange,
+) -> ServiceResult<Vec<Hunk>> {
+    logged(
+        &state,
+        "file_hunks",
+        state.service.file_hunks(lane_id, path, range).await,
+    )
+}
+
+#[tauri::command]
 fn cancel_lane_creation(state: State<'_, AppState>, project_id: i64) {
     state.service.cancel_lane_creation(project_id);
 }
@@ -351,11 +435,15 @@ async fn archive_lane(
     state: State<'_, AppState>,
     id: i64,
     strategy: Option<lanes::ArchiveStrategy>,
+    recreate_branch: Option<bool>,
 ) -> ServiceResult<ArchiveLaneOutcome> {
     logged(
         &state,
         "archive_lane",
-        state.service.archive_lane(id, strategy).await,
+        state
+            .service
+            .archive_lane_recovering(id, strategy, recreate_branch.unwrap_or(false))
+            .await,
     )
 }
 
@@ -365,8 +453,28 @@ async fn restore_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<Lane
 }
 
 #[tauri::command]
-async fn delete_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
-    logged(&state, "delete_lane", state.service.delete_lane(id).await)
+async fn create_lane_branch(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
+    logged(
+        &state,
+        "create_lane_branch",
+        state.service.create_lane_branch(id).await,
+    )
+}
+
+#[tauri::command]
+async fn delete_lane(
+    state: State<'_, AppState>,
+    id: i64,
+    allow_detached: Option<bool>,
+) -> ServiceResult<DeleteLaneOutcome> {
+    logged(
+        &state,
+        "delete_lane",
+        state
+            .service
+            .delete_lane_detached(id, allow_detached.unwrap_or(false))
+            .await,
+    )
 }
 
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
@@ -524,6 +632,11 @@ pub fn run() {
             send_prompt,
             session_settings,
             list_models,
+            preferences,
+            save_profile,
+            delete_profile,
+            set_model_favorite,
+            set_model_hidden,
             set_model,
             set_thinking_level,
             list_files,
@@ -536,8 +649,11 @@ pub fn run() {
             update_project,
             remove_project,
             create_lane,
+            lane_changes,
+            file_hunks,
             cancel_lane_creation,
             archive_lane,
+            create_lane_branch,
             restore_lane,
             delete_lane,
         ])

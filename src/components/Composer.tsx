@@ -4,6 +4,7 @@ import { api } from "../api";
 import {
   composePrompt,
   contextLabel,
+  continueList,
   insertMention,
   type MentionQuery,
   matchFiles,
@@ -14,6 +15,7 @@ import {
 } from "../composer";
 import { modelGroups, shortModelId } from "../newSession";
 import { describeError, useStore } from "../store";
+import { proseField } from "../textFields";
 import type { FileAttachment, QueuedPrompt, SessionSettings } from "../types";
 import { Picker } from "./Picker";
 
@@ -271,6 +273,17 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
       submit(busy && e.altKey);
       return;
     }
+    if (e.key === "Enter") {
+      // A newline that continues a list is typed for the field, so the caret
+      // lands after the new marker.
+      const next = continueList(text, e.currentTarget.selectionStart, e.currentTarget.selectionEnd);
+      if (next) {
+        e.preventDefault();
+        setText(next.text);
+        requestAnimationFrame(() => input.current?.setSelectionRange(next.caret, next.caret));
+      }
+      return;
+    }
     if (e.key === "Escape" && busy) void abort();
   };
 
@@ -297,9 +310,9 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
       }}
     >
       <span id="composer-help" className="sr-only">
-        Enter to send. Shift+Enter for a new line. While the agent runs, Enter steers it,
-        Option+Enter queues the message for when it finishes, and Escape stops it. Type @ to mention
-        a file. Shift+Tab changes the thinking level.
+        Enter to send. Shift+Enter for a new line, continuing a list when the line starts one. While
+        the agent runs, Enter steers it, Option+Enter queues the message for when it finishes, and
+        Escape stops it. Type @ to mention a file. Shift+Tab changes the thinking level.
       </span>
 
       {mention && matches.length > 0 && (
@@ -370,6 +383,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
             mention && matches.length > 0 ? `composer-mention-${picked}` : undefined
           }
           enterKeyHint="send"
+          {...proseField}
           rows={1}
           className="relative block max-h-60 min-h-[var(--control-lg)] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 pb-1 text-transparent caret-ink [scrollbar-width:none] placeholder:text-ink-faint focus:outline-none"
           placeholder={
@@ -647,12 +661,13 @@ function MenuButton({
  */
 function ModelPicker({ settings }: { settings: SessionSettings }) {
   const models = useStore((s) => (s.activeKey ? s.models[s.activeKey] : undefined));
+  const preferences = useStore((s) => s.preferences);
   const loadModels = useStore((s) => s.loadModels);
   const setModel = useStore((s) => s.setModel);
   const current = settings.model;
   const groups = useMemo(
-    () => modelGroups(models ?? [], current?.id ?? "").slice(1),
-    [models, current],
+    () => modelGroups(models ?? [], current?.id ?? "", preferences).slice(1),
+    [models, current, preferences],
   );
 
   return (
