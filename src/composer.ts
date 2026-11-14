@@ -87,7 +87,14 @@ const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)]) /;
  * nothing after its marker ends the list instead. Returns null when the line
  * is not a list item, so the newline is left to the field.
  */
-export function continueList(text: string, caret: number): { text: string; caret: number } | null {
+export function continueList(
+  original: string,
+  start: number,
+  end = start,
+): { text: string; caret: number } | null {
+  // A selection is replaced by the newline, as the field itself would do.
+  const text = original.slice(0, start) + original.slice(end);
+  const caret = start;
   const lineStart = text.lastIndexOf("\n", caret - 1) + 1;
   const lineEnd = text.indexOf("\n", caret);
   const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
@@ -111,8 +118,11 @@ export function continueList(text: string, caret: number): { text: string; caret
   // An open task item continues unchecked.
   const task = /^\[[ xX]\] /.test(item) ? "[ ] " : "";
   const inserted = `\n${indent}${next} ${task}`;
+  // Splitting an item mid-line moves the rest after the new marker, without
+  // the space that separated it from the text before the caret.
+  const rest = text.slice(caret).replace(/^[ \t]+/, "");
   return {
-    text: text.slice(0, caret) + inserted + text.slice(caret),
+    text: text.slice(0, caret) + inserted + rest,
     caret: caret + inserted.length,
   };
 }

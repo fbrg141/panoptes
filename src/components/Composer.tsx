@@ -276,7 +276,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
     if (e.key === "Enter") {
       // A newline that continues a list is typed for the field, so the caret
       // lands after the new marker.
-      const next = continueList(text, e.currentTarget.selectionStart);
+      const next = continueList(text, e.currentTarget.selectionStart, e.currentTarget.selectionEnd);
       if (next) {
         e.preventDefault();
         setText(next.text);

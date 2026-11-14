@@ -97,6 +97,11 @@ describe("continueList", () => {
     expect(continueList("1. ", 4)).toEqual({ text: "", caret: 0 });
   });
 
+  it("replaces a selection and moves the rest of a split item without its space", () => {
+    expect(continueList("- first item", 7)).toEqual({ text: "- first\n- item", caret: 10 });
+    expect(continueList("- keep this drop", 6, 11)).toEqual({ text: "- keep\n- drop", caret: 9 });
+  });
+
   it("leaves other lines to the field", () => {
     expect(continueList("just text", 9)).toBeNull();
     expect(continueList("-5 stars", 8)).toBeNull();

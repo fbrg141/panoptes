@@ -123,7 +123,11 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
       void submit();
       return;
     }
-    const next = continueList(task, event.currentTarget.selectionStart);
+    const next = continueList(
+      task,
+      event.currentTarget.selectionStart,
+      event.currentTarget.selectionEnd,
+    );
     if (!next) return;
     event.preventDefault();
     setTask(next.text);
