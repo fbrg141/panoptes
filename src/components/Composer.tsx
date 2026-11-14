@@ -678,12 +678,13 @@ function ModelPicker({
   input: React.RefObject<HTMLTextAreaElement | null>;
 }) {
   const models = useStore((s) => s.models[sessionKey]);
+  const preferences = useStore((s) => s.preferences);
   const loadModels = useStore((s) => s.loadModels);
   const setModel = useStore((s) => s.setModel);
   const current = settings.model;
   const groups = useMemo(
-    () => modelGroups(models ?? [], current?.id ?? "").slice(1),
-    [models, current],
+    () => modelGroups(models ?? [], current?.id ?? "", preferences).slice(1),
+    [models, current, preferences],
   );
 
   return (

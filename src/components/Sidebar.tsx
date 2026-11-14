@@ -70,6 +70,14 @@ export function Sidebar() {
         <Button
           variant="ghost"
           size="sm"
+          icon="settings"
+          aria-label="Settings"
+          title="Profiles and model preferences"
+          onClick={() => show({ type: "settings" })}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
           icon="folder"
           aria-label="Add project"
           title="Add a git repository as a project (⌘N)"

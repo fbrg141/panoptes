@@ -14,7 +14,7 @@ import {
 
 /**
  * The one overlay the window shows at a time: the search palette, the new
- * session form, the cheatsheet, or a lane form opened for a project. Global
+ * lane form, settings, the cheatsheet, or a lane form opened for a project. Global
  * shortcuts, the sidebar and the palette all open things through here, so a
  * second overlay replaces the first instead of stacking.
  */
@@ -23,6 +23,7 @@ export type Overlay =
   | { type: "newProject" }
   | { type: "shortcuts" }
   | { type: "paneSession"; paneId: string }
+  | { type: "settings" }
   | { type: "newLane"; projectId: number; prompt?: string };
 
 const initialPane = singlePane();

@@ -5,6 +5,7 @@ import { NewLaneDialog } from "./components/NewLaneDialog";
 import { SearchPalette } from "./components/SearchPalette";
 import { SessionPicker } from "./components/SessionPicker";
 import { SessionWorkspace } from "./components/SessionWorkspace";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { pickProjectFolder } from "./pickProject";
@@ -102,6 +103,7 @@ export default function App() {
       {overlay?.type === "search" && <SearchPalette />}
       {overlay?.type === "shortcuts" && <ShortcutsDialog />}
       {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
+      {overlay?.type === "settings" && <SettingsDialog />}
       {overlay?.type === "newLane" && (
         <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
       )}

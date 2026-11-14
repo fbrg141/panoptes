@@ -6,13 +6,17 @@ import type {
   AppInfo,
   ArchiveLaneOutcome,
   ArchiveStrategy,
+  Changes,
   FileAttachment,
+  Hunk,
   ImageAttachment,
   Lane,
   Listing,
   Message,
   ModelInfo,
   OpenedSession,
+  Preferences,
+  ProfileInput,
   Project,
   ProjectSettings,
   PromptMode,
@@ -20,6 +24,7 @@ import type {
   Session,
   SessionEvent,
   SessionSettings,
+  TreeRange,
 } from "./types";
 
 /** Typed wrappers for the commands in src-tauri/src/lib.rs. */
@@ -34,8 +39,8 @@ export const api = {
       locator: s.harnessRef?.locator ?? "",
       cwd: s.cwd,
     }),
-  newSession: (laneId: number, harness: string) =>
-    invoke<OpenedSession>("new_session", { laneId, harness }),
+  newSession: (laneId: number, harness: string, instructions?: string) =>
+    invoke<OpenedSession>("new_session", { laneId, harness, instructions }),
   adoptSession: (
     s: Pick<Session, "harness" | "key" | "harnessRef" | "cwd">,
     laneId: number | null,
@@ -56,6 +61,14 @@ export const api = {
     invoke<PromptOutcome>("send_prompt", { key, text, images, mode }),
   settings: (key: string) => invoke<SessionSettings>("session_settings", { key }),
   listModels: (key: string) => invoke<ModelInfo[]>("list_models", { key }),
+  preferences: () => invoke<Preferences>("preferences"),
+  saveProfile: (id: number | null, input: ProfileInput) =>
+    invoke<Preferences>("save_profile", { id, input }),
+  deleteProfile: (id: number) => invoke<Preferences>("delete_profile", { id }),
+  setModelFavorite: (modelId: string, favorite: boolean) =>
+    invoke<Preferences>("set_model_favorite", { modelId, favorite }),
+  setModelHidden: (modelId: string, hidden: boolean) =>
+    invoke<Preferences>("set_model_hidden", { modelId, hidden }),
   setModel: (key: string, modelId: string) =>
     invoke<SessionSettings>("set_model", { key, modelId }),
   setThinkingLevel: (key: string, level: string) =>
@@ -73,6 +86,9 @@ export const api = {
   removeProject: (id: number) => invoke<void>("remove_project", { id }),
   createLane: (projectId: number, task: string, mainCheckout: boolean) =>
     invoke<Lane>("create_lane", { projectId, task, mainCheckout }),
+  laneChanges: (laneId: number) => invoke<Changes>("lane_changes", { laneId }),
+  fileHunks: (laneId: number, path: string, range: TreeRange) =>
+    invoke<Hunk[]>("file_hunks", { laneId, path, range }),
   cancelLaneCreation: (projectId: number) => invoke<void>("cancel_lane_creation", { projectId }),
   archiveLane: (id: number, strategy: ArchiveStrategy | null) =>
     invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy }),
