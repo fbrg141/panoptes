@@ -1,6 +1,13 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_CHOICE, modelGroups, shortModelId, thinkingGroups } from "../newSession";
+import {
+  borrowedModels,
+  DEFAULT_CHOICE,
+  modelGroups,
+  profileGroups,
+  shortModelId,
+  thinkingGroups,
+} from "../newSession";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
 import { useUi } from "../ui";
@@ -19,23 +26,22 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   const activeKey = useStore((s) => s.activeKey);
   const modelsByKey = useStore((s) => s.models);
   const settingsByKey = useStore((s) => s.settings);
+  const preferences = useStore((s) => s.preferences);
   const loadModels = useStore((s) => s.loadModels);
   const [task, setTask] = useState(prompt ?? "");
   const [mainCheckout, setMainCheckout] = useState(false);
   const [model, setModel] = useState(DEFAULT_CHOICE);
   const [thinking, setThinking] = useState(DEFAULT_CHOICE);
+  const [profileId, setProfileId] = useState<number | null>(null);
+  const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState(false);
+  const [modelsFailed, setModelsFailed] = useState(false);
   const field = useRef<HTMLInputElement>(null);
 
   // Model and thinking choices are read from an open session: listing them
   // needs a harness process. Without one, the harness default is the only
   // honest choice, and the composer offers the rest once the session runs.
-  const models = useMemo(
-    () =>
-      (activeKey ? modelsByKey[activeKey] : undefined) ??
-      Object.values(modelsByKey).find((list) => list.length > 0),
-    [activeKey, modelsByKey],
-  );
+  const models = useMemo(() => borrowedModels(modelsByKey, activeKey), [activeKey, modelsByKey]);
   const levels = useMemo(() => {
     const settings =
       (activeKey ? settingsByKey[activeKey] : undefined) ??
@@ -44,7 +50,9 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   }, [activeKey, settingsByKey]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: asks once, when the panel opens
   useEffect(() => {
-    if (!models && activeKey) void loadModels();
+    if (!models && activeKey) {
+      void loadModels().then((loaded) => setModelsFailed(!loaded));
+    }
   }, []);
 
   if (!project) {
@@ -67,7 +75,16 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   }
 
   const chosenModel = models?.find((item) => item.id === model);
+  const chosenProfile = preferences.profiles.find((profile) => profile.id === profileId);
   const focusTask = () => field.current?.focus();
+
+  const chooseProfile = (id: string) => {
+    const profile = preferences.profiles.find((item) => item.id === Number(id));
+    setProfileId(profile?.id ?? null);
+    setModel(profile?.modelId ?? DEFAULT_CHOICE);
+    setThinking(profile?.thinkingLevel ?? DEFAULT_CHOICE);
+    setInstructions(profile?.instructions ?? "");
+  };
 
   const submit = async () => {
     const text = task.trim();
@@ -76,6 +93,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
     const created = await createFromPrompt(project.id, text, mainCheckout, {
       model: model || undefined,
       thinking: thinking || undefined,
+      instructions: instructions || undefined,
     });
     if (created) {
       close();
@@ -136,14 +154,27 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             onChange={setMainCheckout}
           />
           <Picker
+            label="Profile"
+            icon="agent"
+            title="Apply saved model, thinking and additional instructions to this new session"
+            value={chosenProfile?.name ?? "No profile"}
+            groups={profileGroups(preferences.profiles, profileId)}
+            searchable={preferences.profiles.length > 6}
+            disabled={busy}
+            returnFocus={focusTask}
+            onSelect={chooseProfile}
+          />
+          <Picker
             label="Model"
             icon="agent"
             title={
               models
                 ? undefined
-                : activeKey
-                  ? "Loading models"
-                  : "Models are listed from an open session; switch in the composer once this one runs"
+                : modelsFailed
+                  ? "Could not load models. Close and reopen this panel to retry."
+                  : activeKey
+                    ? "Loading models"
+                    : "Models are listed from an open session; switch in the composer once this one runs"
             }
             value={
               chosenModel ? (
@@ -153,11 +184,16 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
               )
             }
             valueText={chosenModel?.name ?? "Default model"}
-            groups={models ? modelGroups(models, model) : []}
-            emptyText="Loading models…"
+            groups={models ? modelGroups(models, model, preferences) : []}
+            emptyText={modelsFailed ? "Could not load models" : "Loading models…"}
             disabled={busy || !models}
             returnFocus={focusTask}
-            onSelect={setModel}
+            onSelect={(id) => {
+              setModel(id);
+              // The borrowed levels belong to the previously active model.
+              // A new choice starts with that model's own default.
+              setThinking(DEFAULT_CHOICE);
+            }}
           />
           {levels.length > 0 && (
             <Picker
