@@ -24,7 +24,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use service::{
-    AdoptionOutcome, ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult,
+    AdoptionOutcome, ArchiveLaneOutcome, DeleteLaneOutcome, Listing, OpenedSession, Service,
+    ServiceResult,
 };
 use store::{Lane, Project, ProjectSettings, Store};
 
@@ -351,11 +352,15 @@ async fn archive_lane(
     state: State<'_, AppState>,
     id: i64,
     strategy: Option<lanes::ArchiveStrategy>,
+    recreate_branch: Option<bool>,
 ) -> ServiceResult<ArchiveLaneOutcome> {
     logged(
         &state,
         "archive_lane",
-        state.service.archive_lane(id, strategy).await,
+        state
+            .service
+            .archive_lane_recovering(id, strategy, recreate_branch.unwrap_or(false))
+            .await,
     )
 }
 
@@ -365,8 +370,28 @@ async fn restore_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<Lane
 }
 
 #[tauri::command]
-async fn delete_lane(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
-    logged(&state, "delete_lane", state.service.delete_lane(id).await)
+async fn create_lane_branch(state: State<'_, AppState>, id: i64) -> ServiceResult<()> {
+    logged(
+        &state,
+        "create_lane_branch",
+        state.service.create_lane_branch(id).await,
+    )
+}
+
+#[tauri::command]
+async fn delete_lane(
+    state: State<'_, AppState>,
+    id: i64,
+    allow_detached: Option<bool>,
+) -> ServiceResult<DeleteLaneOutcome> {
+    logged(
+        &state,
+        "delete_lane",
+        state
+            .service
+            .delete_lane_detached(id, allow_detached.unwrap_or(false))
+            .await,
+    )
 }
 
 fn load_state(app: &AppHandle) -> anyhow::Result<AppState> {
@@ -538,6 +563,7 @@ pub fn run() {
             create_lane,
             cancel_lane_creation,
             archive_lane,
+            create_lane_branch,
             restore_lane,
             delete_lane,
         ])

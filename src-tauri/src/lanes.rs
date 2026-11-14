@@ -20,10 +20,40 @@ pub enum ArchiveStrategy {
     Checkpoint,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreachableCommit {
+    pub hash: String,
+    pub subject: String,
+}
+
+/// Why a detached worktree cannot simply be removed. An empty commit list and
+/// a clean tree mean HEAD is already reachable from a local or remote branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetachedHead {
+    pub commit: String,
+    pub dirty: bool,
+    pub unreachable_commits: Vec<UnreachableCommit>,
+}
+
+impl DetachedHead {
+    pub fn is_safe_to_remove(&self) -> bool {
+        !self.dirty && self.unreachable_commits.is_empty()
+    }
+}
+
 #[derive(Debug)]
 pub enum ArchiveResult {
     Dirty,
+    DetachedHead(DetachedHead),
     Archived { checkpoint_ref: Option<String> },
+}
+
+#[derive(Debug)]
+pub enum DeleteResult {
+    Deleted,
+    DetachedHead(DetachedHead),
 }
 
 /// Filesystem-safe lane names are also used in branch names and paths.
@@ -204,10 +234,24 @@ pub fn archive(
 /// before the worktree is removed (and `None` if that checkpoint turned out
 /// stale). The caller stores it, so an archive interrupted between removing
 /// the folder and marking the lane archived can still find the checkpoint.
+#[cfg(test)]
 pub fn archive_recording(
     project: &Project,
     lane: &Lane,
     strategy: Option<ArchiveStrategy>,
+    record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
+) -> anyhow::Result<ArchiveResult> {
+    archive_recovering(project, lane, strategy, false, record)
+}
+
+/// `recreate_branch` is the user's explicit choice in the detached-HEAD
+/// dialog. It attaches the lane branch to HEAD before the normal archive
+/// checks, without ever resetting a branch that is ahead or has diverged.
+pub fn archive_recovering(
+    project: &Project,
+    lane: &Lane,
+    strategy: Option<ArchiveStrategy>,
+    recreate_branch: bool,
     record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<ArchiveResult> {
     let worktree = sole_worktree(lane)?;
@@ -231,7 +275,11 @@ pub fn archive_recording(
         };
         return Ok(ArchiveResult::Archived { checkpoint_ref });
     }
-    ensure_on_lane_branch(&path, lane)?;
+    match check_lane_branch(&path, lane)? {
+        BranchCheck::Ready => {}
+        BranchCheck::Detached(_) if recreate_branch => create_branch_here(&path, lane)?,
+        BranchCheck::Detached(detached) => return Ok(ArchiveResult::DetachedHead(detached)),
+    }
     let before = worktree_status(&path)?;
     let is_dirty = !before.is_empty();
     if is_dirty && strategy.is_none() {
@@ -391,10 +439,22 @@ pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
 /// Permanently removes a lane's worktree, local branch and recovery refs.
 /// The caller has already obtained explicit confirmation. A main-checkout
 /// lane owns none of those things, so deletion only removes its store row.
-pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<()> {
+#[cfg(test)]
+pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<DeleteResult> {
+    delete_detached(project, lane, false)
+}
+
+/// Deletion may skip branch recreation only after the user has confirmed the
+/// detached-HEAD dialog. The clean-tree and reachability checks are repeated
+/// here so a change made while that dialog was open cannot be deleted.
+pub fn delete_detached(
+    project: &Project,
+    lane: &Lane,
+    allow_detached: bool,
+) -> anyhow::Result<DeleteResult> {
     let worktree = sole_worktree(lane)?;
     if worktree.main_checkout {
-        return Ok(());
+        return Ok(DeleteResult::Deleted);
     }
     let path = PathBuf::from(&worktree.path);
     let repo = Path::new(&project.repo);
@@ -406,10 +466,16 @@ pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<()> {
             std::fs::remove_dir_all(&path)
                 .with_context(|| format!("Could not remove {}", path.display()))?;
         }
-        return Ok(());
+        return Ok(DeleteResult::Deleted);
     }
     if std::fs::symlink_metadata(&path).is_ok() {
-        ensure_on_lane_branch(&path, lane)?;
+        match check_lane_branch(&path, lane)? {
+            BranchCheck::Ready => {}
+            BranchCheck::Detached(detached) if allow_detached && detached.is_safe_to_remove() => {}
+            BranchCheck::Detached(detached) => {
+                return Ok(DeleteResult::DetachedHead(detached));
+            }
+        }
         // Deletion is explicitly destructive, including uncommitted files.
         remove_worktree(repo, &path, true)?;
     } else {
@@ -424,6 +490,37 @@ pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<()> {
     let references = run(repo, &["for-each-ref", "--format=%(refname)", &prefix])?;
     for reference in references.lines().filter(|line| !line.is_empty()) {
         run(repo, &["update-ref", "-d", reference])?;
+    }
+    Ok(DeleteResult::Deleted)
+}
+
+/// Attaches a detached worktree to its lane branch without archiving or
+/// deleting anything. This is also the recovery for unreachable commits.
+pub fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()> {
+    match check_lane_branch(path, lane)? {
+        BranchCheck::Ready => return Ok(()),
+        BranchCheck::Detached(_) => {}
+    }
+    let head = run(path, &["rev-parse", "HEAD"])?;
+    let reference = format!("refs/heads/{}", lane.branch);
+    if ref_exists(path, &reference)? {
+        let branch = run(path, &["rev-parse", "--verify", &reference])?;
+        if branch == head {
+            run(path, &["switch", &lane.branch])?;
+        } else if run(path, &["merge-base", "--is-ancestor", &branch, &head]).is_ok() {
+            // The user explicitly chose to recreate the lane branch here.
+            // `-C` is safe only when this advances it to a descendant.
+            run(path, &["switch", "-C", &lane.branch])?;
+        } else {
+            bail!(
+                "The lane branch {} points to {}, which is not an ancestor of HEAD ({}). It was not moved; choose another branch or save the detached commits on a new branch first",
+                lane.branch,
+                branch,
+                head
+            );
+        }
+    } else {
+        run(path, &["switch", "-c", &lane.branch])?;
     }
     Ok(())
 }
@@ -481,7 +578,12 @@ pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
 /// otherwise become unreachable once the worktree is removed, and so would a
 /// commit the Commit strategy makes there. A merge, rebase, cherry-pick,
 /// revert or bisect in progress is refused for the same reason.
-fn ensure_on_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<()> {
+enum BranchCheck {
+    Ready,
+    Detached(DetachedHead),
+}
+
+fn check_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<BranchCheck> {
     const IN_PROGRESS: [(&str, &str); 6] = [
         ("MERGE_HEAD", "a merge"),
         ("rebase-merge", "a rebase"),
@@ -499,18 +601,51 @@ fn ensure_on_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<()> {
     }
     let expected = format!("refs/heads/{}", lane.branch);
     match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
-        Ok(head) if head == expected => Ok(()),
+        Ok(head) if head == expected => Ok(BranchCheck::Ready),
         Ok(head) => bail!(
             "The lane's worktree is on {} instead of {}; switch back to {} before archiving or deleting the lane so its branch is unambiguous. The worktree was left in place",
             head.trim_start_matches("refs/heads/"),
             lane.branch,
             lane.branch
         ),
-        Err(_) => bail!(
-            "The lane's worktree has a detached HEAD; switch back to {} before archiving or deleting the lane so its branch is unambiguous. The worktree was left in place",
-            lane.branch
-        ),
+        Err(_) => Ok(BranchCheck::Detached(detached_head(path)?)),
     }
+}
+
+/// Lists every commit that would become unreachable from local and remote
+/// branches if this detached worktree were removed. Tags deliberately do not
+/// count: the recovery promise is specifically about branch reachability.
+fn detached_head(path: &Path) -> anyhow::Result<DetachedHead> {
+    let commit = run(path, &["rev-parse", "HEAD"])?;
+    let dirty = !worktree_status(path)?.is_empty();
+    let log = run(
+        path,
+        &[
+            "log",
+            "--format=%H%x09%s",
+            "HEAD",
+            "--not",
+            "--branches",
+            "--remotes",
+            "--",
+        ],
+    )?;
+    let unreachable_commits = log
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (hash, subject) = line.split_once('\t').unwrap_or((line, ""));
+            UnreachableCommit {
+                hash: hash.into(),
+                subject: subject.into(),
+            }
+        })
+        .collect();
+    Ok(DetachedHead {
+        commit,
+        dirty,
+        unreachable_commits,
+    })
 }
 
 fn current_branch(repo: &Path) -> Option<String> {
@@ -1462,9 +1597,10 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_head_is_refused_so_its_commits_are_kept() {
+    fn a_detached_head_with_unreachable_commits_is_refused_and_can_be_saved() {
         let f = fixture(None);
         let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
         let path = PathBuf::from(&new.worktrees[0].path);
         git(&path, &["checkout", "--quiet", "--detach"]);
         std::fs::write(path.join("tracked.txt"), "detached work\n").unwrap();
@@ -1472,11 +1608,156 @@ mod tests {
         let commit = git(&path, &["rev-parse", "HEAD"]);
 
         for strategy in [None, Some(ArchiveStrategy::Commit)] {
-            let error = archive(&f.project, &lane(&f, 1, &new), strategy).unwrap_err();
-            assert!(format!("{error:#}").contains("detached HEAD"), "{error:#}");
+            let ArchiveResult::DetachedHead(detached) =
+                archive(&f.project, &lane, strategy).unwrap()
+            else {
+                panic!("a detached HEAD should need recovery");
+            };
+            assert!(!detached.is_safe_to_remove());
+            assert_eq!(detached.unreachable_commits.len(), 1);
+            assert_eq!(detached.unreachable_commits[0].hash, commit);
+            assert_eq!(detached.unreachable_commits[0].subject, "detached work");
         }
         assert!(path.exists());
         assert_eq!(git(&path, &["rev-parse", "HEAD"]), commit);
+
+        create_branch_here(&path, &lane).unwrap();
+        assert_eq!(
+            git(&path, &["branch", "--show-current"]),
+            "panoptes/fix-login"
+        );
+        assert!(matches!(
+            archive(&f.project, &lane, None).unwrap(),
+            ArchiveResult::Archived { .. }
+        ));
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), commit);
+    }
+
+    #[test]
+    fn a_clean_detached_head_on_a_pushed_commit_can_recreate_its_branch_and_archive() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "pushed work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "pushed work"]);
+        let commit = git(&path, &["rev-parse", "HEAD"]);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+        git(
+            &f.repo,
+            &["update-ref", "refs/remotes/origin/pushed", &commit],
+        );
+        git(&f.repo, &["branch", "-D", "panoptes/fix-login"]);
+
+        let ArchiveResult::DetachedHead(detached) = archive(&f.project, &lane, None).unwrap()
+        else {
+            panic!("a detached HEAD should need recovery");
+        };
+        assert!(detached.is_safe_to_remove());
+        assert_eq!(detached.commit, commit);
+        assert!(path.exists());
+
+        let result = archive_recovering(&f.project, &lane, None, true, &|_| Ok(())).unwrap();
+        assert!(matches!(result, ArchiveResult::Archived { .. }));
+        assert!(!path.exists());
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), commit);
+    }
+
+    #[test]
+    fn a_dirty_detached_head_is_not_safe_even_when_its_commit_is_pushed() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        let commit = git(&path, &["rev-parse", "HEAD"]);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+        git(
+            &f.repo,
+            &["update-ref", "refs/remotes/origin/pushed", &commit],
+        );
+        git(&f.repo, &["branch", "-D", "panoptes/fix-login"]);
+        std::fs::write(path.join("untracked.txt"), "unsaved\n").unwrap();
+        git(&f.repo, &["config", "status.showUntrackedFiles", "no"]);
+
+        let ArchiveResult::DetachedHead(detached) = archive(&f.project, &lane, None).unwrap()
+        else {
+            panic!("a detached HEAD should need recovery");
+        };
+        assert!(detached.dirty);
+        assert!(detached.unreachable_commits.is_empty());
+        assert!(!detached.is_safe_to_remove());
+        assert_eq!(git(&path, &["rev-parse", "HEAD"]), commit);
+        assert!(path.join("untracked.txt").exists());
+    }
+
+    #[test]
+    fn recovery_advances_an_existing_lane_branch_but_never_resets_a_diverged_one() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+        std::fs::write(path.join("tracked.txt"), "detached work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "detached work"]);
+        let commit = git(&path, &["rev-parse", "HEAD"]);
+        git(&f.repo, &["branch", "published", &commit]);
+
+        create_branch_here(&path, &lane).unwrap();
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), commit);
+
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let diverged_lane = self::lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "lane work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "lane work"]);
+        let lane_commit = git(&path, &["rev-parse", "HEAD"]);
+        git(&path, &["checkout", "--quiet", "--detach", "trunk"]);
+        std::fs::write(path.join("tracked.txt"), "detached work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "detached work"]);
+        let detached_commit = git(&path, &["rev-parse", "HEAD"]);
+        git(&f.repo, &["branch", "published", &detached_commit]);
+
+        let error = create_branch_here(&path, &diverged_lane).unwrap_err();
+        assert!(format!("{error:#}").contains("was not moved"), "{error:#}");
+        assert_eq!(
+            git(&f.repo, &["rev-parse", "panoptes/fix-login"]),
+            lane_commit
+        );
+        assert_eq!(git(&path, &["rev-parse", "HEAD"]), detached_commit);
+    }
+
+    #[test]
+    fn deleting_a_safe_detached_head_needs_the_explicit_recovery_choice() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        let commit = git(&path, &["rev-parse", "HEAD"]);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+
+        let DeleteResult::DetachedHead(detached) = delete(&f.project, &lane).unwrap() else {
+            panic!("a detached HEAD should need recovery");
+        };
+        assert!(detached.is_safe_to_remove());
+        assert!(path.exists());
+        std::fs::write(path.join("untracked.txt"), "new work\n").unwrap();
+        let DeleteResult::DetachedHead(detached) =
+            delete_detached(&f.project, &lane, true).unwrap()
+        else {
+            panic!("new work must be refused again");
+        };
+        assert!(detached.dirty);
+        assert!(path.exists());
+        std::fs::remove_file(path.join("untracked.txt")).unwrap();
+
+        assert!(matches!(
+            delete_detached(&f.project, &lane, true).unwrap(),
+            DeleteResult::Deleted
+        ));
+        assert!(!path.exists());
+        assert!(git(&f.repo, &["branch", "--list", "panoptes/fix-login"]).is_empty());
+        assert_eq!(git(&f.repo, &["rev-parse", "trunk"]), commit);
     }
 
     #[test]
