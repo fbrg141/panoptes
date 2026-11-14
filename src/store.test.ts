@@ -472,10 +472,15 @@ describe("store", () => {
       status: "idle",
       replay: [],
     });
-    const created = await store.getState().createFromPrompt(1, "Fix login", true);
+    const created = await store.getState().createFromPrompt(1, "Fix login", true, {
+      model: "p/small",
+      thinking: "high",
+    });
     expect(created).toBe(true);
     expect(fake.backend.createLane).toHaveBeenCalledWith(1, "Fix login", true);
     expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi");
+    expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:7", "p/small");
+    expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:7", "high");
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:7", "Fix login", [], "start");
   });
 
