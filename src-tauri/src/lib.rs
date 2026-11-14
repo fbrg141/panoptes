@@ -1,8 +1,10 @@
 //! Tauri shell: loads the harnesses and exposes [`service::Service`] to the
 //! UI as commands, with session events emitted as `session-event`.
 
+mod changes;
 mod eventlog;
 mod files;
+mod git;
 mod lanes;
 mod projects;
 mod service;
@@ -23,6 +25,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
+use changes::{Changes, Hunk, TreeRange};
 use service::{
     AdoptionOutcome, ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult,
 };
@@ -233,12 +236,20 @@ async fn save_profile(
     id: Option<i64>,
     input: ProfileInput,
 ) -> ServiceResult<Preferences> {
-    logged(&state, "save_profile", state.service.save_profile(id, input).await)
+    logged(
+        &state,
+        "save_profile",
+        state.service.save_profile(id, input).await,
+    )
 }
 
 #[tauri::command]
 async fn delete_profile(state: State<'_, AppState>, id: i64) -> ServiceResult<Preferences> {
-    logged(&state, "delete_profile", state.service.delete_profile(id).await)
+    logged(
+        &state,
+        "delete_profile",
+        state.service.delete_profile(id).await,
+    )
 }
 
 #[tauri::command]
@@ -387,6 +398,29 @@ async fn create_lane(
             .service
             .create_lane(project_id, task, main_checkout)
             .await,
+    )
+}
+
+#[tauri::command]
+async fn lane_changes(state: State<'_, AppState>, lane_id: i64) -> ServiceResult<Changes> {
+    logged(
+        &state,
+        "lane_changes",
+        state.service.lane_changes(lane_id).await,
+    )
+}
+
+#[tauri::command]
+async fn file_hunks(
+    state: State<'_, AppState>,
+    lane_id: i64,
+    path: String,
+    range: TreeRange,
+) -> ServiceResult<Vec<Hunk>> {
+    logged(
+        &state,
+        "file_hunks",
+        state.service.file_hunks(lane_id, path, range).await,
     )
 }
 
@@ -590,6 +624,8 @@ pub fn run() {
             update_project,
             remove_project,
             create_lane,
+            lane_changes,
+            file_hunks,
             cancel_lane_creation,
             archive_lane,
             restore_lane,
