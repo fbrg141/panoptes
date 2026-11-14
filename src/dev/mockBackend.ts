@@ -9,6 +9,8 @@ import type {
   Lane,
   Message,
   ModelInfo,
+  Preferences,
+  ProfileInput,
   Project,
   QueuedPrompt,
   Session,
@@ -123,6 +125,20 @@ const laneWork: Record<number, { changedFiles: number; commitsAhead: number | nu
   1: { changedFiles: 3, commitsAhead: 1 },
 };
 let nextSessionId = 2;
+let preferences: Preferences = {
+  profiles: [
+    {
+      id: 1,
+      name: "Careful implementation",
+      modelId: "anthropic/claude-sonnet-4-5",
+      thinkingLevel: "high",
+      instructions: "Prefer small changes. Run all relevant tests.",
+    },
+  ],
+  favoriteModels: ["anthropic/claude-sonnet-4-5"],
+  hiddenModels: [],
+};
+let nextProfileId = 2;
 
 /** Records a Panoptes session in a lane, as the backend does before it starts. */
 const recordSession = (laneId: number): Session => {
@@ -761,6 +777,47 @@ export function installMockBackend() {
           return { ...settings };
         case "list_models":
           return models;
+        case "preferences":
+          return preferences;
+        case "save_profile": {
+          const request = args as unknown as { id: number | null; input: ProfileInput };
+          const id = request.id ?? nextProfileId++;
+          const profile = { id, ...request.input };
+          preferences = {
+            ...preferences,
+            profiles: request.id
+              ? preferences.profiles.map((item) => (item.id === id ? profile : item))
+              : [...preferences.profiles, profile],
+          };
+          return preferences;
+        }
+        case "delete_profile": {
+          const id = (args as unknown as { id: number }).id;
+          preferences = {
+            ...preferences,
+            profiles: preferences.profiles.filter((profile) => profile.id !== id),
+          };
+          return preferences;
+        }
+        case "set_model_favorite": {
+          const request = args as unknown as { modelId: string; favorite: boolean };
+          const favorites = preferences.favoriteModels.filter((id) => id !== request.modelId);
+          preferences = {
+            ...preferences,
+            favoriteModels: request.favorite ? [...favorites, request.modelId] : favorites,
+          };
+          return preferences;
+        }
+        case "set_model_hidden": {
+          const request = args as unknown as { modelId: string; hidden: boolean };
+          preferences = {
+            ...preferences,
+            hiddenModels: request.hidden
+              ? [...new Set([...preferences.hiddenModels, request.modelId])]
+              : preferences.hiddenModels.filter((id) => id !== request.modelId),
+          };
+          return preferences;
+        }
         case "set_model": {
           const model = models.find((m) => m.id === a.modelId) ?? null;
           settings.model = model;

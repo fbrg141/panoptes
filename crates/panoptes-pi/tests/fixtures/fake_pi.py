@@ -17,6 +17,7 @@ for the adapter's tests. Prompts select behaviour:
   "orphan" starts a child outside its process group that keeps stdout
            open, writes the child's process id to stderr, and exits with 7
   "tools"  replies with the tools it was started with ("all" by default)
+  "instructions" replies with the additional system prompt it was started with
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -29,6 +30,7 @@ import sys
 # Panoptes passes its approvals extension; only a real file counts.
 extension = sys.argv[sys.argv.index("--extension") + 1] if "--extension" in sys.argv else None
 tools = sys.argv[sys.argv.index("--tools") + 1] if "--tools" in sys.argv else "all"
+instructions = sys.argv[sys.argv.index("--append-system-prompt") + 1] if "--append-system-prompt" in sys.argv else "none"
 tags_approvals = extension is not None and "panoptes.approval" in open(extension).read()
 
 entries = []
@@ -115,6 +117,8 @@ def run(text, images):
         reply += f" [{len(images)} {images[0]['mimeType']}]"
     if text == "tools":
         reply = f"tools={tools}"
+    elif text == "instructions":
+        reply = f"instructions={instructions}"
     if text == "spawn":
         child = subprocess.Popen(["sleep", "300"])
         reply = f"child={child.pid}"

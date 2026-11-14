@@ -1,6 +1,12 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_CHOICE, modelGroups, shortModelId, thinkingGroups } from "../newSession";
+import {
+  DEFAULT_CHOICE,
+  modelGroups,
+  profileGroups,
+  shortModelId,
+  thinkingGroups,
+} from "../newSession";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
 import { useUi } from "../ui";
@@ -19,11 +25,14 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   const activeKey = useStore((s) => s.activeKey);
   const modelsByKey = useStore((s) => s.models);
   const settingsByKey = useStore((s) => s.settings);
+  const preferences = useStore((s) => s.preferences);
   const loadModels = useStore((s) => s.loadModels);
   const [task, setTask] = useState(prompt ?? "");
   const [mainCheckout, setMainCheckout] = useState(false);
   const [model, setModel] = useState(DEFAULT_CHOICE);
   const [thinking, setThinking] = useState(DEFAULT_CHOICE);
+  const [profileId, setProfileId] = useState<number | null>(null);
+  const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState(false);
   const field = useRef<HTMLInputElement>(null);
 
@@ -67,7 +76,16 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   }
 
   const chosenModel = models?.find((item) => item.id === model);
+  const chosenProfile = preferences.profiles.find((profile) => profile.id === profileId);
   const focusTask = () => field.current?.focus();
+
+  const chooseProfile = (id: string) => {
+    const profile = preferences.profiles.find((item) => item.id === Number(id));
+    setProfileId(profile?.id ?? null);
+    setModel(profile?.modelId ?? DEFAULT_CHOICE);
+    setThinking(profile?.thinkingLevel ?? DEFAULT_CHOICE);
+    setInstructions(profile?.instructions ?? "");
+  };
 
   const submit = async () => {
     const text = task.trim();
@@ -76,6 +94,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
     const created = await createFromPrompt(project.id, text, mainCheckout, {
       model: model || undefined,
       thinking: thinking || undefined,
+      instructions: instructions || undefined,
     });
     if (created) {
       close();
@@ -153,7 +172,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
               )
             }
             valueText={chosenModel?.name ?? "Default model"}
-            groups={models ? modelGroups(models, model) : []}
+            groups={models ? modelGroups(models, model, preferences) : []}
             emptyText="Loading models…"
             disabled={busy || !models}
             returnFocus={focusTask}
@@ -172,6 +191,17 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
               onSelect={setThinking}
             />
           )}
+          <Picker
+            label="Profile"
+            icon="agent"
+            title="Apply saved model, thinking and additional instructions to this new session"
+            value={chosenProfile?.name ?? "No profile"}
+            groups={profileGroups(preferences.profiles, profileId)}
+            searchable={preferences.profiles.length > 6}
+            disabled={busy}
+            returnFocus={focusTask}
+            onSelect={chooseProfile}
+          />
           <Button
             type="submit"
             variant="primary"
