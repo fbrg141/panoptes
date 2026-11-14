@@ -809,6 +809,16 @@ async function showcase(open: Set<string>) {
       title: "Run the migration tests",
       updatedAt: now - 40 * 60_000,
     }),
+    session({
+      name: "lane-summary",
+      key: "panoptes:100",
+      id: 100,
+      laneId: 1,
+      cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
+      title: "Review the lane summary",
+      parentLocator: "/sessions/a.jsonl",
+      updatedAt: now - 40 * 60_000,
+    }),
   );
   const statuses: [string, string][] = [
     ["panoptes:1", "running"],
@@ -817,6 +827,7 @@ async function showcase(open: Set<string>) {
     ["pi:b", "done"],
     ["pi:c", "running"],
     ["pi:d", "waiting"],
+    ["panoptes:100", "done"],
   ];
   // Give the store a moment to subscribe before the events arrive.
   await new Promise((resolve) => setTimeout(resolve, 600));
