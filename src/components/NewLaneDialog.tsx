@@ -1,6 +1,12 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_CHOICE, modelGroups, shortModelId, thinkingGroups } from "../newSession";
+import {
+  borrowedModels,
+  DEFAULT_CHOICE,
+  modelGroups,
+  shortModelId,
+  thinkingGroups,
+} from "../newSession";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
 import { useUi } from "../ui";
@@ -30,12 +36,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   // Model and thinking choices are read from an open session: listing them
   // needs a harness process. Without one, the harness default is the only
   // honest choice, and the composer offers the rest once the session runs.
-  const models = useMemo(
-    () =>
-      (activeKey ? modelsByKey[activeKey] : undefined) ??
-      Object.values(modelsByKey).find((list) => list.length > 0),
-    [activeKey, modelsByKey],
-  );
+  const models = useMemo(() => borrowedModels(modelsByKey, activeKey), [activeKey, modelsByKey]);
   const levels = useMemo(() => {
     const settings =
       (activeKey ? settingsByKey[activeKey] : undefined) ??
@@ -157,7 +158,12 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             emptyText="Loading models…"
             disabled={busy || !models}
             returnFocus={focusTask}
-            onSelect={setModel}
+            onSelect={(id) => {
+              setModel(id);
+              // The borrowed levels belong to the previously active model.
+              // A new choice starts with that model's own default.
+              setThinking(DEFAULT_CHOICE);
+            }}
           />
           {levels.length > 0 && (
             <Picker
