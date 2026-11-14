@@ -6,7 +6,9 @@ import type {
   AppInfo,
   ArchiveLaneOutcome,
   ArchiveStrategy,
+  Changes,
   FileAttachment,
+  Hunk,
   ImageAttachment,
   Lane,
   Listing,
@@ -22,6 +24,7 @@ import type {
   Session,
   SessionEvent,
   SessionSettings,
+  TreeRange,
 } from "./types";
 
 /** Typed wrappers for the commands in src-tauri/src/lib.rs. */
@@ -83,6 +86,9 @@ export const api = {
   removeProject: (id: number) => invoke<void>("remove_project", { id }),
   createLane: (projectId: number, task: string, mainCheckout: boolean) =>
     invoke<Lane>("create_lane", { projectId, task, mainCheckout }),
+  laneChanges: (laneId: number) => invoke<Changes>("lane_changes", { laneId }),
+  fileHunks: (laneId: number, path: string, range: TreeRange) =>
+    invoke<Hunk[]>("file_hunks", { laneId, path, range }),
   cancelLaneCreation: (projectId: number) => invoke<void>("cancel_lane_creation", { projectId }),
   archiveLane: (id: number, strategy: ArchiveStrategy | null) =>
     invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy }),
