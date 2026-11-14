@@ -1,5 +1,6 @@
 import { Button, Icon } from "@panoptes/design-system";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { continueList } from "../composer";
 import {
   borrowedModels,
   DEFAULT_CHOICE,
@@ -37,7 +38,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState(false);
   const [modelsFailed, setModelsFailed] = useState(false);
-  const field = useRef<HTMLInputElement>(null);
+  const field = useRef<HTMLTextAreaElement>(null);
 
   // Model and thinking choices are read from an open session: listing them
   // needs a harness process. Without one, the harness default is the only
@@ -55,6 +56,15 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
       void loadModels().then((loaded) => setModelsFailed(!loaded));
     }
   }, []);
+
+  // Fit the field to its lines, including lines wrapped by the panel.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the value drives the measurement
+  useEffect(() => {
+    const el = field.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [task]);
 
   if (!project) {
     return (
@@ -103,6 +113,27 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
     }
   };
 
+  // Enter creates the lane; Shift+Enter starts a new line, continuing a list
+  // when the line opens one.
+  const onTaskKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key !== "Enter") return;
+    if (!event.shiftKey) {
+      event.preventDefault();
+      void submit();
+      return;
+    }
+    const next = continueList(
+      task,
+      event.currentTarget.selectionStart,
+      event.currentTarget.selectionEnd,
+    );
+    if (!next) return;
+    event.preventDefault();
+    setTask(next.text);
+    requestAnimationFrame(() => field.current?.setSelectionRange(next.caret, next.caret));
+  };
+
   const cancel = () => {
     if (busy) void cancelLaneCreation(project.id);
     close();
@@ -127,20 +158,23 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
         </OverlayHeader>
 
         <div className="flex flex-col gap-2 px-4 pt-1 pb-4">
-          <input
+          <textarea
             ref={field}
             {...proseField}
             aria-label="First prompt"
             aria-describedby="new-lane-help"
             placeholder="What should Pi do? e.g. Fix login redirects"
+            rows={1}
             value={task}
             onChange={(event) => setTask(event.target.value)}
+            onKeyDown={onTaskKeyDown}
             disabled={busy}
             // biome-ignore lint/a11y/noAutofocus: the prompt is what this panel asks for
             autoFocus
-            className="menu-search h-9 w-full bg-transparent text-heading font-medium text-ink placeholder:font-normal placeholder:text-ink-faint"
+            className="block max-h-60 w-full resize-none overflow-y-auto bg-transparent text-heading font-medium text-ink focus:outline-none placeholder:font-normal placeholder:text-ink-faint"
           />
           <p id="new-lane-help" className="text-label font-normal text-ink-muted">
+            <span className="sr-only">Enter creates the lane. Shift+Enter adds a line.</span>
             {mainCheckout
               ? "Shares the project's own checkout: no worktree, copied files or setup command. Archiving the lane never removes it."
               : `Gets its own worktree and branch from ${project.baseBranch}. Your prompt starts the lane's one session.`}

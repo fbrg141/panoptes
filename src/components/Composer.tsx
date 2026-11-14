@@ -4,6 +4,7 @@ import { api } from "../api";
 import {
   composePrompt,
   contextLabel,
+  continueList,
   insertMention,
   type MentionQuery,
   matchFiles,
@@ -272,6 +273,17 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
       submit(busy && e.altKey);
       return;
     }
+    if (e.key === "Enter") {
+      // A newline that continues a list is typed for the field, so the caret
+      // lands after the new marker.
+      const next = continueList(text, e.currentTarget.selectionStart, e.currentTarget.selectionEnd);
+      if (next) {
+        e.preventDefault();
+        setText(next.text);
+        requestAnimationFrame(() => input.current?.setSelectionRange(next.caret, next.caret));
+      }
+      return;
+    }
     if (e.key === "Escape" && busy) void abort();
   };
 
@@ -298,9 +310,9 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
       }}
     >
       <span id="composer-help" className="sr-only">
-        Enter to send. Shift+Enter for a new line. While the agent runs, Enter steers it,
-        Option+Enter queues the message for when it finishes, and Escape stops it. Type @ to mention
-        a file. Shift+Tab changes the thinking level.
+        Enter to send. Shift+Enter for a new line, continuing a list when the line starts one. While
+        the agent runs, Enter steers it, Option+Enter queues the message for when it finishes, and
+        Escape stops it. Type @ to mention a file. Shift+Tab changes the thinking level.
       </span>
 
       {mention && matches.length > 0 && (
