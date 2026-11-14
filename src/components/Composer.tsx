@@ -1,5 +1,5 @@
 import { Button, Icon, Menu, type MenuItem } from "@panoptes/design-system";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import {
   composePrompt,
@@ -59,13 +59,21 @@ declare global {
   }
 }
 
-export function Composer({ busy, sending }: { busy: boolean; sending: boolean }) {
-  const activeKey = useStore((s) => s.activeKey);
-  const cwd = useStore((s) => s.sessions.find((x) => x.key === s.activeKey)?.cwd);
-  const settings = useStore((s) => (s.activeKey ? s.settings[s.activeKey] : undefined));
-  const queued = useStore((s) =>
-    s.activeKey ? (s.conversations[s.activeKey]?.queued ?? NO_QUEUE) : NO_QUEUE,
-  );
+export function Composer({
+  sessionKey,
+  busy,
+  sending,
+}: {
+  sessionKey: string;
+  busy: boolean;
+  sending: boolean;
+}) {
+  const cwd = useStore((s) => s.sessions.find((x) => x.key === sessionKey)?.cwd);
+  const settings = useStore((s) => s.settings[sessionKey]);
+  const queued = useStore((s) => s.conversations[sessionKey]?.queued ?? NO_QUEUE);
+  const id = useId();
+  const helpId = `${id}-help`;
+  const mentionsId = `${id}-mentions`;
   const send = useStore((s) => s.send);
   const abort = useStore((s) => s.abort);
   const setThinkingLevel = useStore((s) => s.setThinkingLevel);
@@ -91,7 +99,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
     attachments: [],
     mentioned: new Set(),
   });
-  const key = useRef(activeKey);
+  const key = useRef(sessionKey);
 
   useEffect(() => {
     live.current = { text, attachments, mentioned };
@@ -100,7 +108,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
   // Switching sessions stores the old one's draft and loads the new one's.
   useEffect(() => {
     const previous = key.current;
-    if (previous !== activeKey) {
+    if (previous !== sessionKey) {
       // A closed session has no draft to keep; `forget` already dropped it.
       if (previous && useStore.getState().conversations[previous]) {
         saveDraft(previous, {
@@ -109,14 +117,14 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
           mentioned: [...live.current.mentioned],
         });
       }
-      key.current = activeKey;
-      const draft = activeKey ? useStore.getState().drafts[activeKey] : undefined;
+      key.current = sessionKey;
+      const draft = useStore.getState().drafts[sessionKey];
       setText(draft?.text ?? "");
       setAttachments(draft?.attachments ?? []);
       setMentioned(new Set(draft?.mentioned ?? []));
       setMention(null);
     }
-  }, [activeKey, saveDraft]);
+  }, [sessionKey, saveDraft]);
 
   // Size after the controlled value is rendered, so sending also collapses it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the text value drives the measurement
@@ -146,7 +154,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
   };
 
   // Inside the app, the window reports dropped files by path.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: subscribe once
+  // biome-ignore lint/correctness/useExhaustiveDependencies: subscribes again for a new session
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
@@ -154,6 +162,9 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
     import("@tauri-apps/api/webview")
       .then(async ({ getCurrentWebview }) => {
         const stop = await getCurrentWebview().onDragDropEvent(({ payload }) => {
+          // Native file drops reach every webview listener; only the focused
+          // pane's composer should receive one.
+          if (useStore.getState().activeKey !== sessionKey) return;
           setDragging(payload.type === "enter" || payload.type === "over");
           if (payload.type === "drop") void attachPaths(payload.paths);
         });
@@ -165,7 +176,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [sessionKey]);
 
   const pickFiles = async () => {
     try {
@@ -213,14 +224,14 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
   const submit = (queue: boolean) => {
     if (sending || (!text.trim() && attachments.length === 0)) return;
     const prompt = composePrompt(text, attachments);
-    const sentFrom = activeKey;
+    const sentFrom = sessionKey;
     const unsent = { text, attachments, mentioned: [...mentioned] };
     setText("");
     setAttachments([]);
     setMentioned(new Set());
     setMention(null);
-    if (activeKey) saveDraft(activeKey, { text: "", attachments: [], mentioned: [] });
-    void send(prompt.text, { images: prompt.images, queue }).then((delivered) => {
+    saveDraft(sessionKey, { text: "", attachments: [], mentioned: [] });
+    void send(prompt.text, { images: prompt.images, queue }, sessionKey).then((delivered) => {
       if (delivered || !sentFrom) return;
       // The prompt did not reach the agent: give back what was typed.
       const here = key.current === sentFrom;
@@ -240,7 +251,9 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
 
   const cycleThinking = () => {
     const level = nextLevel(settings?.thinkingLevels ?? [], settings?.thinkingLevel ?? null);
-    if (level && (settings?.thinkingLevels.length ?? 0) > 1) void setThinkingLevel(level);
+    if (level && (settings?.thinkingLevels.length ?? 0) > 1) {
+      void setThinkingLevel(level, sessionKey);
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -284,7 +297,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
       }
       return;
     }
-    if (e.key === "Escape" && busy) void abort();
+    if (e.key === "Escape" && busy) void abort(sessionKey);
   };
 
   const images = settings?.model?.images ?? true;
@@ -309,14 +322,20 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
         void addImages(e.dataTransfer.files);
       }}
     >
-      <span id="composer-help" className="sr-only">
+      <span id={helpId} className="sr-only">
         Enter to send. Shift+Enter for a new line, continuing a list when the line starts one. While
         the agent runs, Enter steers it, Option+Enter queues the message for when it finishes, and
         Escape stops it. Type @ to mention a file. Shift+Tab changes the thinking level.
       </span>
 
       {mention && matches.length > 0 && (
-        <MentionList matches={matches} picked={picked} onPick={pick} onHover={setPicked} />
+        <MentionList
+          id={mentionsId}
+          matches={matches}
+          picked={picked}
+          onPick={pick}
+          onHover={setPicked}
+        />
       )}
 
       {(queued.length > 0 || attachments.length > 0) && (
@@ -376,11 +395,11 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
         <textarea
           ref={input}
           aria-label="Message"
-          aria-describedby="composer-help"
+          aria-describedby={helpId}
           aria-autocomplete="list"
-          aria-controls={mention ? "composer-mentions" : undefined}
+          aria-controls={mention ? mentionsId : undefined}
           aria-activedescendant={
-            mention && matches.length > 0 ? `composer-mention-${picked}` : undefined
+            mention && matches.length > 0 ? `${mentionsId}-${picked}` : undefined
           }
           enterKeyHint="send"
           {...proseField}
@@ -414,8 +433,8 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
         <ToolbarButton title="Attach files" label="Attach files" onClick={() => void pickFiles()}>
           <Icon name="plus" size={16} />
         </ToolbarButton>
-        {settings && <ModelPicker settings={settings} />}
-        {settings && <ThinkingPicker settings={settings} />}
+        {settings && <ModelPicker settings={settings} sessionKey={sessionKey} input={input} />}
+        {settings && <ThinkingPicker settings={settings} sessionKey={sessionKey} input={input} />}
         <div className="flex-1" />
         {settings?.context && (
           <span
@@ -432,7 +451,7 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
             iconOnly
             title="Stop (Esc)"
             aria-label="Stop"
-            onClick={() => void abort()}
+            onClick={() => void abort(sessionKey)}
           />
         ) : (
           <Button
@@ -451,11 +470,13 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
 }
 
 function MentionList({
+  id,
   matches,
   picked,
   onPick,
   onHover,
 }: {
+  id: string;
   matches: string[];
   picked: number;
   onPick: (path: string) => void;
@@ -463,7 +484,7 @@ function MentionList({
 }) {
   return (
     <div
-      id="composer-mentions"
+      id={id}
       role="listbox"
       aria-label="Files"
       className="absolute bottom-full left-0 z-20 mb-2 w-full max-w-md rounded-md bg-surface-raised p-1 shadow-[var(--shadow-pop)]"
@@ -474,7 +495,7 @@ function MentionList({
           // biome-ignore lint/a11y/useKeyWithClickEvents: the text field drives the list from the keyboard
           <div
             key={path}
-            id={`composer-mention-${i}`}
+            id={`${id}-${i}`}
             role="option"
             aria-selected={i === picked}
             tabIndex={-1}
@@ -580,6 +601,7 @@ function MenuButton({
   activeId,
   onSelect,
   onOpen,
+  returnFocus,
   disabled,
   children,
 }: {
@@ -589,6 +611,7 @@ function MenuButton({
   activeId?: string;
   onSelect: (id: string) => void;
   onOpen?: () => void;
+  returnFocus: () => void;
   disabled?: boolean;
   children: React.ReactNode;
 }) {
@@ -607,7 +630,7 @@ function MenuButton({
 
   const back = () => {
     setOpen(false);
-    document.querySelector<HTMLTextAreaElement>("textarea[aria-label=Message]")?.focus();
+    returnFocus();
   };
 
   return (
@@ -659,8 +682,16 @@ function MenuButton({
  * The model menu: the shared searchable picker, opening upward from the
  * toolbar. Typing narrows the rows by name, id or provider.
  */
-function ModelPicker({ settings }: { settings: SessionSettings }) {
-  const models = useStore((s) => (s.activeKey ? s.models[s.activeKey] : undefined));
+function ModelPicker({
+  settings,
+  sessionKey,
+  input,
+}: {
+  settings: SessionSettings;
+  sessionKey: string;
+  input: React.RefObject<HTMLTextAreaElement | null>;
+}) {
+  const models = useStore((s) => s.models[sessionKey]);
   const preferences = useStore((s) => s.preferences);
   const loadModels = useStore((s) => s.loadModels);
   const setModel = useStore((s) => s.setModel);
@@ -681,19 +712,24 @@ function ModelPicker({ settings }: { settings: SessionSettings }) {
       placement="up"
       width={352}
       emptyText="Loading models…"
-      onOpen={() => void loadModels()}
-      returnFocus={focusComposer}
+      onOpen={() => void loadModels(sessionKey)}
+      returnFocus={() => input.current?.focus()}
       onSelect={(id) => {
-        if (id !== current?.id) void setModel(id);
+        if (id !== current?.id) void setModel(id, sessionKey);
       }}
     />
   );
 }
 
-const focusComposer = () =>
-  document.querySelector<HTMLTextAreaElement>("textarea[aria-label=Message]")?.focus();
-
-function ThinkingPicker({ settings }: { settings: SessionSettings }) {
+function ThinkingPicker({
+  settings,
+  sessionKey,
+  input,
+}: {
+  settings: SessionSettings;
+  sessionKey: string;
+  input: React.RefObject<HTMLTextAreaElement | null>;
+}) {
   const setThinkingLevel = useStore((s) => s.setThinkingLevel);
   const { thinkingLevels: levels, thinkingLevel: level } = settings;
   if (levels.length === 0) return null;
@@ -707,8 +743,9 @@ function ThinkingPicker({ settings }: { settings: SessionSettings }) {
       items={levels.map((l) => ({ id: l, label: l, icon: l === level ? "check" : undefined }))}
       activeId={level ?? undefined}
       onSelect={(id) => {
-        if (id !== level) void setThinkingLevel(id);
+        if (id !== level) void setThinkingLevel(id, sessionKey);
       }}
+      returnFocus={() => input.current?.focus()}
     >
       <span>Thinking: {level ?? "off"}</span>
     </MenuButton>

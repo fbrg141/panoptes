@@ -1,14 +1,27 @@
 // Window shortcuts, in one place so the key handler and the cheatsheet never
-// drift apart. Panoptes is a macOS app, so only ⌘ counts: Ctrl+P, Ctrl+N and
-// Ctrl+T are text-editing keys there and must reach the composer.
+// drift apart. Window shortcuts use ⌘ because this is a macOS app. Pane
+// splits also accept Ctrl, but never in a text field, where Ctrl+D is the
+// system's delete-forward and must keep working.
 
 /** The shortcuts this file knows how to detect. */
-export type ShortcutId = "search" | "newSession" | "newProject" | "shortcuts";
+export type ShortcutId =
+  | "search"
+  | "newSession"
+  | "newProject"
+  | "shortcuts"
+  | "splitVertical"
+  | "splitHorizontal";
 
 /** The shortcut a keyboard event asks for, or null if it is none. */
 export function shortcutFor(
   e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key">,
+  /** Whether the key went to a text field. */
+  editing = false,
 ): ShortcutId | null {
+  const primary = e.metaKey ? !e.ctrlKey : e.ctrlKey && !editing;
+  if (primary && !e.altKey && e.key.toLowerCase() === "d") {
+    return e.shiftKey ? "splitHorizontal" : "splitVertical";
+  }
   if (!e.metaKey || e.ctrlKey || e.altKey) return null;
   // ⌘⇧P and the like are other shortcuts, not these.
   const letter = (id: ShortcutId) => (e.shiftKey ? null : id);
@@ -46,6 +59,8 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { label: "Search projects, lanes and sessions", keys: ["⌘", "P"] },
       { label: "New lane", keys: ["⌘", "T"] },
       { label: "Add a project", keys: ["⌘", "N"] },
+      { label: "Split pane vertically (side by side)", keys: ["⌘/Ctrl", "D"] },
+      { label: "Split pane horizontally (stacked)", keys: ["⌘/Ctrl", "⇧", "D"] },
       { label: "Keyboard shortcuts", keys: ["⌘", "/"] },
     ],
   },

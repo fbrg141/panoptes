@@ -78,18 +78,18 @@ export interface State {
   /** Renames a lane session; an empty title falls back to the harness's. */
   rename: (key: string, title: string) => Promise<void>;
   /** Resolves to whether the harness took the prompt, so a caller can keep its draft. */
-  send: (text: string, options?: SendOptions) => Promise<boolean>;
+  send: (text: string, options?: SendOptions, sessionKey?: string) => Promise<boolean>;
   /** Keeps a composer draft under its session, or drops it once it is empty. */
   saveDraft: (key: string, draft: Draft) => void;
-  loadModels: () => Promise<boolean>;
+  loadModels: (sessionKey?: string) => Promise<boolean>;
   saveProfile: (id: number | null, input: ProfileInput) => Promise<boolean>;
   deleteProfile: (id: number) => Promise<void>;
   setModelFavorite: (modelId: string, favorite: boolean) => Promise<void>;
   setModelHidden: (modelId: string, hidden: boolean) => Promise<void>;
-  setModel: (modelId: string) => Promise<void>;
-  setThinkingLevel: (level: string) => Promise<void>;
-  abort: () => Promise<void>;
-  answer: (questionId: string, answer: Answer) => Promise<void>;
+  setModel: (modelId: string, sessionKey?: string) => Promise<void>;
+  setThinkingLevel: (level: string, sessionKey?: string) => Promise<void>;
+  abort: (sessionKey?: string) => Promise<void>;
+  answer: (questionId: string, answer: Answer, sessionKey?: string) => Promise<void>;
   close: (key: string) => Promise<void>;
   /** Registers the git repository `folder` is in. */
   addProject: (folder: string) => Promise<void>;
@@ -379,8 +379,8 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      send: async (text, { images = [], queue = false } = {}) => {
-        const key = get().activeKey;
+      send: async (text, { images = [], queue = false } = {}, sessionKey) => {
+        const key = sessionKey ?? get().activeKey;
         if (!key || get().sending[key]) return false;
         set((s) => ({ sending: { ...s.sending, [key]: true } }));
         const reopen = async () => {
@@ -421,8 +421,8 @@ export function createAppStore(backend: typeof api) {
           return { drafts: { ...s.drafts, [key]: draft } };
         }),
 
-      loadModels: async () => {
-        const key = get().activeKey;
+      loadModels: async (sessionKey) => {
+        const key = sessionKey ?? get().activeKey;
         if (!key) return false;
         try {
           const models = await backend.listModels(key);
@@ -468,8 +468,8 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      setModel: async (modelId) => {
-        const key = get().activeKey;
+      setModel: async (modelId, sessionKey) => {
+        const key = sessionKey ?? get().activeKey;
         if (!key) return;
         try {
           const settings = await backend.setModel(key, modelId);
@@ -479,8 +479,8 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      setThinkingLevel: async (level) => {
-        const key = get().activeKey;
+      setThinkingLevel: async (level, sessionKey) => {
+        const key = sessionKey ?? get().activeKey;
         if (!key) return;
         try {
           const settings = await backend.setThinkingLevel(key, level);
@@ -490,13 +490,22 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      abort: async () => {
-        const key = get().activeKey;
+      abort: async (sessionKey) => {
+        const key = sessionKey ?? get().activeKey;
         if (key) await backend.abort(key).catch(fail);
       },
 
-      answer: async (questionId, answer) => {
-        const key = get().activeKey;
+      answer: async (questionId, answer, sessionKey) => {
+        // Inline approvals in a transcript do not carry a pane prop; their id
+        // still identifies the owning conversation when another pane is focused.
+        const key =
+          sessionKey ??
+          Object.entries(get().conversations).find(
+            ([, conversation]) =>
+              conversation.questions.some((question) => question.id === questionId) ||
+              conversation.approvals.some((approval) => approval.id === questionId),
+          )?.[0] ??
+          get().activeKey;
         if (!key) return;
         const before = get().conversations[key];
         const question = before?.questions.find((q) => q.id === questionId);

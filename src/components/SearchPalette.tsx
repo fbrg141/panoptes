@@ -45,12 +45,15 @@ export function SearchPalette() {
     if (!target) return;
     switch (target.kind) {
       case "session":
+        useUi.getState().showSession(target.session.key);
         await open(target.session);
         break;
       case "lane": {
         const session = sessions.find((item) => item.laneId === target.lane.id);
-        if (session) await open(session);
-        else await create(target.lane.id);
+        if (session) {
+          useUi.getState().showSession(session.key);
+          await open(session);
+        } else await create(target.lane.id);
         break;
       }
       case "project":

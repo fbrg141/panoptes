@@ -1,5 +1,6 @@
 import { Button, Icon, Input, LoopMark, StatusPill } from "@panoptes/design-system";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { SESSION_DRAG_TYPE, type SplitDirection } from "../panes";
 import { useStore } from "../store";
 import { plainField } from "../textFields";
 import { buildTurns, looseApprovals } from "../turns";
@@ -15,12 +16,23 @@ const PAGE = 50;
 /** Within this many px of the end, the transcript counts as at the bottom. */
 const PINNED = 24;
 
-export function ChatPane() {
-  const activeKey = useStore((s) => s.activeKey);
-  const conversation = useStore((s) => (s.activeKey ? s.conversations[s.activeKey] : undefined));
-  const status = useStore((s) => (s.activeKey ? s.statuses[s.activeKey] : undefined)) ?? "idle";
-  const sending = useStore((s) => (s.activeKey ? (s.sending[s.activeKey] ?? false) : false));
-  const session = useStore((s) => s.sessions.find((x) => x.key === s.activeKey));
+export function ChatPane({
+  sessionKey,
+  focused = true,
+  onSplit,
+  onClose,
+  canClose = false,
+}: {
+  sessionKey: string;
+  focused?: boolean;
+  onSplit?: (direction: SplitDirection) => void;
+  onClose?: () => void;
+  canClose?: boolean;
+}) {
+  const conversation = useStore((s) => s.conversations[sessionKey]);
+  const status = useStore((s) => s.statuses[sessionKey]) ?? "idle";
+  const sending = useStore((s) => s.sending[sessionKey] ?? false);
+  const session = useStore((s) => s.sessions.find((x) => x.key === sessionKey));
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   // Follow new output while the user is at the bottom; stop once they scroll up.
@@ -44,7 +56,7 @@ export function ChatPane() {
   useLayoutEffect(() => {
     setShown(PAGE);
     toBottom();
-  }, [activeKey]);
+  }, [sessionKey]);
 
   // Keep the end in view as content grows (streaming text, a row opening),
   // and keep the reading position when earlier turns are prepended.
@@ -62,7 +74,7 @@ export function ChatPane() {
     });
     observer.observe(content.current);
     return () => observer.disconnect();
-  }, [activeKey]);
+  }, [sessionKey]);
 
   // New output while scrolled up shows the jump button.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs per update
@@ -73,30 +85,30 @@ export function ChatPane() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const editing = e.target instanceof HTMLElement && e.target.closest("input, textarea");
-      if (e.metaKey && e.key === "ArrowDown" && !editing) {
+      if (focused && e.metaKey && e.key === "ArrowDown" && !editing) {
         e.preventDefault();
         toBottom();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toBottom]);
-
-  if (!activeKey) {
-    return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-        <LoopMark size={96} />
-        <h1 className="text-display">Panoptes</h1>
-        <p className="text-ink-muted">Pick a session, or start a lane in a project.</p>
-      </main>
-    );
-  }
+  }, [toBottom, focused]);
 
   const hidden = Math.max(0, turns.length - shown);
 
   return (
-    <main className="flex min-w-0 flex-1 flex-col">
-      <header className="flex h-[var(--titlebar)] items-center gap-3 border-b border-line px-4">
+    <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: the header is a drag handle; splitting remains keyboard accessible */}
+      <header
+        className={`flex h-[var(--titlebar)] flex-none items-center gap-2 border-b px-3 ${
+          focused ? "border-line-strong" : "border-line"
+        }`}
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.setData(SESSION_DRAG_TYPE, sessionKey);
+          event.dataTransfer.effectAllowed = "move";
+        }}
+      >
         {status === "running" && <LoopMark size={20} state="thinking" tone="current" />}
         <div className="min-w-0 flex-1">
           {session ? (
@@ -105,10 +117,47 @@ export function ChatPane() {
             <div className="text-body-strong truncate">Session</div>
           )}
         </div>
-        <span className="text-code-sm truncate text-ink-muted" title={session?.cwd}>
+        <span
+          className="text-code-sm hidden truncate text-ink-muted 2xl:block"
+          title={session?.cwd}
+        >
           {session?.cwd}
         </span>
         {status !== "idle" && <StatusPill status={status} />}
+        {onSplit && (
+          <div className="flex flex-none items-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="panel-left"
+              iconOnly
+              aria-label="Split vertically"
+              title="Split vertically (⌘/Ctrl+D)"
+              onClick={() => onSplit("vertical")}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="panel-left"
+              iconOnly
+              className="rotate-90"
+              aria-label="Split horizontally"
+              title="Split horizontally (⌘/Ctrl+Shift+D)"
+              onClick={() => onSplit("horizontal")}
+            />
+            {canClose && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="x"
+                iconOnly
+                aria-label="Close pane"
+                title="Close pane"
+                onClick={onClose}
+              />
+            )}
+          </div>
+        )}
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div
@@ -188,16 +237,16 @@ export function ChatPane() {
       )}
       <div className="px-4 pb-4 pt-2">
         {conversation?.questions.map((q) => (
-          <QuestionCard key={q.id} question={q} />
+          <QuestionCard key={q.id} question={q} sessionKey={sessionKey} />
         ))}
         {conversation &&
           looseApprovals(conversation).map((a) => (
             <div key={a.id} className="mx-auto mb-3 w-full max-w-3xl">
-              <ApprovalCard approval={a} />
+              <ApprovalCard approval={a} sessionKey={sessionKey} />
             </div>
           ))}
         <ComposerRunningIndicator status={status} />
-        <Composer busy={conversation?.busy ?? false} sending={sending} />
+        <Composer sessionKey={sessionKey} busy={conversation?.busy ?? false} sending={sending} />
       </div>
     </main>
   );
