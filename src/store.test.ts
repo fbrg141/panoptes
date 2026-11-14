@@ -4,6 +4,7 @@ import { createAppStore, describeError } from "./store";
 import type {
   AdoptionOutcome,
   ArchiveLaneOutcome,
+  DeleteLaneOutcome,
   Lane,
   Listing,
   OpenedSession,
@@ -146,8 +147,9 @@ function fakeBackend() {
     createLane: vi.fn(async (): Promise<Lane> => lane),
     cancelLaneCreation: vi.fn(async () => {}),
     archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
+    createLaneBranch: vi.fn(async () => {}),
     restoreLane: vi.fn(async (): Promise<Lane> => lane),
-    deleteLane: vi.fn(async () => {}),
+    deleteLane: vi.fn(async (): Promise<DeleteLaneOutcome> => ({ type: "deleted" })),
     showLogs: vi.fn(async () => {}),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
@@ -548,7 +550,7 @@ describe("store", () => {
     fake.backend.archiveLane.mockResolvedValueOnce({ type: "dirty", lane });
     const dirty = await store.getState().archiveLane(1, null);
     expect(dirty).toEqual({ type: "dirty", lane });
-    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, null);
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, null, false);
 
     fake.backend.archiveLane.mockResolvedValueOnce({ type: "archived" });
     fake.backend.listSessions.mockResolvedValueOnce({
@@ -561,6 +563,44 @@ describe("store", () => {
     const archived = await store.getState().archiveLane(1, "checkpoint");
     expect(archived).toEqual({ type: "archived" });
     expect(store.getState().lanes[0].state).toBe("archived");
+  });
+
+  it("returns detached-head recovery without archiving, and forwards the explicit choices", async () => {
+    const detachedHead = {
+      commit: "abc123",
+      dirty: false,
+      unreachableCommits: [],
+    };
+    fake.backend.archiveLane.mockResolvedValueOnce({
+      type: "detachedHead",
+      lane,
+      detachedHead,
+    });
+    const listings = fake.backend.listSessions.mock.calls.length;
+    const detached = await store.getState().archiveLane(1, null);
+    expect(detached).toEqual({ type: "detachedHead", lane, detachedHead });
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings);
+
+    fake.backend.archiveLane.mockResolvedValueOnce({ type: "archived" });
+    await store.getState().archiveLane(1, null, true);
+    expect(fake.backend.archiveLane).toHaveBeenLastCalledWith(1, null, true);
+
+    fake.backend.deleteLane.mockResolvedValueOnce({
+      type: "detachedHead",
+      lane,
+      detachedHead: { ...detachedHead, dirty: true },
+    });
+    const refused = await store.getState().deleteLane(1, true);
+    expect(refused).toMatchObject({ type: "detachedHead" });
+    expect(fake.backend.deleteLane).toHaveBeenLastCalledWith(1, true);
+    expect(store.getState().sessions).toEqual([session]);
+  });
+
+  it("creates a branch for a detached head and refreshes the lane work", async () => {
+    const listings = fake.backend.listSessions.mock.calls.length;
+    expect(await store.getState().createLaneBranch(1)).toBe(true);
+    expect(fake.backend.createLaneBranch).toHaveBeenCalledWith(1);
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings + 1);
   });
 
   it("deletes a lane, forgets its sessions and refreshes the projects", async () => {
@@ -585,8 +625,8 @@ describe("store", () => {
 
     const deleted = await store.getState().deleteLane(lane.id);
 
-    expect(deleted).toBe(true);
-    expect(fake.backend.deleteLane).toHaveBeenCalledWith(lane.id);
+    expect(deleted).toEqual({ type: "deleted" });
+    expect(fake.backend.deleteLane).toHaveBeenCalledWith(lane.id, false);
     expect(store.getState().activeKey).toBeNull();
     expect(store.getState().sessions).toEqual([]);
     expect(store.getState().lanes).toEqual([]);
@@ -608,7 +648,7 @@ describe("store", () => {
 
     const deleted = await store.getState().deleteLane(lane.id);
 
-    expect(deleted).toBe(false);
+    expect(deleted).toBeNull();
     expect(store.getState().lanes).toEqual([lane]);
     expect(store.getState().error).toBe("Close this lane's session before deleting it");
   });

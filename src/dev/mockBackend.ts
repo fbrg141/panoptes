@@ -688,6 +688,8 @@ export function installMockBackend() {
           );
           return { type: "archived" };
         }
+        case "create_lane_branch":
+          return null;
         case "restore_lane": {
           const id = (args as { id: number }).id;
           const lane = lanes.find((item) => item.id === id);
@@ -709,7 +711,7 @@ export function installMockBackend() {
           }
           sessions = sessions.filter((session) => session.laneId !== id);
           lanes = lanes.filter((lane) => lane.id !== id);
-          return null;
+          return { type: "deleted" };
         }
         case "open_session":
           if (!open.has(a.key)) {

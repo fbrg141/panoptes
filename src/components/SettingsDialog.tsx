@@ -8,6 +8,7 @@ import {
   thinkingGroups,
 } from "../newSession";
 import { useStore } from "../store";
+import { plainField, proseField } from "../textFields";
 import type { AgentProfile, ModelInfo, ProfileInput } from "../types";
 import { useUi } from "../ui";
 import { Overlay, OverlayFooter, OverlayHeader } from "./Overlay";
@@ -192,6 +193,7 @@ function ProfileEditor({
       <Input
         label="Profile name"
         aria-label="Profile name"
+        {...plainField}
         placeholder="Careful implementation"
         value={name}
         disabled={busy}
@@ -225,6 +227,7 @@ function ProfileEditor({
         Additional instructions
         <textarea
           aria-label="Additional instructions"
+          {...proseField}
           rows={5}
           placeholder="Prefer small changes. Run all relevant tests."
           value={instructions}
