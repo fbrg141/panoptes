@@ -4,7 +4,6 @@ import { api } from "./api";
 import { ChatPane } from "./components/ChatPane";
 import { NewLaneDialog } from "./components/NewLaneDialog";
 import { SearchPalette } from "./components/SearchPalette";
-import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { pickProjectFolder } from "./pickProject";
@@ -94,7 +93,6 @@ export default function App() {
       </div>
       {overlay?.type === "search" && <SearchPalette />}
       {overlay?.type === "shortcuts" && <ShortcutsDialog />}
-      {overlay?.type === "settings" && <SettingsDialog />}
       {overlay?.type === "newLane" && (
         <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
       )}
