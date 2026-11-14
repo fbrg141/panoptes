@@ -78,6 +78,45 @@ export function matchFiles(query: string, files: string[], limit = 50): string[]
   return scored.slice(0, limit).map(([file]) => file);
 }
 
+/** A line that opens a list item: its indentation, a marker and a space. */
+const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)]) /;
+
+/**
+ * Enter inside a list: the item's marker continues on the next line, ordered
+ * numbers counting on, an open task item continuing unchecked. An item with
+ * nothing after its marker ends the list instead. Returns null when the line
+ * is not a list item, so the newline is left to the field.
+ */
+export function continueList(text: string, caret: number): { text: string; caret: number } | null {
+  const lineStart = text.lastIndexOf("\n", caret - 1) + 1;
+  const lineEnd = text.indexOf("\n", caret);
+  const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
+  const match = LIST_ITEM.exec(line);
+  if (!match) return null;
+  const [opened, indent, marker] = match;
+  // Only once the caret is past the marker does Enter continue the list.
+  if (caret < lineStart + opened.length) return null;
+  const item = line.slice(opened.length);
+  // An item with nothing after its marker ends the list: the marker goes and
+  // the caret stays on the now empty line.
+  if (!item.trim()) {
+    return {
+      text: text.slice(0, lineStart) + (lineEnd < 0 ? "" : text.slice(lineEnd)),
+      caret: lineStart,
+    };
+  }
+  const next = /^\d/.test(marker)
+    ? `${Number.parseInt(marker, 10) + 1}${marker.slice(-1)}`
+    : marker;
+  // An open task item continues unchecked.
+  const task = /^\[[ xX]\] /.test(item) ? "[ ] " : "";
+  const inserted = `\n${indent}${next} ${task}`;
+  return {
+    text: text.slice(0, caret) + inserted + text.slice(caret),
+    caret: caret + inserted.length,
+  };
+}
+
 export interface Segment {
   text: string;
   mention: boolean;
