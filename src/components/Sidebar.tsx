@@ -1,5 +1,6 @@
 import { Button, Dialog, LoopMark, Tabs } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
+import { laneMainSession } from "../laneCard";
 import { emptyLane, workLabel } from "../laneRow";
 import { pickProjectFolder } from "../pickProject";
 import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
@@ -353,8 +354,7 @@ export function LaneItem({
     .filter(Boolean)
     .join(" · ");
   const laneSessions = [...sessions, ...archivedSessions];
-  const mainSession =
-    laneSessions.find((session) => session.parentLocator === null) ?? laneSessions[0];
+  const mainSession = laneMainSession(laneSessions);
   const extraSessions = laneSessions.filter((session) => session.key !== mainSession?.key);
   const subsessions = archived
     ? extraSessions
