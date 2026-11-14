@@ -1,7 +1,7 @@
 //! Panoptes' own data, in a SQLite database in the app data folder. Harnesses
 //! keep their conversations; this holds what Panoptes adds on top (pins,
-//! projects, lanes and the sessions that run in them now, then groups, see
-//! `docs/domain-model.md`).
+//! projects, lanes, session profiles and model-picker preferences, and the
+//! sessions that run in lanes now, then groups, see `docs/domain-model.md`).
 //!
 //! The schema version is SQLite's `user_version`. Opening the store runs
 //! every migration it is missing, each in its own transaction, after copying
@@ -61,6 +61,10 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         apply: v4_sessions,
+        committed: |_| {},
+    },
+    Migration {
+        apply: v5_profiles_and_model_preferences,
         committed: |_| {},
     },
 ];
@@ -162,6 +166,28 @@ fn v4_sessions(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
             session_id INTEGER NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
             tag TEXT NOT NULL CHECK (tag <> ''),
             PRIMARY KEY (session_id, tag)
+        ) STRICT;",
+    )?;
+    Ok(())
+}
+
+/// Panoptes' reusable session setup and model-picker presentation. None of
+/// this rewrites harness configuration or its conversations.
+fn v5_profiles_and_model_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE CHECK (name <> ''),
+            model_id TEXT CHECK (model_id IS NULL OR model_id <> ''),
+            thinking_level TEXT CHECK (thinking_level IS NULL OR thinking_level <> ''),
+            instructions TEXT CHECK (instructions IS NULL OR instructions <> ''),
+            position INTEGER NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE model_preferences (
+            model_id TEXT PRIMARY KEY NOT NULL CHECK (model_id <> ''),
+            favorite_position INTEGER UNIQUE,
+            hidden INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0, 1))
         ) STRICT;",
     )?;
     Ok(())
@@ -302,6 +328,38 @@ pub struct SessionRecord {
     pub created_at: i64,
 }
 
+/// A reusable choice for a new session. Empty fields keep harness defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProfile {
+    pub id: i64,
+    pub name: String,
+    pub model_id: Option<String>,
+    pub thinking_level: Option<String>,
+    /// Appended to the harness's system prompt when a new session starts.
+    pub instructions: Option<String>,
+}
+
+/// The editable fields of an [`AgentProfile`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileInput {
+    pub name: String,
+    pub model_id: Option<String>,
+    pub thinking_level: Option<String>,
+    pub instructions: Option<String>,
+}
+
+/// Everything Panoptes adds to session setup and model presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preferences {
+    pub profiles: Vec<AgentProfile>,
+    /// Model ids in the order they were favorited.
+    pub favorite_models: Vec<String>,
+    pub hidden_models: Vec<String>,
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -347,6 +405,121 @@ impl Store {
             "DELETE FROM pins WHERE session_key = ?1"
         };
         self.conn.execute(sql, [key])?;
+        Ok(())
+    }
+
+    pub fn preferences(&self) -> anyhow::Result<Preferences> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT id, name, model_id, thinking_level, instructions
+             FROM profiles ORDER BY position, id",
+        )?;
+        let profiles = statement
+            .query_map([], |row| {
+                Ok(AgentProfile {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    model_id: row.get(2)?,
+                    thinking_level: row.get(3)?,
+                    instructions: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut statement = self.conn.prepare_cached(
+            "SELECT model_id FROM model_preferences
+             WHERE favorite_position IS NOT NULL ORDER BY favorite_position, model_id",
+        )?;
+        let favorite_models = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        let mut statement = self.conn.prepare_cached(
+            "SELECT model_id FROM model_preferences WHERE hidden = 1 ORDER BY model_id",
+        )?;
+        let hidden_models = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(Preferences {
+            profiles,
+            favorite_models,
+            hidden_models,
+        })
+    }
+
+    pub fn save_profile(&self, id: Option<i64>, input: &ProfileInput) -> anyhow::Result<()> {
+        let name = input.name.trim();
+        if name.is_empty() {
+            bail!("A profile needs a name");
+        }
+        let optional = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        let model_id = optional(&input.model_id);
+        let thinking_level = optional(&input.thinking_level);
+        let instructions = optional(&input.instructions);
+        let tx = self.write()?;
+        if let Some(id) = id {
+            let changed = tx.execute(
+                "UPDATE profiles SET name = ?1, model_id = ?2, thinking_level = ?3,
+                 instructions = ?4 WHERE id = ?5",
+                rusqlite::params![name, model_id, thinking_level, instructions, id],
+            )?;
+            if changed == 0 {
+                bail!("That profile no longer exists");
+            }
+        } else {
+            tx.execute(
+                "INSERT INTO profiles
+                 (name, model_id, thinking_level, instructions, position, created_at)
+                 VALUES (?1, ?2, ?3, ?4, (SELECT COALESCE(MAX(position) + 1, 0) FROM profiles), ?5)",
+                rusqlite::params![name, model_id, thinking_level, instructions, now_ms()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_profile(&self, id: i64) -> anyhow::Result<()> {
+        self.conn
+            .execute("DELETE FROM profiles WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn set_model_favorite(&self, model_id: &str, favorite: bool) -> anyhow::Result<()> {
+        let tx = self.write()?;
+        if favorite {
+            tx.execute(
+                "INSERT INTO model_preferences (model_id, favorite_position)
+                 VALUES (?1, (SELECT COALESCE(MAX(favorite_position) + 1, 0) FROM model_preferences))
+                 ON CONFLICT (model_id) DO UPDATE SET favorite_position = excluded.favorite_position
+                 WHERE model_preferences.favorite_position IS NULL",
+                [model_id],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE model_preferences SET favorite_position = NULL WHERE model_id = ?1",
+                [model_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn set_model_hidden(&self, model_id: &str, hidden: bool) -> anyhow::Result<()> {
+        if hidden {
+            self.conn.execute(
+                "INSERT INTO model_preferences (model_id, hidden) VALUES (?1, 1)
+                 ON CONFLICT (model_id) DO UPDATE SET hidden = 1",
+                [model_id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE model_preferences SET hidden = 0 WHERE model_id = ?1",
+                [model_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -1457,6 +1630,72 @@ mod tests {
         assert!(store.projects().unwrap().is_empty());
         assert!(store.lanes().unwrap().is_empty());
         assert!(dir.path().join("panoptes.db.v1.bak").exists());
+    }
+
+    #[test]
+    fn profiles_and_model_preferences_survive_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let input = ProfileInput {
+            name: "  Careful  ".into(),
+            model_id: Some(" anthropic/claude-sonnet ".into()),
+            thinking_level: Some(" high ".into()),
+            instructions: Some(" Run the tests. ".into()),
+        };
+        store.save_profile(None, &input).unwrap();
+        store.set_model_favorite("openai/gpt", true).unwrap();
+        store
+            .set_model_favorite("anthropic/claude-sonnet", true)
+            .unwrap();
+        store.set_model_hidden("local/qwen", true).unwrap();
+        store.set_model_favorite("openai/gpt", false).unwrap();
+        drop(store);
+
+        let store = Store::open(dir.path()).unwrap();
+        let preferences = store.preferences().unwrap();
+        assert_eq!(preferences.profiles.len(), 1);
+        assert_eq!(preferences.profiles[0].name, "Careful");
+        assert_eq!(
+            preferences.profiles[0].model_id.as_deref(),
+            Some("anthropic/claude-sonnet")
+        );
+        assert_eq!(
+            preferences.profiles[0].thinking_level.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            preferences.profiles[0].instructions.as_deref(),
+            Some("Run the tests.")
+        );
+        assert_eq!(preferences.favorite_models, ["anthropic/claude-sonnet"]);
+        assert_eq!(preferences.hidden_models, ["local/qwen"]);
+
+        store
+            .save_profile(
+                Some(preferences.profiles[0].id),
+                &ProfileInput {
+                    name: "Careful review".into(),
+                    model_id: None,
+                    thinking_level: None,
+                    instructions: None,
+                },
+            )
+            .unwrap();
+        store.delete_profile(preferences.profiles[0].id).unwrap();
+        assert!(store.preferences().unwrap().profiles.is_empty());
+        assert!(
+            store
+                .save_profile(
+                    None,
+                    &ProfileInput {
+                        name: " ".into(),
+                        model_id: None,
+                        thinking_level: None,
+                        instructions: None,
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 
 use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
 use crate::projects::{self, Location};
-use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
+use crate::store::{Lane, LaneState, Preferences, ProfileInput, Project, ProjectSettings, Store};
 use crate::writes;
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
@@ -403,6 +403,8 @@ struct Launch {
     lane: Option<i64>,
     /// Read-only for archived lanes or a missing-folder resume.
     read_only: bool,
+    /// Extra system-prompt instructions for a newly created session.
+    instructions: Option<String>,
 }
 
 /// Forwards one process's events, tagged with its session's key, and works
@@ -933,6 +935,7 @@ impl Service {
                         resume: Some(locator),
                         lane: None,
                         read_only: false,
+                        instructions: None,
                     };
                     self.start(&key, launch, None).await
                 }
@@ -962,6 +965,7 @@ impl Service {
             // An archived lane has no worktree to edit; its session stays
             // readable without editing tools.
             read_only: !active,
+            instructions: None,
         })
     }
 
@@ -969,7 +973,18 @@ impl Service {
     /// its key, exist before the harness starts.
     /// A lane that another Running or Waiting session has edited gets no
     /// session of its own until that one is Done: two writers otherwise.
+    #[cfg(test)]
     pub async fn create(&self, lane_id: i64, harness: &str) -> ServiceResult<OpenedSession> {
+        self.create_with(lane_id, harness, None).await
+    }
+
+    /// Creates a session with instructions to append to its system prompt.
+    pub async fn create_with(
+        &self,
+        lane_id: i64,
+        harness: &str,
+        instructions: Option<String>,
+    ) -> ServiceResult<OpenedSession> {
         self.harness(harness)?;
         let busy = {
             let open = self.open.lock().await;
@@ -990,7 +1005,8 @@ impl Service {
             .await
             .map_err(err)?;
         let _guard = self.lifecycle(&panoptes_key(record.id)).await;
-        self.start_recorded(record.id, &lane, harness).await
+        self.start_recorded(record.id, &lane, harness, instructions)
+            .await
     }
 
     /// Adopts a discovered harness conversation. With no explicit lane, a
@@ -1083,6 +1099,7 @@ impl Service {
         id: i64,
         lane: &Lane,
         harness: &str,
+        instructions: Option<String>,
     ) -> ServiceResult<OpenedSession> {
         let launch = Launch {
             harness: harness.to_string(),
@@ -1090,6 +1107,7 @@ impl Service {
             resume: None,
             lane: Some(lane.id),
             read_only: false,
+            instructions,
         };
         let result = self.start(&panoptes_key(id), launch, None).await;
         if result.is_err() {
@@ -1156,6 +1174,7 @@ impl Service {
             cwd: launch.cwd,
             resume: launch.resume,
             read_only: launch.read_only,
+            instructions: launch.instructions,
         };
         let started = async {
             let session: Arc<dyn AgentSession> =
@@ -1247,6 +1266,48 @@ impl Service {
 
     pub async fn models(&self, key: &str) -> ServiceResult<Vec<ModelInfo>> {
         self.session(key).await?.models().await.map_err(err)
+    }
+
+    pub async fn preferences(&self) -> ServiceResult<Preferences> {
+        self.with_store(|store| store.preferences())
+            .await
+            .map_err(err)
+    }
+
+    pub async fn save_profile(
+        &self,
+        id: Option<i64>,
+        input: ProfileInput,
+    ) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.save_profile(id, &input))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn delete_profile(&self, id: i64) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.delete_profile(id))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn set_model_favorite(
+        &self,
+        model_id: String,
+        favorite: bool,
+    ) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.set_model_favorite(&model_id, favorite))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn set_model_hidden(
+        &self,
+        model_id: String,
+        hidden: bool,
+    ) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.set_model_hidden(&model_id, hidden))
+            .await?;
+        self.preferences().await
     }
 
     /// Switches the session's model and returns its settings after the
@@ -2079,6 +2140,30 @@ mod tests {
             .unwrap();
         assert_eq!(again.key, opened.key);
         assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_new_session_receives_profile_instructions_once() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        f.service
+            .create_with(lane.id, "fake", Some("Prefer small changes.".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.harness.requests.lock().unwrap()[0]
+                .instructions
+                .as_deref(),
+            Some("Prefer small changes.")
+        );
+
+        let opened = f.service.list().await.sessions[0].clone();
+        f.service.close(&opened.key).await;
+        f.service
+            .open("fake", &opened.key, String::new(), String::new())
+            .await
+            .unwrap();
+        assert_eq!(f.harness.requests.lock().unwrap()[1].instructions, None);
     }
 
     #[tokio::test]

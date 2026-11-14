@@ -647,12 +647,13 @@ function MenuButton({
  */
 function ModelPicker({ settings }: { settings: SessionSettings }) {
   const models = useStore((s) => (s.activeKey ? s.models[s.activeKey] : undefined));
+  const preferences = useStore((s) => s.preferences);
   const loadModels = useStore((s) => s.loadModels);
   const setModel = useStore((s) => s.setModel);
   const current = settings.model;
   const groups = useMemo(
-    () => modelGroups(models ?? [], current?.id ?? "").slice(1),
-    [models, current],
+    () => modelGroups(models ?? [], current?.id ?? "", preferences).slice(1),
+    [models, current, preferences],
   );
 
   return (

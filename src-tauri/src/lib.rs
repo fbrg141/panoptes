@@ -25,7 +25,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use service::{
     AdoptionOutcome, ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult,
 };
-use store::{Lane, Project, ProjectSettings, Store};
+use store::{Lane, Preferences, ProfileInput, Project, ProjectSettings, Store};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,8 +82,12 @@ async fn new_session(
     state: State<'_, AppState>,
     lane_id: i64,
     harness: String,
+    instructions: Option<String>,
 ) -> ServiceResult<OpenedSession> {
-    state.service.create(lane_id, &harness).await
+    state
+        .service
+        .create_with(lane_id, &harness, instructions)
+        .await
 }
 
 #[tauri::command]
@@ -155,6 +159,43 @@ async fn session_settings(
 #[tauri::command]
 async fn list_models(state: State<'_, AppState>, key: String) -> ServiceResult<Vec<ModelInfo>> {
     state.service.models(&key).await
+}
+
+#[tauri::command]
+async fn preferences(state: State<'_, AppState>) -> ServiceResult<Preferences> {
+    state.service.preferences().await
+}
+
+#[tauri::command]
+async fn save_profile(
+    state: State<'_, AppState>,
+    id: Option<i64>,
+    input: ProfileInput,
+) -> ServiceResult<Preferences> {
+    state.service.save_profile(id, input).await
+}
+
+#[tauri::command]
+async fn delete_profile(state: State<'_, AppState>, id: i64) -> ServiceResult<Preferences> {
+    state.service.delete_profile(id).await
+}
+
+#[tauri::command]
+async fn set_model_favorite(
+    state: State<'_, AppState>,
+    model_id: String,
+    favorite: bool,
+) -> ServiceResult<Preferences> {
+    state.service.set_model_favorite(model_id, favorite).await
+}
+
+#[tauri::command]
+async fn set_model_hidden(
+    state: State<'_, AppState>,
+    model_id: String,
+    hidden: bool,
+) -> ServiceResult<Preferences> {
+    state.service.set_model_hidden(model_id, hidden).await
 }
 
 #[tauri::command]
@@ -383,6 +424,11 @@ pub fn run() {
             send_prompt,
             session_settings,
             list_models,
+            preferences,
+            save_profile,
+            delete_profile,
+            set_model_favorite,
+            set_model_hidden,
             set_model,
             set_thinking_level,
             list_files,

@@ -12,7 +12,7 @@ this way.
 | `crates/panoptes-harness` | The neutral interface: `Harness` and `AgentSession` traits, `HarnessEvent`, `Message`, `Block`, `Question` |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
 | `src-tauri/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
-| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes and session records |
+| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
 | `src-tauri/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
 | `src-tauri/src/projects.rs` | Which git repository a folder belongs to (worktrees included), a new project's defaults, and the rules its settings follow |
 | `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |
