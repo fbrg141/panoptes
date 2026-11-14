@@ -7,6 +7,8 @@ import type {
   Lane,
   Listing,
   OpenedSession,
+  Preferences,
+  ProfileInput,
   Project,
   PromptOutcome,
   Session,
@@ -83,6 +85,12 @@ const settings: SessionSettings = {
   context: { tokens: 1200, window: 32_000 },
 };
 
+const preferences: Preferences = {
+  profiles: [],
+  favoriteModels: [],
+  hiddenModels: [],
+};
+
 function fakeBackend() {
   let emit: (event: SessionEvent) => void = () => {};
   const backend = {
@@ -107,6 +115,20 @@ function fakeBackend() {
     sendPrompt: vi.fn(async (): Promise<PromptOutcome> => "started"),
     settings: vi.fn(async () => settings),
     listModels: vi.fn(async () => (settings.model ? [settings.model] : [])),
+    preferences: vi.fn(async () => preferences),
+    saveProfile: vi.fn(async (_id: number | null, input: ProfileInput) => ({
+      ...preferences,
+      profiles: [{ id: 1, ...input }],
+    })),
+    deleteProfile: vi.fn(async () => preferences),
+    setModelFavorite: vi.fn(async (modelId: string, favorite: boolean) => ({
+      ...preferences,
+      favoriteModels: favorite ? [modelId] : [],
+    })),
+    setModelHidden: vi.fn(async (modelId: string, hidden: boolean) => ({
+      ...preferences,
+      hiddenModels: hidden ? [modelId] : [],
+    })),
     setModel: vi.fn(async () => settings),
     setThinkingLevel: vi.fn(async (_key: string, level: string) => ({
       ...settings,
@@ -221,6 +243,27 @@ describe("store", () => {
     await vi.waitFor(() => expect(store.getState().settings["pi:s1"]).toEqual(settings));
     fake.emit({ key: "pi:s1", event: { type: "runSettled", aborted: false } });
     await vi.waitFor(() => expect(fake.backend.settings).toHaveBeenCalledTimes(2));
+  });
+
+  it("saves profiles and model presentation as Panoptes preferences", async () => {
+    const saved = await store.getState().saveProfile(null, {
+      name: "Careful",
+      modelId: "p/small",
+      thinkingLevel: "high",
+      instructions: "Run the tests.",
+    });
+    expect(saved).toBe(true);
+    expect(store.getState().preferences.profiles[0]).toMatchObject({
+      id: 1,
+      name: "Careful",
+    });
+
+    await store.getState().setModelFavorite("p/small", true);
+    expect(store.getState().preferences.favoriteModels).toEqual(["p/small"]);
+    await store.getState().setModelHidden("p/large", true);
+    expect(store.getState().preferences.hiddenModels).toEqual(["p/large"]);
+    await store.getState().deleteProfile(1);
+    expect(fake.backend.deleteProfile).toHaveBeenCalledWith(1);
   });
 
   it("changes the thinking level and keeps the reported settings", async () => {
@@ -475,10 +518,11 @@ describe("store", () => {
     const created = await store.getState().createFromPrompt(1, "Fix login", true, {
       model: "p/small",
       thinking: "high",
+      instructions: "Run the tests.",
     });
     expect(created).toBe(true);
     expect(fake.backend.createLane).toHaveBeenCalledWith(1, "Fix login", true);
-    expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi", "Run the tests.");
     expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:7", "p/small");
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:7", "high");
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:7", "Fix login", [], "start");
@@ -588,7 +632,7 @@ describe("store", () => {
       errors: [],
     });
     await store.getState().create(lane.id);
-    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi", undefined);
     expect(store.getState().activeKey).toBe("panoptes:7");
     expect(store.getState().sessions[0]).toEqual(laneSession);
     expect(store.getState().navigation[0].sessions).toEqual([laneSession]);
@@ -604,9 +648,10 @@ describe("store", () => {
     await store.getState().create(lane.id, {
       model: "p/small",
       thinking: "high",
+      instructions: "Run the tests.",
       prompt: "Fix the login redirect",
     });
-    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi", "Run the tests.");
     expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:9", "p/small");
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:9", "high");
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith(

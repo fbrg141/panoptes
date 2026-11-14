@@ -96,6 +96,7 @@ impl RpcProcess {
         cwd: &Path,
         session_file: Option<&str>,
         read_only: bool,
+        instructions: Option<&str>,
         events: EventSink,
         mapper: EventMapper,
     ) -> anyhow::Result<Self> {
@@ -109,6 +110,10 @@ impl RpcProcess {
             // Pi's own tools that cannot change files; `bash` can, so it
             // is left out.
             command.args(["--tools", READ_ONLY_TOOLS]);
+        }
+        if let Some(instructions) = instructions {
+            // Append rather than replace Pi's tool and safety instructions.
+            command.args(["--append-system-prompt", instructions]);
         }
         // Pi leads its own process group, so stopping the session also stops
         // what Pi started (its launcher's node, a shell command still

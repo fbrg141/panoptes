@@ -119,6 +119,20 @@ async fn a_read_only_session_gets_only_reading_tools() {
 }
 
 #[tokio::test]
+async fn profile_instructions_are_appended_at_startup() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.instructions = Some("Prefer small changes.".into());
+    let (session, mut rx) = start_with(request).await;
+    session
+        .prompt("instructions".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert_eq!(text_of(&events), "instructions=Prefer small changes.");
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_prompt_streams_and_settles() {
     let (session, mut rx) = start().await;
     assert_eq!(session.harness_ref().id, "fake-session");
