@@ -600,7 +600,9 @@ function DetachedHeadDialog({
         {detachedHead.unreachableCommits.length > 0 && (
           <div>
             <p>
-              These commits exist only at detached HEAD and are not on any local or remote branch:
+              {operation === "delete"
+                ? `These commits are not on any local or remote branch other than ${lane.branch}, which deleting the lane removes:`
+                : "These commits exist only at detached HEAD and are not on any local or remote branch:"}
             </p>
             <ul className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto">
               {detachedHead.unreachableCommits.map((commit) => (

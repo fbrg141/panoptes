@@ -279,7 +279,7 @@ pub fn archive_recovering(
         };
         return Ok(ArchiveResult::Archived { checkpoint_ref });
     }
-    match check_lane_branch(&path, lane)? {
+    match check_lane_branch(&path, lane, Removal::Archive)? {
         BranchCheck::Ready => {}
         BranchCheck::Detached(_) if recreate_branch => create_branch_here(&path, lane)?,
         BranchCheck::Detached(detached) => return Ok(ArchiveResult::DetachedHead(detached)),
@@ -473,7 +473,7 @@ pub fn delete_detached(
         return Ok(DeleteResult::Deleted);
     }
     if std::fs::symlink_metadata(&path).is_ok() {
-        match check_lane_branch(&path, lane)? {
+        match check_lane_branch(&path, lane, Removal::Delete)? {
             BranchCheck::Ready => {}
             BranchCheck::Detached(detached) if allow_detached && detached.is_safe_to_remove() => {}
             BranchCheck::Detached(detached) => {
@@ -501,7 +501,7 @@ pub fn delete_detached(
 /// Attaches a detached worktree to its lane branch without archiving or
 /// deleting anything. This is also the recovery for unreachable commits.
 pub fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()> {
-    match check_lane_branch(path, lane)? {
+    match check_lane_branch(path, lane, Removal::Archive)? {
         BranchCheck::Ready => return Ok(()),
         BranchCheck::Detached(_) => {}
     }
@@ -582,12 +582,20 @@ pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
 /// otherwise become unreachable once the worktree is removed, and so would a
 /// commit the Commit strategy makes there. A merge, rebase, cherry-pick,
 /// revert or bisect in progress is refused for the same reason.
+/// What the caller is about to do with the worktree, since deletion also
+/// removes the lane branch and archiving keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    Archive,
+    Delete,
+}
+
 enum BranchCheck {
     Ready,
     Detached(DetachedHead),
 }
 
-fn check_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<BranchCheck> {
+fn check_lane_branch(path: &Path, lane: &Lane, removal: Removal) -> anyhow::Result<BranchCheck> {
     const IN_PROGRESS: [(&str, &str); 6] = [
         ("MERGE_HEAD", "a merge"),
         ("rebase-merge", "a rebase"),
@@ -612,28 +620,26 @@ fn check_lane_branch(path: &Path, lane: &Lane) -> anyhow::Result<BranchCheck> {
             lane.branch,
             lane.branch
         ),
-        Err(_) => Ok(BranchCheck::Detached(detached_head(path)?)),
+        Err(_) => Ok(BranchCheck::Detached(detached_head(path, lane, removal)?)),
     }
 }
 
 /// Lists every commit that would become unreachable from local and remote
 /// branches if this detached worktree were removed. Tags deliberately do not
 /// count: the recovery promise is specifically about branch reachability.
-fn detached_head(path: &Path) -> anyhow::Result<DetachedHead> {
+fn detached_head(path: &Path, lane: &Lane, removal: Removal) -> anyhow::Result<DetachedHead> {
     let commit = run(path, &["rev-parse", "HEAD"])?;
     let dirty = !worktree_status(path)?.is_empty();
-    let log = run(
-        path,
-        &[
-            "log",
-            "--format=%H%x09%s",
-            "HEAD",
-            "--not",
-            "--branches",
-            "--remotes",
-            "--",
-        ],
-    )?;
+    // Deleting a lane also deletes its branch, so that branch cannot be what
+    // keeps a detached commit reachable. Archiving keeps it, so it counts.
+    // `--exclude` before `--branches` matches the short branch name.
+    let exclude = format!("--exclude={}", lane.branch);
+    let mut args = vec!["log", "--format=%H%x09%s", "HEAD", "--not"];
+    if removal == Removal::Delete {
+        args.push(&exclude);
+    }
+    args.extend(["--branches", "--remotes", "--"]);
+    let log = run(path, &args)?;
     let unreachable_commits = log
         .lines()
         .filter(|line| !line.is_empty())
@@ -1738,6 +1744,34 @@ mod tests {
             lane_commit
         );
         assert_eq!(git(&path, &["rev-parse", "HEAD"]), detached_commit);
+    }
+
+    #[test]
+    fn deleting_never_counts_the_lane_branch_it_is_about_to_delete() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        std::fs::write(path.join("tracked.txt"), "lane-only work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "lane-only work"]);
+        let commit = git(&path, &["rev-parse", "HEAD"]);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+
+        // Only the lane branch holds this commit. Archiving keeps that
+        // branch, so the commit is safe there; deleting would remove it.
+        let ArchiveResult::DetachedHead(archived) = archive(&f.project, &lane, None).unwrap()
+        else {
+            panic!("a detached HEAD should need recovery");
+        };
+        assert!(archived.is_safe_to_remove());
+        let DeleteResult::DetachedHead(deleted) = delete_detached(&f.project, &lane, true).unwrap()
+        else {
+            panic!("deleting must not treat the lane branch as a safe home");
+        };
+        assert!(!deleted.is_safe_to_remove());
+        assert_eq!(deleted.unreachable_commits[0].hash, commit);
+        assert!(path.exists());
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), commit);
     }
 
     #[test]
