@@ -1,6 +1,12 @@
 import { Button, Input, Tabs } from "@panoptes/design-system";
 import { useEffect, useMemo, useState } from "react";
-import { DEFAULT_CHOICE, modelGroups, shortModelId, thinkingGroups } from "../newSession";
+import {
+  DEFAULT_CHOICE,
+  missingProfileModel,
+  modelGroups,
+  shortModelId,
+  thinkingGroups,
+} from "../newSession";
 import { useStore } from "../store";
 import type { AgentProfile, ModelInfo, ProfileInput } from "../types";
 import { useUi } from "../ui";
@@ -70,6 +76,12 @@ export function SettingsDialog() {
                       <div className="truncate text-label font-normal text-ink-muted">
                         {profileSummary(profile)}
                       </div>
+                      {missingProfileModel(profile, models) && (
+                        <div className="text-label font-normal text-error">
+                          Model is not in the loaded model list; review it before creating a
+                          session.
+                        </div>
+                      )}
                     </div>
                     <Button variant="ghost" size="sm" onClick={() => setEditing(profile.id)}>
                       Edit

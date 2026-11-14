@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   borrowedModels,
   DEFAULT_CHOICE,
+  missingProfileModel,
   modelGroups,
   profileGroups,
   shortModelId,
@@ -100,6 +101,20 @@ describe("model pickers", () => {
       current: true,
     });
   });
+
+  it("warns about a missing profile model only when a model list is loaded", () => {
+    const profile = {
+      id: 1,
+      name: "Old",
+      modelId: "removed/model",
+      thinkingLevel: null,
+      instructions: null,
+    };
+    expect(missingProfileModel(profile, [])).toBeNull();
+    expect(missingProfileModel(profile, [model("openai/gpt", "GPT", "openai")])).toBe(
+      "removed/model",
+    );
+    expect(missingProfileModel(profile, [model("removed/model", "Old", "removed")])).toBeNull();
   });
 
   it("shortens a model id only when it carries its provider", () => {

@@ -57,6 +57,18 @@ export function modelGroups(
   return groups;
 }
 
+/** A saved model missing from a loaded list is stale; an empty list proves nothing. */
+export function missingProfileModel(
+  profile: Pick<AgentProfile, "modelId">,
+  models: ModelInfo[],
+): string | null {
+  return profile.modelId &&
+    models.length > 0 &&
+    !models.some((model) => model.id === profile.modelId)
+    ? profile.modelId
+    : null;
+}
+
 /** Reusable session setups, after a row that leaves every field unset. */
 export function profileGroups(profiles: AgentProfile[], profileId: number | null): PickerGroup[] {
   return [
