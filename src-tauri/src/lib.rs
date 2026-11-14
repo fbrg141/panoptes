@@ -1,8 +1,10 @@
 //! Tauri shell: loads the harnesses and exposes [`service::Service`] to the
 //! UI as commands, with session events emitted as `session-event`.
 
+mod changes;
 mod eventlog;
 mod files;
+mod git;
 mod lanes;
 mod projects;
 mod service;
@@ -23,6 +25,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
+use changes::{Changes, Hunk, TreeRange};
 use service::{
     AdoptionOutcome, ArchiveLaneOutcome, Listing, OpenedSession, Service, ServiceResult,
 };
@@ -399,6 +402,21 @@ async fn create_lane(
 }
 
 #[tauri::command]
+async fn lane_changes(state: State<'_, AppState>, lane_id: i64) -> ServiceResult<Changes> {
+    state.service.lane_changes(lane_id).await
+}
+
+#[tauri::command]
+async fn file_hunks(
+    state: State<'_, AppState>,
+    lane_id: i64,
+    path: String,
+    range: TreeRange,
+) -> ServiceResult<Vec<Hunk>> {
+    state.service.file_hunks(lane_id, path, range).await
+}
+
+#[tauri::command]
 fn cancel_lane_creation(state: State<'_, AppState>, project_id: i64) {
     state.service.cancel_lane_creation(project_id);
 }
@@ -598,6 +616,8 @@ pub fn run() {
             update_project,
             remove_project,
             create_lane,
+            lane_changes,
+            file_hunks,
             cancel_lane_creation,
             archive_lane,
             restore_lane,
