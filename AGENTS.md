@@ -91,7 +91,7 @@ for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md
 ## Before you finish
 
 Run `pnpm check`. It runs lint, type checks, Rust formatting, clippy (warnings
-are errors) and every test, and the pre-push hook runs it too. `pnpm format`
+are errors) and every test; the pre-push hook and CI run it too. `pnpm format`
 fixes formatting of the UI code; `cargo fmt --all` fixes the Rust.
 
 To see the UI without an agent, run `pnpm dev` and open http://localhost:1420

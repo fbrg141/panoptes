@@ -89,8 +89,8 @@ pnpm check                                   # everything: lint, types, formatti
 pnpm smoke                                   # one real round trip with your Pi; fails if the contract broke
 ```
 
-There is no CI. A pre-push hook (installed by `pnpm install`) runs
-`pnpm check`. That suite only talks to a scripted stand-in for Pi, so run
+CI runs `pnpm check` on macOS for every pull request and every push to
+`main`, and a pre-push hook (installed by `pnpm install`) runs it locally. That suite only talks to a scripted stand-in for Pi, so run
 `pnpm smoke` after updating Pi or changing the adapter: it needs an installed,
 logged-in Pi and makes one small model call. Agents: see [AGENTS.md](AGENTS.md); decisions are in
 [docs/decisions.md](docs/decisions.md).
