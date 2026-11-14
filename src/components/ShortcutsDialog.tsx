@@ -21,6 +21,10 @@ export function ShortcutsDialog() {
       <div className="mx-4 flex h-[var(--control)] flex-none items-center gap-2 rounded-sm border border-line bg-surface-sunken px-2 text-ink-muted focus-within:border-line-strong">
         <Icon name="search" size={14} className="flex-none" />
         <input
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           aria-label="Filter shortcuts"
           placeholder="Filter shortcuts"
           value={query}

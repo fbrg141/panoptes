@@ -128,6 +128,10 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
         <div className="flex flex-col gap-2 px-4 pt-1 pb-4">
           <input
             ref={field}
+            spellCheck
+            autoCorrect="off"
+            autoCapitalize="off"
+            autoComplete="off"
             aria-label="First prompt"
             aria-describedby="new-lane-help"
             placeholder="What should Pi do? e.g. Fix login redirects"

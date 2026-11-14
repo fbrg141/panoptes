@@ -370,6 +370,10 @@ export function Composer({ busy, sending }: { busy: boolean; sending: boolean })
             mention && matches.length > 0 ? `composer-mention-${picked}` : undefined
           }
           enterKeyHint="send"
+          spellCheck
+          autoCorrect="off"
+          autoCapitalize="off"
+          autoComplete="off"
           rows={1}
           className="relative block max-h-60 min-h-[var(--control-lg)] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 pb-1 text-transparent caret-ink [scrollbar-width:none] placeholder:text-ink-faint focus:outline-none"
           placeholder={

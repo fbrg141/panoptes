@@ -172,6 +172,10 @@ export function Picker({
               aria-expanded
               aria-controls={listId}
               aria-activedescendant={rows.length > 0 ? rowId(picked) : undefined}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               aria-label={`Search ${label.toLowerCase()}s`}
               placeholder={`Search ${label.toLowerCase()}s`}
               value={query}
