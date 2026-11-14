@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { paneLeaves, singlePane } from "./panes";
 import { useUi } from "./ui";
 
 describe("ui overlays", () => {
   beforeEach(() => {
     useUi.getState().close();
+    const pane = singlePane();
+    useUi.setState({ layout: pane, focusedPaneId: pane.id });
   });
 
   it("opens one overlay at a time and closes it", () => {
@@ -29,5 +32,29 @@ describe("ui overlays", () => {
       projectId: 3,
       prompt: "Fix login",
     });
+  });
+
+  it("splits and focuses the new pane, then fills and closes it", () => {
+    useUi.getState().showSession("pi:a");
+    const paneId = useUi.getState().splitFocused("vertical");
+    expect(paneId).not.toBeNull();
+    expect(useUi.getState().focusedPaneId).toBe(paneId);
+    expect(paneLeaves(useUi.getState().layout).map((pane) => pane.sessionKey)).toEqual([
+      "pi:a",
+      null,
+    ]);
+
+    useUi.getState().showSession("pi:b");
+    expect(paneLeaves(useUi.getState().layout).map((pane) => pane.sessionKey)).toEqual([
+      "pi:a",
+      "pi:b",
+    ]);
+    useUi.getState().closePane(paneId ?? "");
+    expect(paneLeaves(useUi.getState().layout).map((pane) => pane.sessionKey)).toEqual(["pi:a"]);
+  });
+
+  it("carries the destination pane through the session picker overlay", () => {
+    useUi.getState().open({ type: "paneSession", paneId: "pane-3" });
+    expect(useUi.getState().overlay).toEqual({ type: "paneSession", paneId: "pane-3" });
   });
 });

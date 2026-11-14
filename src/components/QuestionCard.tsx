@@ -4,7 +4,13 @@ import { useStore } from "../store";
 import type { Question } from "../types";
 
 /** A question from the harness, shown until answered or until it expires. */
-export function QuestionCard({ question }: { question: Question }) {
+export function QuestionCard({
+  question,
+  sessionKey,
+}: {
+  question: Question;
+  sessionKey?: string;
+}) {
   const answer = useStore((s) => s.answer);
   const [text, setText] = useState(
     question.kind.type === "editor" ? (question.kind.prefill ?? "") : "",
@@ -21,8 +27,8 @@ export function QuestionCard({ question }: { question: Question }) {
 
   if (expired) return null;
 
-  const dismiss = () => void answer(question.id, { type: "cancelled" });
-  const submitText = () => void answer(question.id, { type: "value", value: text });
+  const dismiss = () => void answer(question.id, { type: "cancelled" }, sessionKey);
+  const submitText = () => void answer(question.id, { type: "value", value: text }, sessionKey);
   const { kind } = question;
 
   return (
@@ -63,7 +69,7 @@ export function QuestionCard({ question }: { question: Question }) {
           kind.options.map((option) => (
             <Button
               key={option}
-              onClick={() => void answer(question.id, { type: "value", value: option })}
+              onClick={() => void answer(question.id, { type: "value", value: option }, sessionKey)}
             >
               {option}
             </Button>
@@ -71,13 +77,17 @@ export function QuestionCard({ question }: { question: Question }) {
         {kind.type === "confirm" && (
           <>
             <Button
-              onClick={() => void answer(question.id, { type: "confirmed", confirmed: false })}
+              onClick={() =>
+                void answer(question.id, { type: "confirmed", confirmed: false }, sessionKey)
+              }
             >
               Decline
             </Button>
             <Button
               variant="primary"
-              onClick={() => void answer(question.id, { type: "confirmed", confirmed: true })}
+              onClick={() =>
+                void answer(question.id, { type: "confirmed", confirmed: true }, sessionKey)
+              }
             >
               Approve
             </Button>

@@ -1,9 +1,10 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect } from "react";
 import { api } from "./api";
-import { ChatPane } from "./components/ChatPane";
 import { NewLaneDialog } from "./components/NewLaneDialog";
 import { SearchPalette } from "./components/SearchPalette";
+import { SessionPicker } from "./components/SessionPicker";
+import { SessionWorkspace } from "./components/SessionWorkspace";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { pickProjectFolder } from "./pickProject";
@@ -39,7 +40,7 @@ export default function App() {
   }, []);
 
   // The window shortcuts: ⌘P searches, ⌘T starts a lane from a prompt,
-  // ⌘N adds a project, ⌘/ shows the cheatsheet. An open overlay keeps the
+  // ⌘N adds a project, ⌘D splits a pane, and ⌘/ shows the cheatsheet. An open overlay keeps the
   // keyboard, so a second shortcut does not yank it away from under the user.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -48,6 +49,13 @@ export default function App() {
       e.preventDefault();
       if (id === "newProject") {
         void pickProjectFolder();
+        return;
+      }
+      if (id === "splitVertical" || id === "splitHorizontal") {
+        const paneId = useUi
+          .getState()
+          .splitFocused(id === "splitVertical" ? "vertical" : "horizontal");
+        if (paneId) useStore.setState({ activeKey: null });
         return;
       }
       const overlay =
@@ -89,10 +97,11 @@ export default function App() {
       )}
       <div className="flex min-h-0 flex-1">
         <Sidebar />
-        <ChatPane />
+        <SessionWorkspace />
       </div>
       {overlay?.type === "search" && <SearchPalette />}
       {overlay?.type === "shortcuts" && <ShortcutsDialog />}
+      {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
       {overlay?.type === "newLane" && (
         <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
       )}

@@ -1,10 +1,12 @@
 import { Button, Icon, LoopMark } from "@panoptes/design-system";
 import { type KeyboardEvent, useRef, useState, useSyncExternalStore } from "react";
 import { relativeTime } from "../grouping";
+import { SESSION_DRAG_TYPE } from "../panes";
 import { isLive, primaryAction, sessionDetail, sessionRowLabel, statusWord } from "../sessionRow";
 import { sessionMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { Session, SessionStatus } from "../types";
+import { useUi } from "../ui";
 import { ContextMenu } from "./ContextMenu";
 import { RowMenu } from "./RowMenu";
 
@@ -162,8 +164,14 @@ export function SessionItem({
   return (
     <li className={nested ? "ml-2" : ""}>
       <ContextMenu label={`Actions for session ${session.title}`} items={items} onSelect={select}>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: the row is a drag handle and its button opens the session */}
         <div
           className="session-row group/session"
+          draggable
+          onDragStart={(event) => {
+            event.dataTransfer.setData(SESSION_DRAG_TYPE, session.key);
+            event.dataTransfer.effectAllowed = "move";
+          }}
           data-selected={active || undefined}
           data-actions={hasActions || undefined}
           data-archived={session.archived || undefined}
@@ -179,7 +187,10 @@ export function SessionItem({
             title={truncated ? session.title : undefined}
             onPointerEnter={measure}
             onFocus={measure}
-            onClick={() => void open(session)}
+            onClick={() => {
+              useUi.getState().showSession(session.key);
+              void open(session);
+            }}
             onKeyDown={onRowKey}
             onContextMenu={(event) => {
               // The menu key already opened the anchored menu; skip the pointer one.

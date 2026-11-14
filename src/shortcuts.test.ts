@@ -18,6 +18,16 @@ describe("shortcutFor", () => {
     expect(key("p", { meta: true })).toBe("search");
     expect(key("t", { meta: true })).toBe("newSession");
     expect(key("n", { meta: true })).toBe("newProject");
+    expect(key("d", { meta: true })).toBe("splitVertical");
+    expect(key("D", { meta: true, shift: true })).toBe("splitHorizontal");
+  });
+
+  it("accepts Command or Control for pane splits, even with shift", () => {
+    expect(key("d", { ctrl: true })).toBe("splitVertical");
+    expect(key("d", { ctrl: true, shift: true })).toBe("splitHorizontal");
+    expect(key("d", { meta: true, ctrl: true })).toBeNull();
+    expect(key("d", { meta: true, alt: true })).toBeNull();
+    expect(key("d")).toBeNull();
   });
 
   it("leaves Ctrl to text editing, as macOS does", () => {

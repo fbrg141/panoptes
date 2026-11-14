@@ -10,10 +10,13 @@ import type { Approval } from "../types";
 export function ApprovalCard({
   approval,
   pill = true,
+  sessionKey,
 }: {
   approval: Approval;
   /** Off where the call's own row already says Waiting. */
   pill?: boolean;
+  /** Explicit in split panes; inline transcript cards find their owner by id. */
+  sessionKey?: string;
 }) {
   const answer = useStore((s) => s.answer);
   const [expired, setExpired] = useState(
@@ -28,7 +31,8 @@ export function ApprovalCard({
 
   if (expired) return null;
 
-  const decide = (allow: boolean) => void answer(approval.id, { type: "decision", allow });
+  const decide = (allow: boolean) =>
+    void answer(approval.id, { type: "decision", allow }, sessionKey);
   return (
     <section
       aria-label={approval.title}

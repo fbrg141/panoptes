@@ -190,6 +190,22 @@ describe("store", () => {
     expect(store.getState().statuses["pi:s1"]).toBe("done");
   });
 
+  it("addresses commands to an explicit pane's session, not the focused key", async () => {
+    await store.getState().open(session);
+    store.setState({ activeKey: "pi:another-pane" });
+
+    await store.getState().send("from this pane", {}, "pi:s1");
+    await store.getState().setThinkingLevel("high", "pi:s1");
+    await store.getState().loadModels("pi:s1");
+    await store.getState().abort("pi:s1");
+
+    expect(fake.backend.sendPrompt).toHaveBeenCalledWith("pi:s1", "from this pane", [], "start");
+    expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("pi:s1", "high");
+    expect(fake.backend.listModels).toHaveBeenCalledWith("pi:s1");
+    expect(fake.backend.abort).toHaveBeenCalledWith("pi:s1");
+    expect(store.getState().activeKey).toBe("pi:another-pane");
+  });
+
   it("steers when the agent is already busy", async () => {
     await store.getState().open(session);
     await store.getState().send("first");
@@ -371,6 +387,30 @@ describe("store", () => {
       confirmed: true,
     });
     expect(store.getState().conversations["pi:s1"].questions).toHaveLength(0);
+  });
+
+  it("finds an inline question's session even when another pane is focused", async () => {
+    await store.getState().open(session);
+    fake.emit({
+      key: "pi:s1",
+      event: {
+        type: "question",
+        question: {
+          id: "q1",
+          title: "Ok?",
+          message: null,
+          kind: { type: "confirm" },
+          expiresAt: null,
+        },
+      },
+    });
+    store.setState({ activeKey: "pi:another-pane" });
+
+    await store.getState().answer("q1", { type: "confirmed", confirmed: true });
+    expect(fake.backend.answer).toHaveBeenCalledWith("pi:s1", "q1", {
+      type: "confirmed",
+      confirmed: true,
+    });
   });
 
   it("forgets a closed session's conversation", async () => {
