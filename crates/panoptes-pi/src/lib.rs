@@ -77,7 +77,15 @@ impl Harness for PiHarness {
         };
         let shared = map::Shared::default();
         let mapper = map::EventMapper::new(shared.clone());
-        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, read_only, events, mapper)?;
+        let process = rpc::RpcProcess::spawn(
+            &self.install,
+            cwd,
+            file,
+            read_only,
+            request.instructions.as_deref(),
+            events,
+            mapper,
+        )?;
 
         let state = match process.call(json!({"type": "get_state"})).await {
             Ok(state) => state,

@@ -332,6 +332,25 @@ export interface SessionSettings {
   context: ContextUsage | null;
 }
 
+/** Panoptes-owned setup for new sessions; empty fields use harness defaults. */
+export interface AgentProfile {
+  id: number;
+  name: string;
+  modelId: string | null;
+  thinkingLevel: string | null;
+  /** Appended to the harness's system prompt at session creation. */
+  instructions: string | null;
+}
+
+export type ProfileInput = Omit<AgentProfile, "id">;
+
+export interface Preferences {
+  profiles: AgentProfile[];
+  /** Model ids in favorite order. */
+  favoriteModels: string[];
+  hiddenModels: string[];
+}
+
 /** A file dropped onto the composer: images inline, anything else by path. */
 export interface FileAttachment {
   name: string;

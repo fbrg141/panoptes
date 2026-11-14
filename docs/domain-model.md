@@ -15,8 +15,9 @@ Why the model is shaped this way is recorded in
 
 - **The harness owns the conversation. Panoptes owns the organisation.**
   Messages stay in each harness's own storage (Pi's session files). Projects,
-  lanes, groups, titles, tags and archiving live in Panoptes, because they
-  must work the same across every harness.
+  lanes, titles, tags and archiving live in Panoptes, because they must work
+  the same across every harness. Reusable session profiles and model-picker
+  preferences live here too; they never rewrite the harness's own settings.
 - **The lane is the durable unit with one session.** A lane owns a worktree,
   a branch, a task and exactly one session. Closing that session never touches
   the lane's work; reopening resumes the same conversation. A new task is a new
@@ -89,6 +90,27 @@ worktree it happens in, and its one session. The name was chosen over
   a lane, including after the first is archived. There is no write lock,
   read-only non-holder session or lock queue. Parallel work means separate
   lanes.
+
+### Profile
+
+A named, reusable setup for a new session, owned by Panoptes rather than the
+harness. Its model, thinking level and additional instructions are all
+optional; an empty field keeps the harness default. The new lane form applies
+a profile before its first prompt, and its individual fields can still be
+overridden.
+
+Additional instructions are appended to the harness's system prompt at
+startup, never used to replace it and never reapplied when a conversation
+resumes. The harness adapter owns how that neutral request maps to its CLI or
+protocol.
+
+### Model preferences
+
+Favorite and hidden model ids are Panoptes presentation preferences. Ordered
+favorites form the first model-picker group; hidden models are omitted from
+pickers but remain configured in the harness and valid for existing sessions
+or saved profiles. Neither preference changes harness defaults or CLI
+behaviour.
 
 ### Session
 
