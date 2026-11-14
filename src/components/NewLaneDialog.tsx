@@ -10,6 +10,7 @@ import {
 } from "../newSession";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
+import { proseField } from "../textFields";
 import { useUi } from "../ui";
 import { OptionToggle, Overlay, OverlayFooter, OverlayHeader } from "./Overlay";
 import { Picker } from "./Picker";
@@ -128,6 +129,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
         <div className="flex flex-col gap-2 px-4 pt-1 pb-4">
           <input
             ref={field}
+            {...proseField}
             aria-label="First prompt"
             aria-describedby="new-lane-help"
             placeholder="What should Pi do? e.g. Fix login redirects"
