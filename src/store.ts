@@ -7,6 +7,7 @@ import type {
   AppInfo,
   ArchiveLaneOutcome,
   ArchiveStrategy,
+  DeleteLaneOutcome,
   Draft,
   ErrorKind,
   ImageAttachment,
@@ -103,10 +104,16 @@ export interface State {
     options?: Omit<SessionOptions, "prompt">,
   ) => Promise<boolean>;
   cancelLaneCreation: (projectId: number) => Promise<void>;
-  archiveLane: (id: number, strategy: ArchiveStrategy | null) => Promise<ArchiveLaneOutcome | null>;
+  archiveLane: (
+    id: number,
+    strategy: ArchiveStrategy | null,
+    recreateBranch?: boolean,
+  ) => Promise<ArchiveLaneOutcome | null>;
+  /** Saves a detached HEAD on the lane branch, leaving the worktree in place. */
+  createLaneBranch: (id: number) => Promise<boolean>;
   restoreLane: (id: number) => Promise<void>;
   /** Permanently deletes a lane after explicit confirmation in the UI. */
-  deleteLane: (id: number) => Promise<boolean>;
+  deleteLane: (id: number, allowDetached?: boolean) => Promise<DeleteLaneOutcome | null>;
   /** Opens the event log folder in Finder. */
   showLogs: () => Promise<void>;
   dismissError: () => void;
@@ -564,14 +571,25 @@ export function createAppStore(backend: typeof api) {
         await backend.cancelLaneCreation(projectId).catch(fail);
       },
 
-      archiveLane: async (id, strategy) => {
+      archiveLane: async (id, strategy, recreateBranch = false) => {
         try {
-          const outcome = await backend.archiveLane(id, strategy);
+          const outcome = await backend.archiveLane(id, strategy, recreateBranch);
           if (outcome.type === "archived") await get().refresh();
           return outcome;
         } catch (e) {
           fail(e);
           return null;
+        }
+      },
+
+      createLaneBranch: async (id) => {
+        try {
+          await backend.createLaneBranch(id);
+          await get().refresh();
+          return true;
+        } catch (e) {
+          fail(e);
+          return false;
         }
       },
 
@@ -584,17 +602,19 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
-      deleteLane: async (id) => {
+      deleteLane: async (id, allowDetached = false) => {
         try {
-          await backend.deleteLane(id);
-          for (const session of get().sessions.filter((session) => session.laneId === id)) {
-            forget(session.key);
+          const outcome = await backend.deleteLane(id, allowDetached);
+          if (outcome.type === "deleted") {
+            for (const session of get().sessions.filter((session) => session.laneId === id)) {
+              forget(session.key);
+            }
+            await get().refresh();
           }
-          await get().refresh();
-          return true;
+          return outcome;
         } catch (e) {
           fail(e);
-          return false;
+          return null;
         }
       },
 

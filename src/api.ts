@@ -7,6 +7,7 @@ import type {
   ArchiveLaneOutcome,
   ArchiveStrategy,
   Changes,
+  DeleteLaneOutcome,
   FileAttachment,
   Hunk,
   ImageAttachment,
@@ -90,10 +91,12 @@ export const api = {
   fileHunks: (laneId: number, path: string, range: TreeRange) =>
     invoke<Hunk[]>("file_hunks", { laneId, path, range }),
   cancelLaneCreation: (projectId: number) => invoke<void>("cancel_lane_creation", { projectId }),
-  archiveLane: (id: number, strategy: ArchiveStrategy | null) =>
-    invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy }),
+  archiveLane: (id: number, strategy: ArchiveStrategy | null, recreateBranch = false) =>
+    invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy, recreateBranch }),
+  createLaneBranch: (id: number) => invoke<void>("create_lane_branch", { id }),
   restoreLane: (id: number) => invoke<Lane>("restore_lane", { id }),
-  deleteLane: (id: number) => invoke<void>("delete_lane", { id }),
+  deleteLane: (id: number, allowDetached = false) =>
+    invoke<DeleteLaneOutcome>("delete_lane", { id, allowDetached }),
   /** Opens the event log folder in Finder. */
   showLogs: () => invoke<void>("show_logs"),
   onSessionEvent: (handler: (event: SessionEvent) => void) =>
