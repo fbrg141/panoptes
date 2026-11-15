@@ -149,6 +149,13 @@ short list is [the gate](backlog.md#the-gate): bug-only intake lasts until it
 is closed, not until every P1 to P4 issue is. The rest is closed and kept as
 one "Later" list in [backlog.md](backlog.md).
 
+**Gate refresh, 2026-11-15.** Every gate fix but CI (#3) is closed, and CI
+waits only on a billing lock, with local `pnpm check` standing in. Bug-only
+intake now lasts until the bet review instead of ending with the gate, so the
+review decides from the observation log rather than from a fresh feature
+backlog. The one exception is a small fix for pain hit in daily use that the
+log records, such as clearing finished lanes (#264).
+
 **Event log, 2026-11-13.** An exception to bug-only intake, made by the
 product owner: the 2026-12-05 bet review needs a record of how Panoptes
 behaved in daily use, not only memory and the observation log. The service
