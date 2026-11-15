@@ -6,36 +6,36 @@ misleads, or is hit every day.*
 
 ## The gate
 
-These 21 issues are the open fix list. Bug-only intake (see
-[AGENTS.md](../AGENTS.md#issue-intake)) lasts until they are closed.
+*Refreshed on 2026-11-15.* Twenty of the 21 fixes cut on 2026-11-12 are
+closed, and so is the rename regression (#263) added since. One is left:
 
-- Add CI that runs `pnpm check` on PRs and main (#3)
-- Archive is not atomic with the store (#77)
-- Restoring a checkpoint rewrites the user's branch (#83)
-- A moved or deleted repository is a dead end (#84)
-- Check-then-write store operations use deferred transactions or none (#87)
-- No migration test starts from a populated v2 or v3 database (#98)
-- "One process per open session" is only enforced open-versus-open (#101)
-- Status and pending cards cannot be recovered (#105)
-- Tool output truncation destroys the exit code and keeps the wrong end (#123)
-- Message-id stability rests on a non-unique `(role, timestamp)` key (#124)
-- Tool calls with no end event stay `Running` forever (#129)
-- `approvals.js` is never executed by any test (#131)
-- The version check is computed but not enforced (#136)
-- Component error path prints `[object Object]` (#151)
-- Shortcuts fire on Ctrl as well as ⌘ (#160)
-- Popup menus lose their edge and shadow (#172)
-- Removing a project has no confirmation (#173)
-- Picking a lane in "Jump to…" starts a new session (#174)
-- The "All sessions" tab has a blank icon (#175)
-- Branch names are shown uppercased (#176)
-- Docs describe behaviour the code does not have (#197)
+- Add CI that runs `pnpm check` on PRs and main (#3). The workflow is ready
+  in #245; its first run is blocked by a GitHub billing lock on the account.
+  Until it runs, `pnpm check` locally (and the pre-push hook) is the check
+  every merge must pass.
+
+Closed: #77, #83, #84, #87, #98, #101, #105, #123, #124, #129, #131, #136,
+#151, #160, #172, #173, #174, #175, #176, #197, #263.
+
+## Next
+
+- Offer to archive merged or idle lanes and show worktree disk use (#264).
+  Worktrees pile up in daily use (see the
+  [observation log](bets.md#observation-log)), so this counts as a fix.
+
+## Intake until the bet review
+
+Bug-only intake (see [AGENTS.md](../AGENTS.md#issue-intake)) stays in place
+until the bet review on 2026-12-05, even once #3 closes. One exception: a
+small fix for pain hit in daily use may be filed and worked when the
+observation log records it, as #264 is. Everything else, including #266 and
+the bet work (#201 to #206), stays parked until the review.
 
 ## Later
 
 Real, but not blocking daily use. Their issues are closed so the open list
 stays short; each number links to the full description. Reopen one when it
-bites, or pick from here once the gate is closed.
+bites, or pick from here after the bet review.
 
 ### Lanes and store
 

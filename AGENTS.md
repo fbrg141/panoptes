@@ -30,10 +30,11 @@ this way.
 
 ## Issue intake
 
-Until every issue on [the gate list](docs/backlog.md#the-gate) is closed, file
-GitHub issues for bugs only. Do not file feature or enhancement issues. Put feature ideas in the
-[observation log](docs/bets.md#observation-log) instead. Parked features wait
-for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md#observe-pi-do-not-orchestrate-agents).
+Until the bet review on 2026-12-05, file GitHub issues for bugs only. Do not
+file feature or enhancement issues; put feature ideas in the
+[observation log](docs/bets.md#observation-log) instead, where parked features
+wait for the review. The one exception is a small fix for pain hit in daily
+use that the observation log records ([backlog](docs/backlog.md#intake-until-the-bet-review)). See [the direction decision](docs/decisions.md#observe-pi-do-not-orchestrate-agents).
 
 ## Rules
 
