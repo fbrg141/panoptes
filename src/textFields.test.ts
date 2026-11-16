@@ -1,4 +1,15 @@
 import { expect, it } from "vitest";
+import { plainField, proseField } from "./textFields";
+
+it("keeps native spellcheck on prose and turns all rewriting off", () => {
+  expect(proseField).toEqual({
+    spellCheck: true,
+    autoCorrect: "off",
+    autoCapitalize: "off",
+    autoComplete: "off",
+  });
+  expect(plainField).toEqual({ ...proseField, spellCheck: false });
+});
 
 // Every text field opts out of macOS autocorrect through `proseField` or
 // `plainField`, so a field added later cannot quietly bring it back.
