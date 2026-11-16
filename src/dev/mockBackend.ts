@@ -591,13 +591,22 @@ export function installMockBackend() {
         case "set_zoom":
           return null;
         case "list_sessions": {
+          const mainCheckout = (session: Session) =>
+            lanes.some(
+              (lane) =>
+                lane.id === session.laneId &&
+                lane.worktrees.some((worktree) => worktree.mainCheckout),
+            );
           const all = sessions
             .map((s) => {
               const project = projects.find((p) => p.repo === s.checkout);
               const projectId = s.laneId === null ? (project?.id ?? null) : s.projectId;
               return { ...s, projectId, open: open.has(s.key) };
             })
-            .sort((a, b) => b.updatedAt - a.updatedAt);
+            .sort(
+              (a, b) =>
+                Number(mainCheckout(b)) - Number(mainCheckout(a)) || b.updatedAt - a.updatedAt,
+            );
           return {
             sessions: all,
             projects: [...projects].sort((x, y) => x.name.localeCompare(y.name)),
