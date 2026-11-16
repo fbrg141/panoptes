@@ -15,7 +15,7 @@ import type {
 } from "../types";
 import { useUi } from "../ui";
 import { RowMenu } from "./RowMenu";
-import { SessionItem } from "./SessionItem";
+import { CheckoutIcon, SessionItem } from "./SessionItem";
 
 type NavigationTab = "lanes" | "all";
 
@@ -347,10 +347,7 @@ export function LaneItem({
   const empty = emptyLane(lane, navigation);
   const work = workLabel(navigation?.work ?? null);
   const location = mainCheckout ? "Main checkout" : lane.branch;
-  const detail = [
-    `${location}${archived ? (checkpoint ? " · archived with a checkpoint" : " · archived") : ""}`,
-    work,
-  ]
+  const detail = [archived ? (checkpoint ? "archived with a checkpoint" : "archived") : "", work]
     .filter(Boolean)
     .join(" · ");
   const laneSessions = [...sessions, ...archivedSessions];
@@ -386,6 +383,7 @@ export function LaneItem({
         session={mainSession}
         title={lane.task}
         context={detail}
+        checkout={{ label: location, mainCheckout }}
         laneActions
         className={archived ? "text-ink-muted" : ""}
         menuLabel={`Actions for lane ${lane.name}`}
@@ -429,11 +427,14 @@ export function LaneItem({
             {lane.task}
           </p>
           <p
-            className={`truncate ${mainCheckout ? "text-caption text-waiting" : "text-code-sm text-ink-muted"}`}
+            className={`flex items-center gap-1 ${mainCheckout ? "text-caption text-waiting" : "text-code-sm text-ink-muted"}`}
             title={lane.worktrees[0]?.path}
           >
-            {location}
-            {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
+            <CheckoutIcon mainCheckout={mainCheckout} />
+            <span className="truncate">
+              {location}
+              {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
+            </span>
           </p>
           {work && <p className="truncate text-xs text-ink-muted">{work}</p>}
         </button>
