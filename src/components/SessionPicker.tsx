@@ -2,7 +2,34 @@ import { CommandPalette } from "@panoptes/design-system";
 import { useMemo } from "react";
 import { recentSessions } from "../palette";
 import { useStore } from "../store";
+import type { Project, Session } from "../types";
 import { useUi } from "../ui";
+
+/** New work is the first choice; recent sessions follow it. */
+export function sessionPickerGroups(sessions: Session[], projects: Project[]) {
+  return [
+    {
+      label: "Actions",
+      items: [
+        {
+          id: "new",
+          label: "New session",
+          hint: projects[0] ? `Start a lane in ${projects[0].name}` : "Add a project first",
+          icon: "plus",
+        },
+      ],
+    },
+    {
+      label: "Sessions",
+      items: recentSessions(sessions).map((session) => ({
+        id: `session:${session.key}`,
+        label: session.title,
+        hint: session.cwd,
+        icon: "session",
+      })),
+    },
+  ];
+}
 
 /** A command palette that fills one empty or split pane. */
 export function SessionPicker({ paneId }: { paneId: string }) {
@@ -11,31 +38,7 @@ export function SessionPicker({ paneId }: { paneId: string }) {
   const open = useStore((s) => s.open);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
-  const groups = useMemo(
-    () => [
-      {
-        label: "Sessions",
-        items: recentSessions(sessions).map((session) => ({
-          id: `session:${session.key}`,
-          label: session.title,
-          hint: session.cwd,
-          icon: "session",
-        })),
-      },
-      {
-        label: "Actions",
-        items: [
-          {
-            id: "new",
-            label: "New lane",
-            hint: projects[0] ? `In ${projects[0].name}` : "Add a project first",
-            icon: "plus",
-          },
-        ],
-      },
-    ],
-    [sessions, projects],
-  );
+  const groups = useMemo(() => sessionPickerGroups(sessions, projects), [sessions, projects]);
 
   const select = async (id: string) => {
     close();

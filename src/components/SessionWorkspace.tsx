@@ -213,11 +213,10 @@ function EmptyPane({
   canClose: boolean;
   onClose: () => void;
 }) {
-  const projects = useStore((s) => s.projects);
   const show = useUi((s) => s.open);
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+    <main className="relative flex flex-1 flex-col">
       {canClose && (
         <Button
           variant="ghost"
@@ -230,33 +229,21 @@ function EmptyPane({
           onClick={onClose}
         />
       )}
-      <LoopMark size={72} />
-      <div>
-        <h1 className="text-title">Session pane</h1>
-        <p className="mt-1 text-ink-muted">Select a session, or start a lane in a project.</p>
-      </div>
-      <div className="flex flex-wrap justify-center gap-2">
-        <Button
-          variant="secondary"
-          icon="session"
-          onClick={() => {
-            onActivate();
-            show({ type: "paneSession", paneId });
-          }}
-        >
-          Select session
-        </Button>
-        <Button
-          variant="primary"
-          icon="plus"
-          onClick={() => {
-            onActivate();
-            show({ type: "newLane", projectId: projects[0]?.id ?? 0 });
-          }}
-        >
-          New lane
-        </Button>
-      </div>
+      <button
+        type="button"
+        aria-label="Choose a session for this pane"
+        className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center hover:bg-surface"
+        onClick={() => {
+          onActivate();
+          show({ type: "paneSession", paneId });
+        }}
+      >
+        <LoopMark size={64} />
+        <div>
+          <h1 className="text-title">No session selected</h1>
+          <p className="mt-1 text-ink-muted">Click to choose a session for this pane.</p>
+        </div>
+      </button>
     </main>
   );
 }
