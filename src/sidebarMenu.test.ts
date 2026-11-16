@@ -13,12 +13,18 @@ const session: Pick<Session, "laneId" | "archived" | "open"> = {
 
 describe("sidebar row menus", () => {
   it("offers lane creation and removal for a project", () => {
-    expect(ids(projectMenuItems())).toEqual(["new-lane", "remove-project"]);
-    expect(projectMenuItems(0)[2]).toMatchObject({ disabled: false });
+    expect(ids(projectMenuItems())).toEqual(["new-lane", "cleanup-lanes", "remove-project"]);
+    expect(
+      projectMenuItems(0).find((item) => "id" in item && item.id === "remove-project"),
+    ).toMatchObject({
+      disabled: false,
+    });
   });
 
   it("only lets a project without lanes be removed", () => {
-    expect(projectMenuItems(2)[2]).toMatchObject({
+    expect(
+      projectMenuItems(2).find((item) => "id" in item && item.id === "remove-project"),
+    ).toMatchObject({
       id: "remove-project",
       disabled: true,
       label: "Remove project (delete its lanes first)",

@@ -134,6 +134,7 @@ export function Sidebar() {
                 lanes={lanes.filter((lane) => lane.projectId === project.id)}
                 navigationByLane={navigationByLane}
                 onNewLane={() => show({ type: "newLane", projectId: project.id })}
+                onCleanup={() => show({ type: "cleanup", projectId: project.id })}
                 onWork={(lane) => void create(lane.id)}
                 onArchive={(lane) => void requestArchive(lane)}
                 onDelete={setDeletingLane}
@@ -225,6 +226,7 @@ function ProjectItem({
   lanes,
   navigationByLane,
   onNewLane,
+  onCleanup,
   onWork,
   onArchive,
   onDelete,
@@ -233,6 +235,7 @@ function ProjectItem({
   lanes: Lane[];
   navigationByLane: Map<number, LaneNavigation>;
   onNewLane: () => void;
+  onCleanup: () => void;
   onWork: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
   onDelete: (lane: Lane) => void;
@@ -277,6 +280,7 @@ function ProjectItem({
           items={projectMenuItems(lanes.length)}
           onSelect={(id) => {
             if (id === "new-lane") onNewLane();
+            if (id === "cleanup-lanes") onCleanup();
             if (id === "remove-project") setRemoving(true);
           }}
         />

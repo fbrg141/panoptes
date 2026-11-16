@@ -4,6 +4,7 @@ import { createAppStore, describeError } from "./store";
 import type {
   AdoptionOutcome,
   ArchiveLaneOutcome,
+  ArchiveStrategy,
   DeleteLaneOutcome,
   Lane,
   Listing,
@@ -90,6 +91,7 @@ const preferences: Preferences = {
   profiles: [],
   favoriteModels: [],
   hiddenModels: [],
+  cleanupIdleDays: 4,
 };
 
 function fakeBackend() {
@@ -130,6 +132,10 @@ function fakeBackend() {
       ...preferences,
       hiddenModels: hidden ? [modelId] : [],
     })),
+    setCleanupIdleDays: vi.fn(async (days: number) => ({
+      ...preferences,
+      cleanupIdleDays: days,
+    })),
     setModel: vi.fn(async () => settings),
     setThinkingLevel: vi.fn(async (_key: string, level: string) => ({
       ...settings,
@@ -146,7 +152,13 @@ function fakeBackend() {
     removeProject: vi.fn(async () => {}),
     createLane: vi.fn(async (): Promise<Lane> => lane),
     cancelLaneCreation: vi.fn(async () => {}),
-    archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
+    archiveLane: vi.fn(
+      async (
+        _id: number,
+        _strategy: ArchiveStrategy | null,
+        _recreateBranch = false,
+      ): Promise<ArchiveLaneOutcome> => ({ type: "archived" }),
+    ),
     createLaneBranch: vi.fn(async () => {}),
     restoreLane: vi.fn(async (): Promise<Lane> => lane),
     deleteLane: vi.fn(async (): Promise<DeleteLaneOutcome> => ({ type: "deleted" })),
@@ -280,6 +292,9 @@ describe("store", () => {
     expect(store.getState().preferences.favoriteModels).toEqual(["p/small"]);
     await store.getState().setModelHidden("p/large", true);
     expect(store.getState().preferences.hiddenModels).toEqual(["p/large"]);
+    expect(await store.getState().setCleanupIdleDays(7)).toBe(true);
+    expect(fake.backend.setCleanupIdleDays).toHaveBeenCalledWith(7);
+    expect(store.getState().preferences.cleanupIdleDays).toBe(7);
     await store.getState().deleteProfile(1);
     expect(fake.backend.deleteProfile).toHaveBeenCalledWith(1);
   });
@@ -603,6 +618,29 @@ describe("store", () => {
     const archived = await store.getState().archiveLane(1, "checkpoint");
     expect(archived).toEqual({ type: "archived" });
     expect(store.getState().lanes[0].state).toBe("archived");
+  });
+
+  it("bulk-archives sequentially with checkpoints and reports individual failures", async () => {
+    const second = { ...lane, id: 2, name: "docs", task: "Write docs" };
+    store.setState({ lanes: [lane, second] });
+    const calls: number[] = [];
+    fake.backend.archiveLane.mockImplementation(async (id: number) => {
+      calls.push(id);
+      if (id === 2) throw { kind: "other", message: "Git could not remove it" };
+      return { type: "archived" };
+    });
+    const listings = fake.backend.listSessions.mock.calls.length;
+
+    const result = await store.getState().archiveLanes([1, 2]);
+
+    expect(calls).toEqual([1, 2]);
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, "checkpoint");
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(2, "checkpoint");
+    expect(result).toEqual({
+      archived: 1,
+      failed: [{ laneId: 2, message: "Git could not remove it" }],
+    });
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings + 1);
   });
 
   it("returns detached-head recovery without archiving, and forwards the explicit choices", async () => {
