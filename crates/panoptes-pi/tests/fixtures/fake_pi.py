@@ -169,6 +169,12 @@ for line in sys.stdin:
         })
     elif kind == "get_available_models":
         respond(command, {"models": models})
+    elif kind == "get_commands":
+        respond(command, {"commands": [
+            {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
+            {"name": "review", "description": None, "source": "extension"},
+            {"name": "skill:review", "description": "Review with a skill", "source": "skill"},
+        ]})
     elif kind == "set_model":
         found = [m for m in models if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
         if not found:

@@ -7,6 +7,7 @@ import type {
   ArchiveLaneOutcome,
   ArchiveStrategy,
   Changes,
+  CommandInfo,
   DeleteLaneOutcome,
   FileAttachment,
   Hunk,
@@ -62,6 +63,7 @@ export const api = {
     invoke<PromptOutcome>("send_prompt", { key, text, images, mode }),
   settings: (key: string) => invoke<SessionSettings>("session_settings", { key }),
   listModels: (key: string) => invoke<ModelInfo[]>("list_models", { key }),
+  listCommands: (key: string) => invoke<CommandInfo[]>("list_commands", { key }),
   preferences: () => invoke<Preferences>("preferences"),
   saveProfile: (id: number | null, input: ProfileInput) =>
     invoke<Preferences>("save_profile", { id, input }),

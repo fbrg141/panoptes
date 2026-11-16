@@ -2,11 +2,14 @@ import { Button, Icon, Menu, type MenuItem } from "@panoptes/design-system";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import {
+  commandAt,
   composePrompt,
   contextLabel,
   continueList,
+  insertCommand,
   insertMention,
   type MentionQuery,
+  matchCommands,
   matchFiles,
   mentionAt,
   nextLevel,
@@ -16,7 +19,7 @@ import {
 import { modelGroups, shortModelId } from "../newSession";
 import { describeError, useStore } from "../store";
 import { proseField } from "../textFields";
-import type { FileAttachment, QueuedPrompt, SessionSettings } from "../types";
+import type { CommandInfo, FileAttachment, QueuedPrompt, SessionSettings } from "../types";
 import { Picker } from "./Picker";
 
 /** Mentions offered at once; typing narrows them. */
@@ -84,8 +87,10 @@ export function Composer({
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [mentioned, setMentioned] = useState<ReadonlySet<string>>(new Set());
   const [mention, setMention] = useState<MentionQuery | null>(null);
+  const [slash, setSlash] = useState<MentionQuery | null>(null);
   const [picked, setPicked] = useState(0);
   const [files, setFiles] = useState<{ cwd: string; list: string[] } | null>(null);
+  const [commands, setCommands] = useState<{ key: string; list: CommandInfo[] } | null>(null);
   const [dragging, setDragging] = useState(false);
   const saveDraft = useStore((s) => s.saveDraft);
 
@@ -123,6 +128,7 @@ export function Composer({
       setAttachments(draft?.attachments ?? []);
       setMentioned(new Set(draft?.mentioned ?? []));
       setMention(null);
+      setSlash(null);
     }
   }, [sessionKey, saveDraft]);
 
@@ -143,6 +149,19 @@ export function Composer({
     () => (mention && files ? matchFiles(mention.query, files.list, MENTION_ROWS) : []),
     [mention, files],
   );
+  const commandMatches = useMemo(
+    () => (slash && commands?.key === sessionKey ? matchCommands(slash.query, commands.list) : []),
+    [slash, commands, sessionKey],
+  );
+
+  // Commands are discovered on the first `/`, once per open session.
+  useEffect(() => {
+    if (!slash || commands?.key === sessionKey) return;
+    setCommands({ key: sessionKey, list: [] });
+    api.listCommands(sessionKey).then((list) => {
+      setCommands((current) => (current?.key === sessionKey ? { key: sessionKey, list } : current));
+    }, fail);
+  }, [slash, commands, sessionKey]);
 
   const attachPaths = async (paths: string[]) => {
     try {
@@ -202,10 +221,12 @@ export function Composer({
   };
 
   const trackMention = (el: HTMLTextAreaElement) => {
-    const found =
-      el.selectionStart === el.selectionEnd ? mentionAt(el.value, el.selectionStart) : null;
+    const collapsed = el.selectionStart === el.selectionEnd;
+    const found = collapsed ? mentionAt(el.value, el.selectionStart) : null;
     setMention(found);
-    if (found?.query !== mention?.query) setPicked(0);
+    const nextSlash = collapsed && !found ? commandAt(el.value, el.selectionStart) : null;
+    setSlash(nextSlash);
+    if (found?.query !== mention?.query || nextSlash?.query !== slash?.query) setPicked(0);
   };
 
   const pick = (path: string) => {
@@ -221,6 +242,18 @@ export function Composer({
     });
   };
 
+  const pickCommand = (command: CommandInfo) => {
+    const el = input.current;
+    if (!el || !slash) return;
+    const next = insertCommand(text, el.selectionStart, command);
+    setText(next.text);
+    setSlash(null);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
   const submit = (queue: boolean) => {
     if (sending || (!text.trim() && attachments.length === 0)) return;
     const prompt = composePrompt(text, attachments);
@@ -230,6 +263,7 @@ export function Composer({
     setAttachments([]);
     setMentioned(new Set());
     setMention(null);
+    setSlash(null);
     saveDraft(sessionKey, { text: "", attachments: [], mentioned: [] });
     void send(prompt.text, { images: prompt.images, queue }, sessionKey).then((delivered) => {
       if (delivered || !sentFrom) return;
@@ -258,22 +292,26 @@ export function Composer({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
-    if (mention && matches.length > 0) {
+    const completionRows = mention ? matches : slash ? commandMatches : [];
+    if ((mention || slash) && completionRows.length > 0) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const step = e.key === "ArrowDown" ? 1 : -1;
-        setPicked((i) => (i + step + matches.length) % matches.length);
+        setPicked((i) => (i + step + completionRows.length) % completionRows.length);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        pick(matches[Math.min(picked, matches.length - 1)]);
+        const index = Math.min(picked, completionRows.length - 1);
+        if (mention) pick(completionRows[index] as string);
+        else pickCommand(completionRows[index] as CommandInfo);
         return;
       }
     }
-    if (mention && e.key === "Escape") {
+    if ((mention || slash) && e.key === "Escape") {
       e.preventDefault();
       setMention(null);
+      setSlash(null);
       return;
     }
     if (e.key === "Tab" && e.shiftKey) {
@@ -325,7 +363,8 @@ export function Composer({
       <span id={helpId} className="sr-only">
         Enter to send. Shift+Enter for a new line, continuing a list when the line starts one. While
         the agent runs, Enter steers it, Option+Enter queues the message for when it finishes, and
-        Escape stops it. Type @ to mention a file. Shift+Tab changes the thinking level.
+        Escape stops it. Type @ to mention a file or / to choose a harness command. Shift+Tab
+        changes the thinking level.
       </span>
 
       {mention && matches.length > 0 && (
@@ -334,6 +373,16 @@ export function Composer({
           matches={matches}
           picked={picked}
           onPick={pick}
+          onHover={setPicked}
+        />
+      )}
+
+      {slash && commandMatches.length > 0 && (
+        <CommandList
+          id={mentionsId}
+          matches={commandMatches}
+          picked={picked}
+          onPick={pickCommand}
           onHover={setPicked}
         />
       )}
@@ -397,9 +446,11 @@ export function Composer({
           aria-label="Message"
           aria-describedby={helpId}
           aria-autocomplete="list"
-          aria-controls={mention ? mentionsId : undefined}
+          aria-controls={mention || slash ? mentionsId : undefined}
           aria-activedescendant={
-            mention && matches.length > 0 ? `${mentionsId}-${picked}` : undefined
+            (mention || slash) && (mention ? matches : commandMatches).length > 0
+              ? `${mentionsId}-${picked}`
+              : undefined
           }
           enterKeyHint="send"
           {...proseField}
@@ -408,7 +459,7 @@ export function Composer({
           placeholder={
             busy
               ? "Steer the agent, ⌥↵ to queue for after"
-              : "Message the agent, @ to mention a file"
+              : "Message the agent, @ for files, / for commands"
           }
           value={text}
           onChange={(e) => {
@@ -416,7 +467,10 @@ export function Composer({
             trackMention(e.target);
           }}
           onSelect={(e) => trackMention(e.currentTarget)}
-          onBlur={() => setMention(null)}
+          onBlur={() => {
+            setMention(null);
+            setSlash(null);
+          }}
           onScroll={(e) => {
             if (backdrop.current) backdrop.current.scrollTop = e.currentTarget.scrollTop;
           }}
@@ -466,6 +520,52 @@ export function Composer({
         )}
       </div>
     </form>
+  );
+}
+
+function CommandList({
+  id,
+  matches,
+  picked,
+  onPick,
+  onHover,
+}: {
+  id: string;
+  matches: CommandInfo[];
+  picked: number;
+  onPick: (command: CommandInfo) => void;
+  onHover: (index: number) => void;
+}) {
+  return (
+    <div
+      id={id}
+      role="listbox"
+      aria-label="Commands"
+      className="absolute bottom-full left-0 z-20 mb-2 w-full max-w-md rounded-md bg-surface-raised p-1 shadow-[var(--shadow-pop)]"
+    >
+      {matches.map((command, i) => (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: the text field drives the list from the keyboard
+        <div
+          key={command.name}
+          id={`${id}-${i}`}
+          role="option"
+          aria-selected={i === picked}
+          tabIndex={-1}
+          className={`flex min-h-[var(--control)] cursor-default items-center gap-2 rounded-sm px-2 py-1 ${
+            i === picked ? "bg-selection" : ""
+          }`}
+          onMouseDown={(e) => e.preventDefault()}
+          onMouseMove={() => onHover(i)}
+          onClick={() => onPick(command)}
+        >
+          <Icon name="terminal" size={14} className="flex-none text-ink-muted" />
+          <span className="text-code-sm flex-none text-ink">/{command.name}</span>
+          <span className="min-w-0 flex-1 truncate text-label font-normal text-ink-muted">
+            {command.description ?? command.kind}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 

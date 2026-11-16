@@ -378,6 +378,14 @@ export interface ImageAttachment {
   data: string;
 }
 
+/** A command executable through the session's normal prompt path. */
+export interface CommandInfo {
+  /** Name without the leading slash. */
+  name: string;
+  description: string | null;
+  kind: "extension" | "prompt" | "skill" | "other";
+}
+
 export interface ModelInfo {
   /** Opaque handle for setModel. */
   id: string;

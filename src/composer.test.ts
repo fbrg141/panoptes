@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  commandAt,
   composePrompt,
   contextLabel,
   continueList,
   formatTokens,
+  insertCommand,
   insertMention,
+  matchCommands,
   matchFiles,
   mentionAt,
   nextLevel,
@@ -45,6 +48,42 @@ describe("mentions", () => {
       { text: " not @b.ts", mention: false },
     ]);
     expect(segments("@a.ts", new Set(["a.ts"]))).toEqual([{ text: "@a.ts", mention: true }]);
+  });
+});
+
+describe("slash commands", () => {
+  const commands = [
+    { name: "review", description: "Review changes", kind: "prompt" as const },
+    { name: "fix-tests", description: "Fix failing tests", kind: "extension" as const },
+    { name: "skill:review", description: null, kind: "skill" as const },
+  ];
+
+  it("recognises only a command at the start of the message", () => {
+    expect(commandAt("/rev", 4)).toEqual({ start: 0, query: "rev" });
+    expect(commandAt("please /rev", 10)).toBeNull();
+    expect(commandAt("/review changes", 8)).toBeNull();
+  });
+
+  it("filters by name and description with prefixes first", () => {
+    expect(matchCommands("review", commands).map((command) => command.name)).toEqual([
+      "review",
+      "skill:review",
+    ]);
+    expect(matchCommands("failing", commands).map((command) => command.name)).toEqual([
+      "fix-tests",
+    ]);
+    expect(matchCommands("", commands)).toHaveLength(3);
+  });
+
+  it("completes the command and leaves room for arguments", () => {
+    expect(insertCommand("/rev", 4, commands[0])).toEqual({
+      text: "/review ",
+      caret: 8,
+    });
+    expect(insertCommand("/rev now", 4, commands[0])).toEqual({
+      text: "/review now",
+      caret: 8,
+    });
   });
 });
 

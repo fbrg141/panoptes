@@ -1,7 +1,7 @@
 // The composer's text logic: @-mentions, file matching and labels. Pure, so
 // it is tested without a window.
 
-import type { ContextUsage, Draft, FileAttachment, ImageAttachment } from "./types";
+import type { CommandInfo, ContextUsage, Draft, FileAttachment, ImageAttachment } from "./types";
 
 /** An `@query` being typed: where its `@` is and what follows it. */
 export interface MentionQuery {
@@ -15,6 +15,45 @@ export function mentionAt(text: string, caret: number): MentionQuery | null {
   const match = /(^|\s)@([^\s@]*)$/.exec(text.slice(0, caret));
   if (!match) return null;
   return { start: caret - match[2].length - 1, query: match[2] };
+}
+
+/** A `/command` being typed as the message's first token. */
+export function commandAt(text: string, caret: number): MentionQuery | null {
+  const match = /^\/([^\s]*)$/.exec(text.slice(0, caret));
+  if (!match || caret === 0) return null;
+  return { start: 0, query: match[1] };
+}
+
+/** Narrows discoverable commands by every word typed. */
+export function matchCommands(query: string, commands: CommandInfo[], limit = 8): CommandInfo[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return commands
+    .filter((command) => {
+      const text = `${command.name} ${command.description ?? ""}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    })
+    .sort((a, b) => {
+      const q = query.toLowerCase();
+      return (
+        Number(b.name.toLowerCase().startsWith(q)) - Number(a.name.toLowerCase().startsWith(q)) ||
+        a.name.localeCompare(b.name)
+      );
+    })
+    .slice(0, limit);
+}
+
+/** Completes a slash command, leaving a space for its arguments. */
+export function insertCommand(
+  text: string,
+  caret: number,
+  command: CommandInfo,
+): { text: string; caret: number } {
+  const rest = text.slice(caret);
+  const inserted = /^\s/.test(rest) ? `/${command.name}` : `/${command.name} `;
+  return {
+    text: inserted + rest,
+    caret: `/${command.name} `.length,
+  };
 }
 
 /** Replaces the mention being typed with `@path`, returning the new text and
