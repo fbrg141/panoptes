@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
@@ -523,7 +523,7 @@ fn run_input(repo: &Path, args: &[&str], input: &[u8]) -> anyhow::Result<String>
 }
 
 fn git_output(repo: &Path, args: &[&str], input: &[u8]) -> anyhow::Result<Output> {
-    let mut command = Command::new("git");
+    let mut command = crate::git::command();
     // A file named `a*` is one literal path, never a pathspec matching `ab`.
     command
         .arg("--literal-pathspecs")
@@ -539,7 +539,7 @@ mod tests {
     use super::*;
 
     fn git(repo: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = crate::git::command()
             .arg("-C")
             .arg(repo)
             .args(args)

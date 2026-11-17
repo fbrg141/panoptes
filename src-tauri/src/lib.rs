@@ -607,6 +607,8 @@ fn add_logs_menu_item(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // SAFETY: nothing has started a thread yet.
+    unsafe { git::forget_inherited_repository() };
     // `pnpm tauri dev` inherits the terminal's PATH; an installed app does not.
     if !cfg!(debug_assertions) {
         shell_path::apply();
