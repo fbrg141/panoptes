@@ -4,6 +4,7 @@ import { recentSessions } from "../palette";
 import { useStore } from "../store";
 import type { Project, Session } from "../types";
 import { useUi } from "../ui";
+import { ModalLayer } from "./Overlay";
 
 /** New work is the first choice; recent sessions follow it. */
 export function sessionPickerGroups(sessions: Session[], projects: Project[]) {
@@ -55,21 +56,14 @@ export function SessionPicker({ paneId }: { paneId: string }) {
   };
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: Escape closes it from the keyboard inside
-    <div
-      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center bg-scrim px-6 pt-[12vh]"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close();
-      }}
-    >
+    <ModalLayer label="Choose a session" onClose={close} className="max-w-full">
       <CommandPalette
         className="overlay-panel"
         groups={groups}
         placeholder="Select a session for this pane"
         autoFocus
         onSelect={(id) => void select(id)}
-        onClose={close}
       />
-    </div>
+    </ModalLayer>
   );
 }
