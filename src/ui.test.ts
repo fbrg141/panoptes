@@ -39,6 +39,7 @@ describe("ui overlays", () => {
     const paneId = useUi.getState().splitFocused("vertical");
     expect(paneId).not.toBeNull();
     expect(useUi.getState().focusedPaneId).toBe(paneId);
+    expect(useUi.getState().overlay).toEqual({ type: "paneSession", paneId });
     expect(paneLeaves(useUi.getState().layout).map((pane) => pane.sessionKey)).toEqual([
       "pi:a",
       null,

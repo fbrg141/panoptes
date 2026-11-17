@@ -54,8 +54,13 @@ export const useUi = create<UiState>((set, get) => ({
   splitFocused: (direction) => {
     const result = splitPane(get().layout, get().focusedPaneId, direction);
     if (!result.newPaneId) return null;
-    set({ layout: result.layout, focusedPaneId: result.newPaneId });
-    return result.newPaneId;
+    const newPaneId = result.newPaneId;
+    set({
+      layout: result.layout,
+      focusedPaneId: newPaneId,
+      overlay: { type: "paneSession", paneId: newPaneId },
+    });
+    return newPaneId;
   },
   showSession: (sessionKey, paneId = get().focusedPaneId) => {
     const result = placeSession(get().layout, paneId, sessionKey);

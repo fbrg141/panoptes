@@ -80,9 +80,13 @@ export function Composer({
 
   const input = useRef<HTMLTextAreaElement>(null);
   const backdrop = useRef<HTMLDivElement>(null);
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
-  const [mentioned, setMentioned] = useState<ReadonlySet<string>>(new Set());
+  const [text, setText] = useState(() => useStore.getState().drafts[sessionKey]?.text ?? "");
+  const [attachments, setAttachments] = useState<FileAttachment[]>(
+    () => useStore.getState().drafts[sessionKey]?.attachments ?? [],
+  );
+  const [mentioned, setMentioned] = useState<ReadonlySet<string>>(
+    () => new Set(useStore.getState().drafts[sessionKey]?.mentioned ?? []),
+  );
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [picked, setPicked] = useState(0);
   const [files, setFiles] = useState<{ cwd: string; list: string[] } | null>(null);
@@ -95,9 +99,9 @@ export function Composer({
     attachments: FileAttachment[];
     mentioned: ReadonlySet<string>;
   }>({
-    text: "",
-    attachments: [],
-    mentioned: new Set(),
+    text,
+    attachments,
+    mentioned,
   });
   const key = useRef(sessionKey);
 
@@ -125,6 +129,22 @@ export function Composer({
       setMention(null);
     }
   }, [sessionKey, saveDraft]);
+
+  // Splitting or collapsing a pane remounts its composer even though the
+  // session stays open. Treat that like a session switch, not a cleared draft.
+  useEffect(
+    () => () => {
+      const current = key.current;
+      if (current && useStore.getState().conversations[current]) {
+        saveDraft(current, {
+          text: live.current.text,
+          attachments: live.current.attachments,
+          mentioned: [...live.current.mentioned],
+        });
+      }
+    },
+    [saveDraft],
+  );
 
   // Size after the controlled value is rendered, so sending also collapses it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the text value drives the measurement
