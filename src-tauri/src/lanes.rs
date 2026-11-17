@@ -769,7 +769,7 @@ fn restore_copy_files(project: &Project, lane: &Lane, path: &Path) -> anyhow::Re
         }
         let object = format!("{reference}:{relative}");
         let output = crate::git::output_with_timeout(
-            Command::new("git")
+            crate::git::command()
                 .arg("-C")
                 .arg(repo)
                 .args(["show", &object]),
@@ -964,7 +964,7 @@ impl Drop for CreationCleanup {
 fn checkpoint(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<(String, String)> {
     let tree = snapshot_tree(path, lane)?;
     let output = crate::git::output_with_timeout(
-        Command::new("git")
+        crate::git::command()
             .arg("-C")
             .arg(path)
             .args(["commit-tree", &tree, "-p", "HEAD", "-m"])
@@ -1071,7 +1071,7 @@ fn run(cwd: &Path, args: &[&str]) -> anyhow::Result<String> {
 }
 
 fn run_index(cwd: &Path, index: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let mut command = Command::new("git");
+    let mut command = crate::git::command();
     command
         .arg("-C")
         .arg(cwd)
@@ -1083,7 +1083,7 @@ fn run_index(cwd: &Path, index: &Path, args: &[&str]) -> anyhow::Result<String> 
 }
 
 fn git(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
-    let mut command = Command::new("git");
+    let mut command = crate::git::command();
     command.arg("-C").arg(cwd).args(args);
     crate::git::output_with_timeout(&mut command, None, LANE_GIT_TIMEOUT)
         .with_context(|| format!("Could not run git {}", args.join(" ")))
@@ -1121,7 +1121,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = crate::git::command()
             .arg("-C")
             .arg(dir)
             .args(args)

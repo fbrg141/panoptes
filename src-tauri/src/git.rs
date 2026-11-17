@@ -10,6 +10,59 @@ use anyhow::{Context, bail};
 /// credential helper or stuck subprocess cannot hold a lane open forever.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The variables that tie Git to one repository, as listed by
+/// `git rev-parse --local-env-vars`. Git itself clears these before it runs a
+/// command in another repository (a submodule, say).
+const REPOSITORY_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// A `git` command that ignores the repository variables Panoptes inherited,
+/// so `-C <path>` decides which repository it acts on. Variables the caller
+/// sets afterwards, such as a private `GIT_INDEX_FILE`, still apply. Every
+/// Git call goes through here, the tests' fixture helpers included, because
+/// `cargo test` run from a Git hook inherits the hook's `GIT_DIR`.
+pub fn command() -> Command {
+    let mut command = Command::new("git");
+    for name in REPOSITORY_VARS {
+        command.env_remove(name);
+    }
+    command
+}
+
+/// Removes the repository variables Panoptes inherited from whatever started
+/// it (a Git hook, a terminal inside `git rebase -x`, an editor's Git panel).
+/// Every child inherits Panoptes' environment, and Git obeys `GIT_DIR` over
+/// `-C`, so a leaked one would send lane, checkpoint and diff commands, and
+/// any agent's own Git calls, to that repository instead of the lane's.
+/// [`command`] covers Panoptes' own Git calls; this also covers the agents,
+/// setup scripts and shells it starts.
+///
+/// # Safety
+///
+/// Changes the process environment, so it must run before any other thread
+/// starts; [`crate::run`] calls it first.
+pub unsafe fn forget_inherited_repository() {
+    for name in REPOSITORY_VARS {
+        // SAFETY: the caller guarantees no other thread is running.
+        unsafe { std::env::remove_var(name) };
+    }
+}
+
 /// Runs a command to completion, draining both pipes while it runs and killing
 /// it at `timeout`. Optional input is written on its own thread for the same
 /// reason: a large batch request must not deadlock against a full stdout pipe.
@@ -108,6 +161,85 @@ fn stop_group(child: &mut std::process::Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Git's own list can grow; ours must keep up with the installed Git.
+    #[test]
+    fn repository_vars_cover_everything_git_lists() {
+        let output = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        for name in String::from_utf8(output.stdout).unwrap().lines() {
+            assert!(REPOSITORY_VARS.contains(&name), "{name} is not cleared");
+        }
+    }
+
+    /// The real regression: started with `GIT_DIR` pointing at another
+    /// repository, Panoptes' Git calls must still reach the lane's own. The
+    /// test re-runs itself as a fresh process so it can change that process'
+    /// environment before any thread starts.
+    #[test]
+    fn inherited_git_dir_does_not_redirect_git() {
+        const CHILD: &str = "PANOPTES_TEST_INHERITED_GIT_DIR";
+        let init = |dir: &std::path::Path| {
+            let status = command()
+                .args(["init", "--quiet"])
+                .arg(dir)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        if let Some(lane) = std::env::var_os(CHILD) {
+            let lane = std::path::PathBuf::from(lane);
+            let git_dir = |command: &mut Command| {
+                let result = output(
+                    command
+                        .arg("-C")
+                        .arg(&lane)
+                        .args(["rev-parse", "--absolute-git-dir"]),
+                    None,
+                )
+                .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                let found = String::from_utf8(result.stdout).unwrap();
+                std::path::Path::new(found.trim()).canonicalize().unwrap()
+            };
+            let expected = lane.join(".git").canonicalize().unwrap();
+            assert_eq!(git_dir(&mut command()), expected);
+            // SAFETY: this process runs only this test, and the test harness
+            // has no other thread that reads the environment.
+            unsafe { forget_inherited_repository() };
+            assert_eq!(git_dir(&mut Command::new("git")), expected);
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let (lane, other) = (root.path().join("lane"), root.path().join("other"));
+        init(&lane);
+        init(&other);
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "git::tests::inherited_git_dir_does_not_redirect_git",
+                "--test-threads=1",
+            ])
+            .env(CHILD, &lane)
+            .env("GIT_DIR", other.join(".git"))
+            .env("GIT_WORK_TREE", &other)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 
     #[test]
     fn reads_large_output_and_times_out_a_stuck_command() {
