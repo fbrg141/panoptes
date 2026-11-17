@@ -1,6 +1,7 @@
 import { Button, Icon, Input, LoopMark, StatusPill } from "@panoptes/design-system";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { SESSION_DRAG_TYPE, type SplitDirection } from "../panes";
+import type { SplitDirection } from "../panes";
+import { beginSessionDrag } from "../sessionDrag";
 import { useStore } from "../store";
 import { plainField } from "../textFields";
 import { buildTurns, looseApprovals } from "../turns";
@@ -98,15 +99,13 @@ export function ChatPane({
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: the header is a drag handle; splitting remains keyboard accessible */}
       <header
         className={`flex h-[var(--titlebar)] flex-none items-center gap-2 border-b px-3 ${
           focused ? "border-line-strong" : "border-line"
         }`}
-        draggable
-        onDragStart={(event) => {
-          event.dataTransfer.setData(SESSION_DRAG_TYPE, sessionKey);
-          event.dataTransfer.effectAllowed = "move";
+        onPointerDown={(event) => {
+          if (event.target instanceof Element && event.target.closest("button")) return;
+          beginSessionDrag(event, sessionKey);
         }}
       >
         {status === "running" && <LoopMark size={20} state="thinking" tone="current" />}

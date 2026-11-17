@@ -179,5 +179,3 @@ export function dropZoneAt(
   if (py > 0.75) return "bottom";
   return "center";
 }
-
-export const SESSION_DRAG_TYPE = "application/x-panoptes-session";

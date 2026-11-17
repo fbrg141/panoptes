@@ -1,15 +1,14 @@
 import { Button, Icon, LoopMark } from "@panoptes/design-system";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   type DropZone,
-  dropZoneAt,
   findPane,
   type PaneNode,
   paneLeaves,
-  SESSION_DRAG_TYPE,
   type SplitDirection,
   sessionPane,
 } from "../panes";
+import { sessionDragSnapshot, subscribeSessionDrag } from "../sessionDrag";
 import { useStore } from "../store";
 import { useUi } from "../ui";
 import { ChatPane } from "./ChatPane";
@@ -153,11 +152,9 @@ function SessionLeaf({
   onSplit: (direction: SplitDirection) => void;
   onClose: () => void;
 }) {
-  const [zone, setZone] = useState<DropZone | null>(null);
+  const drag = useSyncExternalStore(subscribeSessionDrag, sessionDragSnapshot, sessionDragSnapshot);
+  const zone = drag.paneId === paneId ? drag.zone : null;
   const session = useStore((s) => s.sessions.find((item) => item.key === sessionKey));
-
-  const zoneFor = (event: React.DragEvent<HTMLElement>) =>
-    dropZoneAt(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
 
   return (
     <section
@@ -167,24 +164,6 @@ function SessionLeaf({
       className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
-      onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes(SESSION_DRAG_TYPE)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        setZone(zoneFor(event));
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setZone(null);
-      }}
-      onDrop={(event) => {
-        const key = event.dataTransfer.getData(SESSION_DRAG_TYPE);
-        if (!key) return;
-        event.preventDefault();
-        const droppedAt = zone ?? zoneFor(event);
-        setZone(null);
-        useUi.getState().dropSession(key, paneId, droppedAt);
-        useStore.setState({ activeKey: key });
-      }}
     >
       {sessionKey ? (
         <ChatPane
@@ -213,11 +192,10 @@ function EmptyPane({
   canClose: boolean;
   onClose: () => void;
 }) {
-  const projects = useStore((s) => s.projects);
   const show = useUi((s) => s.open);
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+    <main className="relative flex flex-1 flex-col">
       {canClose && (
         <Button
           variant="ghost"
@@ -230,33 +208,21 @@ function EmptyPane({
           onClick={onClose}
         />
       )}
-      <LoopMark size={72} />
-      <div>
-        <h1 className="text-title">Session pane</h1>
-        <p className="mt-1 text-ink-muted">Select a session, or start a lane in a project.</p>
-      </div>
-      <div className="flex flex-wrap justify-center gap-2">
-        <Button
-          variant="secondary"
-          icon="session"
-          onClick={() => {
-            onActivate();
-            show({ type: "paneSession", paneId });
-          }}
-        >
-          Select session
-        </Button>
-        <Button
-          variant="primary"
-          icon="plus"
-          onClick={() => {
-            onActivate();
-            show({ type: "newLane", projectId: projects[0]?.id ?? 0 });
-          }}
-        >
-          New lane
-        </Button>
-      </div>
+      <button
+        type="button"
+        aria-label="Choose a session for this pane"
+        className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center hover:bg-surface"
+        onClick={() => {
+          onActivate();
+          show({ type: "paneSession", paneId });
+        }}
+      >
+        <LoopMark size={64} />
+        <div>
+          <h1 className="text-title">No session selected</h1>
+          <p className="mt-1 text-ink-muted">Click to choose a session for this pane.</p>
+        </div>
+      </button>
     </main>
   );
 }

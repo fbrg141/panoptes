@@ -577,6 +577,50 @@ pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
     })
 }
 
+/// What the normal archive path will do with an eligible lane's worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ArchivePreservation {
+    Clean,
+    Checkpoint,
+}
+
+/// Read-only preflight for cleanup suggestions. `None` means the lane needs
+/// its individual recovery flow (or cannot be read), so bulk cleanup leaves it
+/// alone. Archiving repeats every check before removing the worktree.
+pub fn archive_preservation(project: &Project, lane: &Lane) -> Option<ArchivePreservation> {
+    let worktree = sole_worktree(lane).ok()?;
+    if worktree.main_checkout {
+        return None;
+    }
+    let path = Path::new(&worktree.path);
+    let repo = Path::new(&project.repo);
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !repo.is_dir() {
+                return None;
+            }
+            if let Some(reference) = worktree.checkpoint_ref.as_deref()
+                && !ref_exists(repo, reference).ok()?
+            {
+                return None;
+            }
+            return Some(ArchivePreservation::Clean);
+        }
+        Err(_) => return None,
+    }
+    match check_lane_branch(path, lane, Removal::Archive).ok()? {
+        BranchCheck::Ready => {}
+        BranchCheck::Detached(_) => return None,
+    }
+    if worktree_status(path).ok()?.is_empty() {
+        Some(ArchivePreservation::Clean)
+    } else {
+        Some(ArchivePreservation::Checkpoint)
+    }
+}
+
 /// Archiving keeps the lane's branch, so it is only safe when the worktree
 /// is on that branch. Commits made on a detached HEAD or another branch would
 /// otherwise become unreachable once the worktree is removed, and so would a

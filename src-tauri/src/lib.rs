@@ -2,6 +2,7 @@
 //! UI as commands, with session events emitted as `session-event`.
 
 mod changes;
+mod cleanup;
 mod eventlog;
 mod files;
 mod git;
@@ -26,6 +27,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use changes::{Changes, Hunk, TreeRange};
+use cleanup::LaneCleanup;
 use service::{
     AdoptionOutcome, ArchiveLaneOutcome, DeleteLaneOutcome, Listing, OpenedSession, Service,
     ServiceResult,
@@ -285,6 +287,18 @@ async fn list_commands(state: State<'_, AppState>, key: String) -> ServiceResult
 }
 
 #[tauri::command]
+async fn set_cleanup_idle_days(
+    state: State<'_, AppState>,
+    days: u32,
+) -> ServiceResult<Preferences> {
+    logged(
+        &state,
+        "set_cleanup_idle_days",
+        state.service.set_cleanup_idle_days(days).await,
+    )
+}
+
+#[tauri::command]
 async fn set_model(
     state: State<'_, AppState>,
     key: String,
@@ -413,6 +427,15 @@ async fn lane_changes(state: State<'_, AppState>, lane_id: i64) -> ServiceResult
         &state,
         "lane_changes",
         state.service.lane_changes(lane_id).await,
+    )
+}
+
+#[tauri::command]
+async fn lane_cleanup(state: State<'_, AppState>, project_id: i64) -> ServiceResult<LaneCleanup> {
+    logged(
+        &state,
+        "lane_cleanup",
+        state.service.lane_cleanup(project_id).await,
     )
 }
 
@@ -643,6 +666,7 @@ pub fn run() {
             delete_profile,
             set_model_favorite,
             set_model_hidden,
+            set_cleanup_idle_days,
             set_model,
             set_thinking_level,
             list_files,
@@ -656,6 +680,7 @@ pub fn run() {
             remove_project,
             create_lane,
             lane_changes,
+            lane_cleanup,
             file_hunks,
             cancel_lane_creation,
             archive_lane,

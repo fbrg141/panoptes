@@ -86,13 +86,13 @@ afterEach(() => {
   container.remove();
 });
 
-function render(sessions: Session[]) {
+function render(sessions: Session[], laneOverride: Partial<Lane> = {}) {
   act(() => {
     root.render(
       <nav aria-label="Lanes">
         <ul>
           <LaneItem
-            lane={lane}
+            lane={{ ...lane, ...laneOverride }}
             navigation={navigation(sessions)}
             onWork={vi.fn()}
             onAction={vi.fn()}
@@ -133,6 +133,28 @@ describe("lane main session card", () => {
     click(cardRows[0]);
     expect(open).toHaveBeenCalledTimes(1);
     expect(open).toHaveBeenCalledWith(main);
+  });
+
+  it("marks main and isolated checkouts on a session-backed lane", () => {
+    const mainWorktree = [{ ...lane.worktrees[0], mainCheckout: true }];
+    render([main], { worktrees: mainWorktree });
+
+    expect(container.querySelector("[data-checkout='main']")?.className).toContain("text-waiting");
+    expect(container.textContent).toContain("Main checkout");
+
+    render([main]);
+    expect(container.querySelector("[data-checkout='worktree']")?.className).toContain(
+      "text-ink-muted",
+    );
+    expect(container.textContent).toContain("panoptes/parser");
+  });
+
+  it("marks the checkout kind on an empty lane too", () => {
+    render([], { worktrees: [{ ...lane.worktrees[0], mainCheckout: true }] });
+    expect(container.querySelector("[data-checkout='main']")).not.toBeNull();
+
+    render([]);
+    expect(container.querySelector("[data-checkout='worktree']")).not.toBeNull();
   });
 
   it("discloses only subsessions for a multi-session lane, even when one is more recent", () => {

@@ -118,12 +118,29 @@ let lanes: Lane[] = [
       },
     ],
   },
+  {
+    id: 2,
+    projectId: 1,
+    name: "old-documentation",
+    task: "Update the old documentation",
+    branch: "panoptes/old-documentation",
+    state: "active",
+    worktrees: [
+      {
+        projectId: 1,
+        path: "/Users/you/Panoptes/lanes/old-documentation/panoptes",
+        mainCheckout: false,
+        checkpointRef: null,
+      },
+    ],
+  },
 ];
-let nextLaneId = 2;
+let nextLaneId = 3;
 
 /** What each lane's worktree holds; lanes created here start empty. */
 const laneWork: Record<number, { changedFiles: number; commitsAhead: number | null }> = {
   1: { changedFiles: 3, commitsAhead: 1 },
+  2: { changedFiles: 2, commitsAhead: 0 },
 };
 let nextSessionId = 2;
 let preferences: Preferences = {
@@ -138,6 +155,7 @@ let preferences: Preferences = {
   ],
   favoriteModels: ["anthropic/claude-sonnet-4-5"],
   hiddenModels: [],
+  cleanupIdleDays: 4,
 };
 let nextProfileId = 2;
 
@@ -683,6 +701,41 @@ export function installMockBackend() {
           lanes.push(lane);
           return lane;
         }
+        case "lane_cleanup": {
+          const projectId = (args as { projectId: number }).projectId;
+          const owned = lanes.flatMap((lane) =>
+            lane.state === "active"
+              ? lane.worktrees.filter((tree) => !tree.mainCheckout).map((tree) => ({ lane, tree }))
+              : [],
+          );
+          const usage = (entries: typeof owned) => ({
+            worktrees: entries.length,
+            bytes: entries.reduce(
+              (total, entry) => total + (entry.lane.id === 2 ? 5 * 1024 ** 3 : 512 * 1024 ** 2),
+              0,
+            ),
+          });
+          return {
+            project: usage(owned.filter((entry) => entry.tree.projectId === projectId)),
+            total: usage(owned),
+            idleDays: preferences.cleanupIdleDays,
+            candidates: lanes
+              .filter(
+                (lane) =>
+                  lane.id === 2 &&
+                  lane.projectId === projectId &&
+                  lane.state === "active" &&
+                  preferences.cleanupIdleDays <= 9,
+              )
+              .map((lane) => ({
+                lane,
+                lastActivity: now - 9 * 24 * hour,
+                bytes: 5 * 1024 ** 3,
+                preservation: (laneWork[lane.id]?.changedFiles ?? 0) > 0 ? "checkpoint" : "clean",
+              })),
+            errors: [],
+          };
+        }
         case "archive_lane": {
           const request = args as unknown as { id: number; strategy: string | null };
           const lane = lanes.find((item) => item.id === request.id);
@@ -844,6 +897,14 @@ export function installMockBackend() {
               ? [...new Set([...preferences.hiddenModels, request.modelId])]
               : preferences.hiddenModels.filter((id) => id !== request.modelId),
           };
+          return preferences;
+        }
+        case "set_cleanup_idle_days": {
+          const days = (args as { days: number }).days;
+          if (!Number.isInteger(days) || days < 1 || days > 365) {
+            throw { kind: "other", message: "Idle lane threshold must be between 1 and 365 days" };
+          }
+          preferences = { ...preferences, cleanupIdleDays: days };
           return preferences;
         }
         case "set_model": {
