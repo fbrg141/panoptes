@@ -1,5 +1,6 @@
 import { Button, Icon, LoopMark } from "@panoptes/design-system";
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   type DropZone,
   findPane,
@@ -18,8 +19,10 @@ export function SessionWorkspace() {
   const layout = useUi((s) => s.layout);
   const focusedPaneId = useUi((s) => s.focusedPaneId);
   const activeKey = useStore((s) => s.activeKey);
-  const conversations = useStore((s) => s.conversations);
-  const previousConversations = useRef(conversations);
+  // Only which sessions are open matters here. Subscribing to the
+  // conversations themselves would re-render every pane on every token.
+  const openKeys = useStore(useShallow((s) => Object.keys(s.conversations)));
+  const previousKeys = useRef(openKeys);
 
   // Creating a session still goes through the store's active key. Adopt that
   // result in the focused pane; ordinary row and palette selections also place
@@ -31,14 +34,14 @@ export function SessionWorkspace() {
   // Closing or archiving a session forgets its conversation. Remove a pane
   // only after a conversation disappears, never while its first open is pending.
   useEffect(() => {
-    const previous = previousConversations.current;
-    previousConversations.current = conversations;
-    for (const key of Object.keys(previous)) {
-      if (conversations[key]) continue;
+    const previous = previousKeys.current;
+    previousKeys.current = openKeys;
+    for (const key of previous) {
+      if (openKeys.includes(key)) continue;
       const pane = sessionPane(useUi.getState().layout, key);
       if (pane) closeAndFocus(pane.id);
     }
-  }, [conversations]);
+  }, [openKeys]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">

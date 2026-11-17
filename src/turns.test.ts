@@ -5,6 +5,7 @@ import {
   formatDuration,
   groupLabel,
   looseApprovals,
+  sameTurn,
   summarizeWork,
   toolImages,
   toolSteps,
@@ -194,5 +195,39 @@ describe("summarizeWork", () => {
 describe("formatDuration", () => {
   it("reads like a clock for long runs", () => {
     expect([400, 8_200, 72_000].map(formatDuration)).toEqual(["0.4s", "8s", "1m 12s"]);
+  });
+});
+
+describe("sameTurn", () => {
+  const finished = [
+    message("u1", "user", [text("First")]),
+    message("a1", "assistant", [call("t1", "edit", "a.ts"), text("Done")]),
+  ];
+  const streaming = (reply: string) =>
+    turnsOf(
+      [
+        ...finished,
+        message("u2", "user", [text("Second")]),
+        message("a2", "assistant", [text(reply)]),
+      ],
+      true,
+    );
+
+  it("treats a finished turn as unchanged when another turn streams", () => {
+    const before = streaming("Hel");
+    // The reducer keeps every untouched message by identity.
+    const after = streaming("Hello");
+    expect(sameTurn(before[0], after[0])).toBe(true);
+    expect(sameTurn(before[1], after[1])).toBe(false);
+  });
+
+  it("notices a changed tool call and a turn finishing", () => {
+    const base = turnsOf(finished);
+    const updated = turnsOf([
+      finished[0],
+      message("a1", "assistant", [call("t1", "edit", "a.ts", { status: "failed" }), text("Done")]),
+    ]);
+    expect(sameTurn(base[0], updated[0])).toBe(false);
+    expect(sameTurn(turnsOf(finished, true)[0], base[0])).toBe(false);
   });
 });

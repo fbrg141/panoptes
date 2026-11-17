@@ -142,6 +142,42 @@ export function buildTurns(conversation: Source): Turn[] {
   return turns;
 }
 
+/**
+ * Whether two builds of a turn would render the same. The reducer keeps
+ * unchanged messages and blocks by identity, so the fields of a step can be
+ * compared by reference: a turn that did not receive the latest token
+ * compares equal, while only the streaming one differs.
+ */
+export function sameTurn(a: Turn, b: Turn): boolean {
+  return (
+    a === b ||
+    (a.key === b.key &&
+      a.prompt === b.prompt &&
+      a.live === b.live &&
+      a.stopped === b.stopped &&
+      a.startedAt === b.startedAt &&
+      a.endedAt === b.endedAt &&
+      sameSteps(a.work, b.work) &&
+      sameSteps(a.answer, b.answer))
+  );
+}
+
+function sameSteps(a: Step[], b: Step[]): boolean {
+  return a.length === b.length && a.every((step, i) => sameStep(step, b[i]));
+}
+
+function sameStep(a: Step, b: Step): boolean {
+  if (a === b) return true;
+  if (a.type !== b.type) return false;
+  if (a.type === "group" && b.type === "group") {
+    return a.key === b.key && sameSteps(a.steps, b.steps);
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const fields = Object.keys(left);
+  return fields.length === Object.keys(right).length && fields.every((f) => left[f] === right[f]);
+}
+
 /** Runs of two or more successful read and search calls without images become one group. */
 function groupQuiet(steps: Step[]): Step[] {
   const out: Step[] = [];
