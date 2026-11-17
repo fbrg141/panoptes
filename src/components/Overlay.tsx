@@ -1,4 +1,4 @@
-import { Icon } from "@panoptes/design-system";
+import { Dialog, type DialogProps, Icon } from "@panoptes/design-system";
 import { useEffect, useRef } from "react";
 import { trapFocus } from "../modal";
 
@@ -6,8 +6,13 @@ import { trapFocus } from "../modal";
  * Give a panel the keyboard behaviour a modal owes (see `trapFocus`): focus
  * inside on open, Tab cycling inside, Escape to close, focus back on close.
  */
-export function useModal(onClose: (() => void) | undefined) {
+export function useModal(
+  onClose: (() => void) | undefined,
+  /** Finds the panel within the element the ref is on; that element by default. */
+  pick: (element: HTMLElement) => HTMLElement | null = (element) => element,
+) {
   const panel = useRef<HTMLDivElement>(null);
+  const find = useRef(pick);
   const close = useRef(onClose);
   close.current = onClose;
   // What had focus before the panel rendered: by the time effects run, an
@@ -17,8 +22,9 @@ export function useModal(onClose: (() => void) | undefined) {
     opener.current = document.activeElement;
   }
   useEffect(() => {
-    if (!panel.current) return;
-    return trapFocus(panel.current, () => close.current, opener.current);
+    const target = panel.current && find.current(panel.current);
+    if (!target) return;
+    return trapFocus(target, () => close.current, opener.current);
   }, []);
   return panel;
 }
@@ -94,6 +100,37 @@ export function Overlay({
     >
       {children}
     </ModalLayer>
+  );
+}
+
+/**
+ * The design system's confirmation dialog with the modal keyboard contract.
+ * The dialog itself handles Escape only while focus is inside it and never
+ * moves focus there, so the trap holds its panel; a close it and the trap
+ * both start on one Escape runs once.
+ */
+export function ModalDialog(props: DialogProps) {
+  const { onClose } = props;
+  const closing = useRef(false);
+  const once = onClose
+    ? () => {
+        if (closing.current) return;
+        closing.current = true;
+        queueMicrotask(() => {
+          closing.current = false;
+        });
+        onClose();
+      }
+    : undefined;
+  const layer = useModal(once, (element) => {
+    const panel = element.querySelector<HTMLElement>('[role="dialog"]');
+    panel?.setAttribute("tabindex", "-1");
+    return panel;
+  });
+  return (
+    <div ref={layer} className="contents">
+      <Dialog {...props} onClose={once} />
+    </div>
   );
 }
 

@@ -2,10 +2,10 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "../store";
 import { useUi } from "../ui";
-import { Overlay } from "./Overlay";
+import { ModalDialog, Overlay } from "./Overlay";
 import { SearchPalette } from "./SearchPalette";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 
@@ -49,6 +49,19 @@ function App() {
   );
 }
 
+function Confirm({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) return null;
+  return (
+    <ModalDialog
+      title="Delete lane?"
+      onClose={onClose}
+      actions={<button type="button">Delete permanently</button>}
+    >
+      <p>Gone for good.</p>
+    </ModalDialog>
+  );
+}
+
 describe("modal overlays", () => {
   it("gives the search palette a modal dialog that Escape closes", () => {
     useUi.setState({ overlay: { type: "search" } });
@@ -84,5 +97,20 @@ describe("modal overlays", () => {
     );
     press("Escape");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("holds the keyboard in a confirmation dialog and closes it once on Escape", () => {
+    const onClose = vi.fn();
+    act(() => root.render(<Confirm open onClose={onClose} />));
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.contains(document.activeElement)).toBe(true);
+    for (let i = 0; i < 4; i++) {
+      press("Tab");
+      expect(dialog?.contains(document.activeElement)).toBe(true);
+    }
+    press("Escape");
+    expect(onClose).toHaveBeenCalledOnce();
+    act(() => root.render(<Confirm open={false} onClose={onClose} />));
+    expect(document.activeElement).toBe(opener);
   });
 });
