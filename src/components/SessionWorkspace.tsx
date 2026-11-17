@@ -12,6 +12,7 @@ import { sessionDragSnapshot, subscribeSessionDrag } from "../sessionDrag";
 import { useStore } from "../store";
 import { useUi } from "../ui";
 import { ChatPane } from "./ChatPane";
+import { CrashNotice, ErrorBoundary } from "./ErrorBoundary";
 
 /** The tiled session area. Pane layout is view state; the store owns sessions. */
 export function SessionWorkspace() {
@@ -165,17 +166,40 @@ function SessionLeaf({
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
     >
-      {sessionKey ? (
-        <ChatPane
-          sessionKey={sessionKey}
-          focused={focused}
-          onSplit={onSplit}
-          onClose={onClose}
-          canClose={multiple}
-        />
-      ) : (
-        <EmptyPane paneId={paneId} onActivate={onActivate} canClose={multiple} onClose={onClose} />
-      )}
+      {/* A crash stays in this pane; picking another session clears it. */}
+      <ErrorBoundary
+        label="session pane"
+        resetKey={sessionKey}
+        fallback={({ error, reset }) => (
+          <CrashNotice title="This pane hit an error" error={error}>
+            <Button variant="secondary" size="sm" onClick={reset}>
+              Try again
+            </Button>
+            {multiple && (
+              <Button variant="ghost" size="sm" onClick={onClose}>
+                Close pane
+              </Button>
+            )}
+          </CrashNotice>
+        )}
+      >
+        {sessionKey ? (
+          <ChatPane
+            sessionKey={sessionKey}
+            focused={focused}
+            onSplit={onSplit}
+            onClose={onClose}
+            canClose={multiple}
+          />
+        ) : (
+          <EmptyPane
+            paneId={paneId}
+            onActivate={onActivate}
+            canClose={multiple}
+            onClose={onClose}
+          />
+        )}
+      </ErrorBoundary>
       {zone && <DropIndicator zone={zone} empty={!sessionKey} />}
     </section>
   );
