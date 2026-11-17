@@ -1,5 +1,5 @@
 import { Button, Diff, Icon, LoopMark, StatusPill, Terminal } from "@panoptes/design-system";
-import { type ReactNode, useState } from "react";
+import { memo, type ReactNode, useMemo, useState } from "react";
 import { diffStat, editDiff } from "../diff";
 import {
   answerText,
@@ -8,6 +8,7 @@ import {
   groupLabel,
   outputText,
   type Step,
+  sameTurn,
   summarizeWork,
   type ToolStep,
   type Turn,
@@ -30,32 +31,38 @@ const TOOL_ICON: Record<ToolKind, string> = {
   other: "command",
 };
 
-/** One prompt and the agent's reply: its work as quiet rows, then its answer. */
-export function TurnView({ turn }: { turn: Turn }) {
-  const summary = turn.live ? null : summarizeWork(turn.work);
-  return (
-    <article className="group/turn flex flex-col gap-1">
-      {turn.prompt && <Prompt message={turn.prompt} />}
-      <div className="flex flex-col gap-1 pt-1">
-        {summary ? (
-          <Folded title={summary.title} detail={summary.detail} images={toolImages(turn.work)}>
-            <Steps steps={turn.work} live={false} />
-          </Folded>
-        ) : (
-          <Steps steps={turn.work} live={turn.live} />
-        )}
-        <Steps steps={turn.answer} live={turn.live} />
-        {turn.stopped && (
-          <div className="flex items-center gap-2 text-ink-muted">
-            <Icon name="square" size={14} />
-            Stopped
-          </div>
-        )}
-      </div>
-      {!turn.live && <Footer turn={turn} />}
-    </article>
-  );
-}
+/**
+ * One prompt and the agent's reply: its work as quiet rows, then its answer.
+ * Memoized by content, so while one turn streams the finished ones stay put.
+ */
+export const TurnView = memo(
+  function TurnView({ turn }: { turn: Turn }) {
+    const summary = turn.live ? null : summarizeWork(turn.work);
+    return (
+      <article className="group/turn flex flex-col gap-1">
+        {turn.prompt && <Prompt message={turn.prompt} />}
+        <div className="flex flex-col gap-1 pt-1">
+          {summary ? (
+            <Folded title={summary.title} detail={summary.detail} images={toolImages(turn.work)}>
+              <Steps steps={turn.work} live={false} />
+            </Folded>
+          ) : (
+            <Steps steps={turn.work} live={turn.live} />
+          )}
+          <Steps steps={turn.answer} live={turn.live} />
+          {turn.stopped && (
+            <div className="flex items-center gap-2 text-ink-muted">
+              <Icon name="square" size={14} />
+              Stopped
+            </div>
+          )}
+        </div>
+        {!turn.live && <Footer turn={turn} />}
+      </article>
+    );
+  },
+  (prev, next) => sameTurn(prev.turn, next.turn),
+);
 
 function Prompt({ message }: { message: Message }) {
   const text = message.blocks
@@ -180,8 +187,9 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
   const { call } = step;
   const { status } = call;
   const running = status === "running" || (live && status === "pending");
-  const diffs = editsOf(call).map(editDiff);
-  const stat = diffs.length > 0 ? diffStat(diffs) : null;
+  // The line diff is the costly part of a row; redo it only when the call changes.
+  const diffs = useMemo(() => editsOf(call).map(editDiff), [call]);
+  const stat = useMemo(() => (diffs.length > 0 ? diffStat(diffs) : null), [diffs]);
   const row = (
     <Disclosure
       icon={TOOL_ICON[call.kind]}
