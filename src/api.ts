@@ -12,6 +12,7 @@ import type {
   Hunk,
   ImageAttachment,
   Lane,
+  LaneCleanup,
   Listing,
   Message,
   ModelInfo,
@@ -70,6 +71,7 @@ export const api = {
     invoke<Preferences>("set_model_favorite", { modelId, favorite }),
   setModelHidden: (modelId: string, hidden: boolean) =>
     invoke<Preferences>("set_model_hidden", { modelId, hidden }),
+  setCleanupIdleDays: (days: number) => invoke<Preferences>("set_cleanup_idle_days", { days }),
   setModel: (key: string, modelId: string) =>
     invoke<SessionSettings>("set_model", { key, modelId }),
   setThinkingLevel: (key: string, level: string) =>
@@ -88,6 +90,7 @@ export const api = {
   createLane: (projectId: number, task: string, mainCheckout: boolean) =>
     invoke<Lane>("create_lane", { projectId, task, mainCheckout }),
   laneChanges: (laneId: number) => invoke<Changes>("lane_changes", { laneId }),
+  laneCleanup: (projectId: number) => invoke<LaneCleanup>("lane_cleanup", { projectId }),
   fileHunks: (laneId: number, path: string, range: TreeRange) =>
     invoke<Hunk[]>("file_hunks", { laneId, path, range }),
   cancelLaneCreation: (projectId: number) => invoke<void>("cancel_lane_creation", { projectId }),

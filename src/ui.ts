@@ -24,6 +24,7 @@ export type Overlay =
   | { type: "shortcuts" }
   | { type: "paneSession"; paneId: string }
   | { type: "settings" }
+  | { type: "cleanup"; projectId: number }
   | { type: "newLane"; projectId: number; prompt?: string };
 
 const initialPane = singlePane();

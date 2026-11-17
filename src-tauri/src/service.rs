@@ -17,6 +17,7 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::changes::{self, Changes, DiffOptions, Hunk, TreeRange};
+use crate::cleanup::{self, IdleLane, LaneCleanup};
 use crate::eventlog::EventLog;
 use crate::lanes::{self, ArchiveResult, ArchiveStrategy, DeleteResult, DetachedHead, LaneWork};
 use crate::projects::{self, Location};
@@ -1379,6 +1380,12 @@ impl Service {
         self.preferences().await
     }
 
+    pub async fn set_cleanup_idle_days(&self, days: u32) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.set_cleanup_idle_days(days))
+            .await?;
+        self.preferences().await
+    }
+
     /// The lane's complete diff against its merge-base, without patch text.
     pub async fn lane_changes(&self, lane_id: i64) -> ServiceResult<Changes> {
         let (project, lane) = self
@@ -1656,6 +1663,119 @@ impl Service {
         if let Some(cancelled) = self.lane_cancellations.lock().unwrap().get(&project_id) {
             cancelled.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Disk usage and safely archivable idle lanes for one project. This is
+    /// deliberately on demand: measuring worktrees is too costly for `list`.
+    pub async fn lane_cleanup(&self, project_id: i64) -> ServiceResult<LaneCleanup> {
+        let listing = self.list().await;
+        let activity_complete = listing.errors.is_empty();
+        let (idle_days, creation_times) = self
+            .with_store(move |store| {
+                store.project(project_id)?;
+                Ok((
+                    store.preferences()?.cleanup_idle_days,
+                    store.lane_creation_times()?,
+                ))
+            })
+            .await
+            .map_err(err)?;
+        let created: HashMap<i64, i64> = creation_times.into_iter().collect();
+        let active: Vec<(Project, Lane)> = listing
+            .lanes
+            .iter()
+            .filter(|lane| lane.state == LaneState::Active)
+            .filter_map(|lane| {
+                let project = listing
+                    .projects
+                    .iter()
+                    .find(|project| project.id == lane.project_id)?;
+                Some((project.clone(), lane.clone()))
+            })
+            .collect();
+        let scan = tokio::task::spawn_blocking(move || cleanup::scan(project_id, &active))
+            .await
+            .context("The worktree cleanup scan stopped")
+            .map_err(err)?;
+
+        // Starting sessions are not listed as open yet. Include both sets so
+        // cleanup can never archive a lane under a process that is starting.
+        let mut in_use: HashSet<i64> = self
+            .starting
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|lane| *lane)
+            .collect();
+        in_use.extend(
+            self.open
+                .lock()
+                .await
+                .values()
+                .filter_map(|session| session.lane),
+        );
+        let busy_lanes = self.busy_lanes.lock().unwrap().clone();
+        let busy_writers: HashSet<i64> = listing
+            .navigation
+            .iter()
+            .filter(|entry| entry.busy_writer.is_some())
+            .map(|entry| entry.lane_id)
+            .collect();
+
+        let mut candidates = Vec::new();
+        if activity_complete {
+            let now = now_ms();
+            for lane in listing
+                .lanes
+                .iter()
+                .filter(|lane| lane.project_id == project_id && lane.state == LaneState::Active)
+            {
+                if in_use.contains(&lane.id)
+                    || busy_lanes.contains(&lane.id)
+                    || busy_writers.contains(&lane.id)
+                {
+                    continue;
+                }
+                let last_activity = listing
+                    .sessions
+                    .iter()
+                    .filter(|session| session.lane_id == Some(lane.id))
+                    .fold(
+                        created.get(&lane.id).copied().unwrap_or(0),
+                        |latest, session| latest.max(session.updated_at),
+                    );
+                if !cleanup::is_idle(last_activity, now, idle_days) {
+                    continue;
+                }
+                let Some(scanned) = scan.by_lane.get(&lane.id) else {
+                    continue;
+                };
+                let Some(preservation) = scanned.preservation else {
+                    continue;
+                };
+                candidates.push(IdleLane {
+                    lane: lane.clone(),
+                    last_activity,
+                    bytes: scanned.bytes,
+                    preservation,
+                });
+            }
+        }
+        candidates.sort_by(|a, b| {
+            b.bytes
+                .unwrap_or(0)
+                .cmp(&a.bytes.unwrap_or(0))
+                .then_with(|| a.last_activity.cmp(&b.last_activity))
+        });
+        let mut errors = listing.errors;
+        errors.extend(scan.errors);
+        Ok(LaneCleanup {
+            project: scan.project,
+            total: scan.total,
+            idle_days,
+            candidates,
+            errors,
+        })
     }
 
     /// Archives a clean lane immediately. A dirty one is returned unchanged
@@ -3193,6 +3313,141 @@ mod tests {
         f.service.create(a.id, "fake").await.unwrap();
         let sink = f.harness.sinks.lock().unwrap()[0].clone();
         (code, a, b, sink)
+    }
+
+    #[tokio::test]
+    async fn cleanup_measures_worktrees_and_offers_only_safe_idle_lanes() {
+        let f = fixture(FakeHarness::default());
+        let (_code, a, b, _sink) = two_lanes(&f).await;
+        let c = f
+            .service
+            .create_lane(a.project_id, "Write the docs".into(), false)
+            .await
+            .unwrap();
+        let main = f
+            .service
+            .create_lane(a.project_id, "Use the checkout".into(), true)
+            .await
+            .unwrap();
+        let other_repo = _code.path().join("other");
+        std::fs::create_dir_all(&other_repo).unwrap();
+        git(
+            &other_repo,
+            &["init", "--quiet", "--initial-branch", "trunk"],
+        );
+        git(
+            &other_repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let other_project = f
+            .service
+            .add_project(other_repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let _other = f
+            .service
+            .create_lane(other_project.id, "Another project's lane".into(), false)
+            .await
+            .unwrap();
+        let old = now_ms() - 5 * 24 * 60 * 60 * 1_000;
+        for lane in [&a, &b, &c, &main] {
+            f.service
+                .store
+                .lock()
+                .unwrap()
+                .set_lane_created_at(lane.id, old)
+                .unwrap();
+        }
+        std::fs::write(Path::new(&b.worktrees[0].path).join("dirty.txt"), "keep me").unwrap();
+
+        let cleanup = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(cleanup.idle_days, 4);
+        assert_eq!(cleanup.project.worktrees, 3);
+        assert_eq!(cleanup.total.worktrees, 4);
+        assert!(cleanup.project.bytes > 0);
+        assert!(cleanup.total.bytes > cleanup.project.bytes);
+        assert!(cleanup.errors.is_empty(), "{:?}", cleanup.errors);
+        assert_eq!(cleanup.candidates.len(), 2);
+        let dirty = cleanup
+            .candidates
+            .iter()
+            .find(|candidate| candidate.lane.id == b.id)
+            .unwrap();
+        assert_eq!(dirty.preservation, lanes::ArchivePreservation::Checkpoint);
+        assert!(dirty.bytes.unwrap() > 0);
+        let clean = cleanup
+            .candidates
+            .iter()
+            .find(|candidate| candidate.lane.id == c.id)
+            .unwrap();
+        assert_eq!(clean.preservation, lanes::ArchivePreservation::Clean);
+        // `a` has an open session; the main checkout is not reclaimable.
+        assert!(
+            cleanup
+                .candidates
+                .iter()
+                .all(|candidate| candidate.lane.id != a.id && candidate.lane.id != main.id)
+        );
+
+        git(
+            Path::new(&b.worktrees[0].path),
+            &["switch", "--quiet", "-c", "somebody-elses-branch"],
+        );
+        let cleanup = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(
+            cleanup
+                .candidates
+                .iter()
+                .map(|candidate| candidate.lane.id)
+                .collect::<Vec<_>>(),
+            [c.id]
+        );
+
+        git(
+            Path::new(&b.worktrees[0].path),
+            &["checkout", "--quiet", "--detach"],
+        );
+        let detached = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(
+            detached
+                .candidates
+                .iter()
+                .map(|candidate| candidate.lane.id)
+                .collect::<Vec<_>>(),
+            [c.id]
+        );
+
+        let preferences = f.service.set_cleanup_idle_days(7).await.unwrap();
+        assert_eq!(preferences.cleanup_idle_days, 7);
+        let cleanup = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(cleanup.idle_days, 7);
+        assert!(cleanup.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_does_not_guess_idle_activity_when_sessions_cannot_be_listed() {
+        let f = fixture(FakeHarness {
+            fail_listing: true,
+            ..Default::default()
+        });
+        let (_code, _a, b, _sink) = two_lanes(&f).await;
+        f.service
+            .store
+            .lock()
+            .unwrap()
+            .set_lane_created_at(b.id, now_ms() - 5 * 24 * 60 * 60 * 1_000)
+            .unwrap();
+
+        let cleanup = f.service.lane_cleanup(b.project_id).await.unwrap();
+        assert!(cleanup.candidates.is_empty());
+        assert!(
+            cleanup
+                .errors
+                .iter()
+                .any(|error| error.contains("Could not list fake sessions")),
+            "{:?}",
+            cleanup.errors
+        );
     }
 
     fn edit(id: &str, path: &str) -> HarnessEvent {

@@ -71,6 +71,10 @@ const MIGRATIONS: &[Migration] = &[
         apply: v6_session_instructions,
         committed: |_| {},
     },
+    Migration {
+        apply: v7_lane_cleanup_preferences,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -204,6 +208,23 @@ fn v6_session_instructions(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
         "ALTER TABLE sessions ADD COLUMN instructions TEXT
          CHECK (instructions IS NULL OR instructions <> '');",
     )?;
+    Ok(())
+}
+
+const DEFAULT_CLEANUP_IDLE_DAYS: u32 = 4;
+pub const MAX_CLEANUP_IDLE_DAYS: u32 = 365;
+
+/// Lane cleanup is opt-in at the archive button. This setting only controls
+/// which inactive worktrees the cleanup dialog offers.
+fn v7_lane_cleanup_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(&format!(
+        "CREATE TABLE lane_cleanup_preferences (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            idle_days INTEGER NOT NULL CHECK (idle_days BETWEEN 1 AND {MAX_CLEANUP_IDLE_DAYS})
+        ) STRICT;
+        INSERT INTO lane_cleanup_preferences (singleton, idle_days)
+        VALUES (1, {DEFAULT_CLEANUP_IDLE_DAYS});"
+    ))?;
     Ok(())
 }
 
@@ -374,6 +395,8 @@ pub struct Preferences {
     /// Model ids in the order they were favorited.
     pub favorite_models: Vec<String>,
     pub hidden_models: Vec<String>,
+    /// Inactive worktree lanes offered by cleanup after this many days.
+    pub cleanup_idle_days: u32,
 }
 
 pub struct Store {
@@ -453,10 +476,16 @@ impl Store {
         let hidden_models = statement
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
+        let cleanup_idle_days = self.conn.query_row(
+            "SELECT idle_days FROM lane_cleanup_preferences WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
         Ok(Preferences {
             profiles,
             favorite_models,
             hidden_models,
+            cleanup_idle_days,
         })
     }
 
@@ -536,6 +565,17 @@ impl Store {
                 [model_id],
             )?;
         }
+        Ok(())
+    }
+
+    pub fn set_cleanup_idle_days(&self, days: u32) -> anyhow::Result<()> {
+        if !(1..=MAX_CLEANUP_IDLE_DAYS).contains(&days) {
+            bail!("Idle lane threshold must be between 1 and {MAX_CLEANUP_IDLE_DAYS} days");
+        }
+        self.conn.execute(
+            "UPDATE lane_cleanup_preferences SET idle_days = ?1 WHERE singleton = 1",
+            [days],
+        )?;
         Ok(())
     }
 
@@ -663,6 +703,24 @@ impl Store {
             .context("That lane no longer exists")?;
         lane.worktrees = self.lane_worktrees(id)?;
         Ok(lane)
+    }
+
+    /// Creation is the activity baseline for a lane that has no session yet.
+    pub fn lane_creation_times(&self) -> anyhow::Result<Vec<(i64, i64)>> {
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT id, created_at FROM lanes")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    #[cfg(test)]
+    pub fn set_lane_created_at(&self, id: i64, created_at: i64) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE lanes SET created_at = ?2 WHERE id = ?1",
+            rusqlite::params![id, created_at],
+        )?;
+        Ok(())
     }
 
     fn lane_worktrees(&self, lane_id: i64) -> anyhow::Result<Vec<LaneWorktree>> {
@@ -1698,6 +1756,13 @@ mod tests {
         );
         assert_eq!(preferences.favorite_models, ["anthropic/claude-sonnet"]);
         assert_eq!(preferences.hidden_models, ["local/qwen"]);
+        assert_eq!(preferences.cleanup_idle_days, 4);
+        store.set_cleanup_idle_days(9).unwrap();
+        assert!(store.set_cleanup_idle_days(0).is_err());
+        assert!(store.set_cleanup_idle_days(366).is_err());
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.preferences().unwrap().cleanup_idle_days, 9);
 
         store
             .save_profile(

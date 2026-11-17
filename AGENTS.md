@@ -15,6 +15,7 @@ this way.
 | `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
 | `src-tauri/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
 | `src-tauri/src/changes.rs` | Read-only tree diffs: lane file lists, totals and lazily loaded hunks |
+| `src-tauri/src/cleanup.rs` | On-demand worktree disk usage and safe idle-lane suggestions |
 | `src-tauri/src/git.rs` | Bounded Git process execution, including descendants and large output |
 | `src-tauri/src/projects.rs` | Which git repository a folder belongs to (worktrees included), a new project's defaults, and the rules its settings follow |
 | `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |

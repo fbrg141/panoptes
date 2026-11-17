@@ -232,6 +232,31 @@ export interface Lane {
   worktrees: LaneWorktree[];
 }
 
+export interface WorktreeUsage {
+  worktrees: number;
+  bytes: number;
+}
+
+export type ArchivePreservation = "clean" | "checkpoint";
+
+export interface IdleLane {
+  lane: Lane;
+  /** Unix ms: latest session activity, or lane creation when it has none. */
+  lastActivity: number;
+  /** Null when at least one of its worktrees could not be measured. */
+  bytes: number | null;
+  preservation: ArchivePreservation;
+}
+
+/** An on-demand, read-only scan; normal session listing does not measure disks. */
+export interface LaneCleanup {
+  project: WorktreeUsage;
+  total: WorktreeUsage;
+  idleDays: number;
+  candidates: IdleLane[];
+  errors: string[];
+}
+
 export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
 export interface UnreachableCommit {
   hash: string;
@@ -419,6 +444,8 @@ export interface Preferences {
   /** Model ids in favorite order. */
   favoriteModels: string[];
   hiddenModels: string[];
+  /** Inactive worktree lanes offered by cleanup after this many days. */
+  cleanupIdleDays: number;
 }
 
 /** A file dropped onto the composer: images inline, anything else by path. */

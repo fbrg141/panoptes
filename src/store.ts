@@ -39,6 +39,11 @@ export interface SessionOptions {
   prompt?: string;
 }
 
+export interface ArchiveLanesResult {
+  archived: number;
+  failed: { laneId: number; message: string }[];
+}
+
 export interface State {
   info: AppInfo | null;
   sessions: Session[];
@@ -86,6 +91,7 @@ export interface State {
   deleteProfile: (id: number) => Promise<void>;
   setModelFavorite: (modelId: string, favorite: boolean) => Promise<void>;
   setModelHidden: (modelId: string, hidden: boolean) => Promise<void>;
+  setCleanupIdleDays: (days: number) => Promise<boolean>;
   setModel: (modelId: string, sessionKey?: string) => Promise<void>;
   setThinkingLevel: (level: string, sessionKey?: string) => Promise<void>;
   abort: (sessionKey?: string) => Promise<void>;
@@ -109,6 +115,8 @@ export interface State {
     strategy: ArchiveStrategy | null,
     recreateBranch?: boolean,
   ) => Promise<ArchiveLaneOutcome | null>;
+  /** Archives independently, preserving any dirty selected lane as a checkpoint. */
+  archiveLanes: (ids: number[]) => Promise<ArchiveLanesResult>;
   /** Saves a detached HEAD on the lane branch, leaving the worktree in place. */
   createLaneBranch: (id: number) => Promise<boolean>;
   restoreLane: (id: number) => Promise<void>;
@@ -260,7 +268,7 @@ export function createAppStore(backend: typeof api) {
       sending: {},
       settings: {},
       models: {},
-      preferences: { profiles: [], favoriteModels: [], hiddenModels: [] },
+      preferences: { profiles: [], favoriteModels: [], hiddenModels: [], cleanupIdleDays: 4 },
       drafts: {},
       activeKey: null,
       listErrors: [],
@@ -468,6 +476,16 @@ export function createAppStore(backend: typeof api) {
         }
       },
 
+      setCleanupIdleDays: async (days) => {
+        try {
+          set({ preferences: await backend.setCleanupIdleDays(days) });
+          return true;
+        } catch (e) {
+          fail(e);
+          return false;
+        }
+      },
+
       setModel: async (modelId, sessionKey) => {
         const key = sessionKey ?? get().activeKey;
         if (!key) return;
@@ -589,6 +607,34 @@ export function createAppStore(backend: typeof api) {
           fail(e);
           return null;
         }
+      },
+
+      archiveLanes: async (ids) => {
+        let archived = 0;
+        const failed: { laneId: number; message: string }[] = [];
+        // Different lanes can share a repository. Archive sequentially rather
+        // than racing their Git housekeeping and checkpoint writes.
+        for (const laneId of ids) {
+          try {
+            const outcome = await backend.archiveLane(laneId, "checkpoint");
+            if (outcome.type === "archived") archived += 1;
+            else if (outcome.type === "detachedHead") {
+              failed.push({
+                laneId,
+                message: "Needs branch recovery; archive it from its lane menu.",
+              });
+            } else {
+              failed.push({
+                laneId,
+                message: "Its worktree changed. Scan again before archiving it.",
+              });
+            }
+          } catch (error) {
+            failed.push({ laneId, message: describeError(error) });
+          }
+        }
+        await get().refresh();
+        return { archived, failed };
       },
 
       createLaneBranch: async (id) => {

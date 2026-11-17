@@ -1,6 +1,7 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect } from "react";
 import { api } from "./api";
+import { CleanupDialog } from "./components/CleanupDialog";
 import { NewLaneDialog } from "./components/NewLaneDialog";
 import { SearchPalette } from "./components/SearchPalette";
 import { SessionPicker } from "./components/SessionPicker";
@@ -107,6 +108,7 @@ export default function App() {
       {overlay?.type === "shortcuts" && <ShortcutsDialog />}
       {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
       {overlay?.type === "settings" && <SettingsDialog />}
+      {overlay?.type === "cleanup" && <CleanupDialog projectId={overlay.projectId} />}
       {overlay?.type === "newLane" && (
         <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
       )}

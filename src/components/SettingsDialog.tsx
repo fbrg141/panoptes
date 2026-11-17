@@ -18,7 +18,7 @@ import { Picker } from "./Picker";
 export function SettingsDialog() {
   const close = useUi((s) => s.close);
   const preferences = useStore((s) => s.preferences);
-  const [tab, setTab] = useState<"profiles" | "models">("profiles");
+  const [tab, setTab] = useState<"profiles" | "models" | "lanes">("profiles");
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const deleteProfile = useStore((s) => s.deleteProfile);
@@ -40,10 +40,11 @@ export function SettingsDialog() {
               count: preferences.profiles.length,
             },
             { id: "models", label: "Models", icon: "circle-dot" },
+            { id: "lanes", label: "Lanes", icon: "git-branch" },
           ]}
           value={tab}
           onChange={(id) => {
-            setTab(id as "profiles" | "models");
+            setTab(id as "profiles" | "models" | "lanes");
             setEditing(null);
           }}
         />
@@ -129,8 +130,10 @@ export function SettingsDialog() {
               </>
             )}
           </div>
-        ) : (
+        ) : tab === "models" ? (
           <ModelPreferences />
+        ) : (
+          <LanePreferences />
         )}
       </div>
     </Overlay>
@@ -243,6 +246,60 @@ function ProfileEditor({
         </Button>
         <Button type="submit" variant="primary" disabled={busy || !name.trim()} className="ml-auto">
           {busy ? "Saving…" : "Save profile"}
+        </Button>
+      </OverlayFooter>
+    </form>
+  );
+}
+
+function LanePreferences() {
+  const preferences = useStore((s) => s.preferences);
+  const setCleanupIdleDays = useStore((s) => s.setCleanupIdleDays);
+  const [days, setDays] = useState(String(preferences.cleanupIdleDays));
+  const [busy, setBusy] = useState(false);
+  const value = Number(days);
+  const valid = Number.isInteger(value) && value >= 1 && value <= 365;
+
+  const save = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    const saved = await setCleanupIdleDays(value);
+    setBusy(false);
+    if (saved) setDays(String(value));
+  };
+
+  return (
+    <form
+      className="flex flex-col gap-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <div>
+        <h3 className="text-body-strong">Lane cleanup</h3>
+        <p className="mt-1 text-label font-normal text-ink-muted">
+          Cleanup offers worktree lanes after this many days without session activity. Open sessions
+          and lanes that need branch recovery are never included.
+        </p>
+      </div>
+      <Input
+        label="Idle lane threshold (days)"
+        aria-label="Idle lane threshold in days"
+        {...plainField}
+        type="number"
+        min={1}
+        max={365}
+        step={1}
+        value={days}
+        disabled={busy}
+        error={valid ? undefined : "Enter a whole number from 1 to 365."}
+        hint={valid ? "Default: 4 days." : undefined}
+        onChange={(event) => setDays(event.target.value)}
+      />
+      <OverlayFooter>
+        <Button type="submit" variant="primary" disabled={busy || !valid} className="ml-auto">
+          {busy ? "Saving…" : "Save lane settings"}
         </Button>
       </OverlayFooter>
     </form>
