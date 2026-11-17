@@ -147,7 +147,11 @@ def run(text, images):
         send({"type": "extension_ui_request", "id": "q1", "method": "confirm", "title": "Proceed?"})
         answer = json.loads(sys.stdin.readline())
         reply = f"confirmed={answer.get('confirmed')}"
-    assistant = {"role": "assistant", "content": [{"type": "text", "text": reply}], "stopReason": "stop", "timestamp": tick()}
+    assistant = {"role": "assistant", "content": [{"type": "text", "text": reply}],
+                 "provider": model["provider"], "model": model["id"],
+                 "usage": {"input": 100, "output": 20, "cacheRead": 400, "cacheWrite": 0, "totalTokens": 520,
+                           "cost": {"input": 0.0003, "output": 0.0003, "cacheRead": 0.0001, "cacheWrite": 0, "total": 0.0007}},
+                 "stopReason": "stop", "timestamp": tick()}
     send({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending"}})
     send({"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 0}})
     send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": reply}})

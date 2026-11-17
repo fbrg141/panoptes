@@ -8,7 +8,7 @@ use std::time::Duration;
 use panoptes_harness::{
     AgentSession, Answer, Block, CommandKind, ContextUsage, Harness, HarnessError,
     HarnessErrorKind, HarnessEvent, ImageAttachment, PromptMode, PromptOutcome, QuestionKind, Role,
-    StartSession, ToolKind, ToolOutput, ToolStatus,
+    StartSession, StopReason, ToolKind, ToolOutput, ToolStatus,
 };
 use panoptes_pi::{PiHarness, PiInstall};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -182,6 +182,42 @@ async fn history_keeps_the_ids_messages_streamed_under() {
         assert_eq!(ids, streamed);
     }
     assert_eq!(streamed.len(), 4);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reply_reports_its_model_usage_and_cost_live_and_in_history() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("hi".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    let live = events
+        .into_iter()
+        .filter_map(|event| match event {
+            HarnessEvent::MessageCompleted { message } => message.usage,
+            _ => None,
+        })
+        .next()
+        .expect("the reply has usage");
+    assert_eq!(live.model.as_deref(), Some("small"));
+    assert_eq!(live.provider.as_deref(), Some("fake"));
+    assert_eq!(
+        (
+            live.input_tokens,
+            live.output_tokens,
+            live.cache_read_tokens
+        ),
+        (100, 20, 400)
+    );
+    assert_eq!(live.cost, Some(0.0007));
+    assert_eq!(live.stop_reason, Some(StopReason::Finished));
+    assert!(live.ended_at.is_some());
+
+    let history = session.history().await.unwrap();
+    assert_eq!(history[0].usage, None, "a prompt has no usage");
+    assert_eq!(history[1].usage.as_ref(), Some(&live));
     session.shutdown().await;
 }
 

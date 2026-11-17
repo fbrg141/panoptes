@@ -24,6 +24,7 @@ const message = (
   timestamp: null,
   error: null,
   stopped: false,
+  usage: null,
   ...over,
 });
 const text = (t: string): Block => ({ type: "text", text: t });
@@ -148,6 +149,30 @@ describe("buildTurns", () => {
     expect(turns.map((t) => t.live)).toEqual([false, true]);
     expect(turns[0]).toMatchObject({ startedAt: 1, endedAt: 5 });
     expect(turns[1].endedAt).toBeNull();
+  });
+
+  it("adds up a turn's usage and ends it when its last call ended", () => {
+    const usage = (endedAt: number, cost: number) => ({
+      model: "m",
+      provider: "p",
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cost,
+      stopReason: "finished" as const,
+      endedAt,
+    });
+    const [first, second] = turnsOf([
+      message("u1", "user", [text("a")], { timestamp: 1_000 }),
+      message("a1", "assistant", [text("b")], { timestamp: 1_200, usage: usage(3_000, 0.1) }),
+      message("a2", "assistant", [text("c")], { timestamp: 3_100, usage: usage(8_000, 0.2) }),
+      message("u2", "user", [text("d")], { timestamp: 9_000 }),
+    ]);
+    expect(first).toMatchObject({ startedAt: 1_000, endedAt: 8_000 });
+    expect(first.usage).toMatchObject({ calls: 2, inputTokens: 20, outputTokens: 10 });
+    expect(first.usage?.cost).toBeCloseTo(0.3);
+    expect(second.usage).toBeNull();
   });
 
   it("keeps errors in the answer and carries the stopped flag", () => {

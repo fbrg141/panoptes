@@ -38,6 +38,7 @@ const message = (id: string, role: Message["role"], text: string): Message => ({
   timestamp: null,
   error: null,
   stopped: false,
+  usage: null,
 });
 
 const streaming = "pi:a";

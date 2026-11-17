@@ -15,6 +15,7 @@ import {
   toolImages,
 } from "../turns";
 import type { Message, ToolImage, ToolKind } from "../types";
+import { turnUsageParts } from "../usage";
 import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 
@@ -435,12 +436,14 @@ function Footer({ turn }: { turn: Turn }) {
     turn.startedAt !== null && turn.endedAt !== null
       ? formatDuration(turn.endedAt - turn.startedAt)
       : null,
+    ...(turn.usage ? turnUsageParts(turn.usage) : []),
   ].filter(Boolean);
   if (parts.length === 0 && !text) return null;
   return (
     <div className="flex h-[var(--control-sm)] items-center gap-3 opacity-0 transition-opacity duration-[var(--duration-fast)] select-none group-hover/turn:opacity-100 focus-within:opacity-100">
-      <Time>{parts.join(" · ")}</Time>
-      <div className="flex-1" />
+      <span className="text-code-sm min-w-0 flex-1 truncate tabular-nums text-ink-muted">
+        {parts.join(" · ")}
+      </span>
       {text && (
         <Button
           variant="ghost"

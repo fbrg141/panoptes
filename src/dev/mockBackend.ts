@@ -19,6 +19,7 @@ import type {
   SessionUpdate,
   ToolCall,
   ToolOutput,
+  Usage,
 } from "../types";
 
 const now = Date.now();
@@ -223,6 +224,19 @@ const shell = (text: string, exitCode: number | null = 0): ToolOutput => ({
   exitCode,
 });
 
+/** What a model call of the mock's used, ending `tookMs` after it started. */
+const usage = (startedAt: number, tookMs = 2_400): Usage => ({
+  model: "claude-sonnet-4-5",
+  provider: "anthropic",
+  inputTokens: 1_850,
+  outputTokens: 420,
+  cacheReadTokens: 18_200,
+  cacheWriteTokens: 600,
+  cost: 0.0177,
+  stopReason: "finished",
+  endedAt: startedAt + tookMs,
+});
+
 const msg = (
   id: string,
   role: Message["role"],
@@ -235,6 +249,7 @@ const msg = (
   timestamp: now - at,
   error: null,
   stopped: false,
+  usage: role === "assistant" ? usage(now - at) : null,
 });
 
 const RETRY_OLD = `      {message.error && (
@@ -471,6 +486,7 @@ async function stream(key: string, text: string) {
     timestamp: Date.now(),
     error: null,
     stopped: false,
+    usage: null,
   };
   await send({ type: "messageCompleted", message: user });
   if (text === "ask") {
