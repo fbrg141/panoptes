@@ -2,6 +2,7 @@ import { Button, Icon } from "@panoptes/design-system";
 import { useEffect } from "react";
 import { api } from "./api";
 import { CleanupDialog } from "./components/CleanupDialog";
+import { CrashNotice, ErrorBoundary } from "./components/ErrorBoundary";
 import { NewLaneDialog } from "./components/NewLaneDialog";
 import { SearchPalette } from "./components/SearchPalette";
 import { SessionPicker } from "./components/SessionPicker";
@@ -101,17 +102,46 @@ export default function App() {
         </div>
       )}
       <div className="flex min-h-0 flex-1">
-        <Sidebar />
+        <ErrorBoundary
+          label="sidebar"
+          fallback={({ error, reset }) => (
+            <aside className="flex w-80 shrink-0 border-r border-line bg-surface">
+              <CrashNotice title="The sidebar hit an error" error={error}>
+                <Button variant="secondary" size="sm" onClick={reset}>
+                  Try again
+                </Button>
+              </CrashNotice>
+            </aside>
+          )}
+        >
+          <Sidebar />
+        </ErrorBoundary>
         <SessionWorkspace />
       </div>
-      {overlay?.type === "search" && <SearchPalette />}
-      {overlay?.type === "shortcuts" && <ShortcutsDialog />}
-      {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
-      {overlay?.type === "settings" && <SettingsDialog />}
-      {overlay?.type === "cleanup" && <CleanupDialog projectId={overlay.projectId} />}
-      {overlay?.type === "newLane" && (
-        <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
-      )}
+      {/* A crashed dialog closes on its own; the window behind it keeps working. */}
+      <ErrorBoundary
+        label="dialog"
+        resetKey={overlay}
+        fallback={({ error }) => <OverlayCrash error={error} />}
+      >
+        {overlay?.type === "search" && <SearchPalette />}
+        {overlay?.type === "shortcuts" && <ShortcutsDialog />}
+        {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
+        {overlay?.type === "settings" && <SettingsDialog />}
+        {overlay?.type === "cleanup" && <CleanupDialog projectId={overlay.projectId} />}
+        {overlay?.type === "newLane" && (
+          <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
+        )}
+      </ErrorBoundary>
     </div>
   );
+}
+
+function OverlayCrash({ error }: { error: Error }) {
+  const close = useUi((s) => s.close);
+  useEffect(() => {
+    useStore.setState({ error: `That dialog hit an error and was closed: ${error.message}` });
+    close();
+  }, [error, close]);
+  return null;
 }
