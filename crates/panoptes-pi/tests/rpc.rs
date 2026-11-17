@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use panoptes_harness::{
-    AgentSession, Answer, Block, ContextUsage, Harness, HarnessError, HarnessErrorKind,
-    HarnessEvent, ImageAttachment, PromptMode, PromptOutcome, QuestionKind, Role, StartSession,
-    ToolKind, ToolOutput, ToolStatus,
+    AgentSession, Answer, Block, CommandKind, ContextUsage, Harness, HarnessError,
+    HarnessErrorKind, HarnessEvent, ImageAttachment, PromptMode, PromptOutcome, QuestionKind, Role,
+    StartSession, ToolKind, ToolOutput, ToolStatus,
 };
 use panoptes_pi::{PiHarness, PiInstall};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -485,6 +485,22 @@ async fn images_travel_with_the_prompt() {
             data: Some("iVBORw0K".into())
         }
     );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn discoverable_commands_have_neutral_names_and_kinds() {
+    let (session, _rx) = start().await;
+    let commands = session.commands().await.unwrap();
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0].name, "fix-tests");
+    assert_eq!(
+        commands[0].description.as_deref(),
+        Some("Fix failing tests")
+    );
+    assert_eq!(commands[0].kind, CommandKind::Prompt);
+    assert_eq!(commands[1].kind, CommandKind::Extension);
+    assert_eq!(commands[2].kind, CommandKind::Skill);
     session.shutdown().await;
 }
 

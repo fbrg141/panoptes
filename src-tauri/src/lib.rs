@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use panoptes_harness::{
-    Answer, Harness, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
+    Answer, CommandInfo, Harness, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
     SessionSettings,
 };
 use panoptes_pi::PiHarness;
@@ -279,6 +279,11 @@ async fn set_model_hidden(
         "set_model_hidden",
         state.service.set_model_hidden(model_id, hidden).await,
     )
+}
+
+#[tauri::command]
+async fn list_commands(state: State<'_, AppState>, key: String) -> ServiceResult<Vec<CommandInfo>> {
+    logged(&state, "list_commands", state.service.commands(&key).await)
 }
 
 #[tauri::command]
@@ -655,6 +660,7 @@ pub fn run() {
             send_prompt,
             session_settings,
             list_models,
+            list_commands,
             preferences,
             save_profile,
             delete_profile,

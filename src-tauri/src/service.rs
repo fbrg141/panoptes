@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::Context;
 use panoptes_harness::{
-    AgentSession, Answer, DiscoveredSession, Harness, HarnessError, HarnessErrorKind, HarnessEvent,
-    HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, Role,
+    AgentSession, Answer, CommandInfo, DiscoveredSession, Harness, HarnessError, HarnessErrorKind,
+    HarnessEvent, HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, Role,
     SessionSettings, SessionStatus, StartSession,
 };
 use serde::Serialize;
@@ -1336,6 +1336,10 @@ impl Service {
 
     pub async fn models(&self, key: &str) -> ServiceResult<Vec<ModelInfo>> {
         self.session(key).await?.models().await.map_err(err)
+    }
+
+    pub async fn commands(&self, key: &str) -> ServiceResult<Vec<CommandInfo>> {
+        self.session(key).await?.commands().await.map_err(err)
     }
 
     pub async fn preferences(&self) -> ServiceResult<Preferences> {

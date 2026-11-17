@@ -461,6 +461,25 @@ pub struct ModelInfo {
     pub images: bool,
 }
 
+/// A command the harness can execute through a normal prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandInfo {
+    /// Prompt name without the leading slash.
+    pub name: String,
+    pub description: Option<String>,
+    pub kind: CommandKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandKind {
+    Extension,
+    Prompt,
+    Skill,
+    Other,
+}
+
 /// How full the model's context window is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -552,6 +571,12 @@ pub trait AgentSession: Send + Sync {
 
     /// Models the session can switch to.
     async fn models(&self) -> anyhow::Result<Vec<ModelInfo>> {
+        Ok(Vec::new())
+    }
+
+    /// Commands discoverable in this session. Built-in UI-only commands are
+    /// deliberately absent; they do not necessarily work over RPC.
+    async fn commands(&self) -> anyhow::Result<Vec<CommandInfo>> {
         Ok(Vec::new())
     }
 

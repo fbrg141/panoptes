@@ -355,8 +355,10 @@ Images go to the model inline. Any other attached file is appended to the
 prompt as an `@path` mention, so the agent reads it with its own tools and no
 harness needs a file-attachment command. @-mentions are plain text drawn as
 chips by a backdrop behind the text field, which keeps the field a native
-`textarea`. Slash commands are left for later: they need Pi to list its
-commands over RPC.
+`textarea`. Typing `/` as the first token offers the commands the harness
+can run through a normal prompt (Pi's extension commands, prompt templates
+and skills, listed over RPC). Built-in terminal UI commands are not offered,
+since they do not run over RPC.
 
 ## Open gaps
 

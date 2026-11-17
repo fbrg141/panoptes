@@ -6,6 +6,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   Answer,
+  CommandInfo,
   Lane,
   Message,
   ModelInfo,
@@ -389,6 +390,12 @@ const history: Message[] = [
     ],
     10 * 60_000 - 78_000,
   ),
+];
+
+const commands: CommandInfo[] = [
+  { name: "review", description: "Review the current changes", kind: "prompt" },
+  { name: "fix-tests", description: "Fix failing tests", kind: "extension" },
+  { name: "skill:implement", description: "Implement from a skill", kind: "skill" },
 ];
 
 const models: ModelInfo[] = [
@@ -849,6 +856,8 @@ export function installMockBackend() {
           return { ...settings };
         case "list_models":
           return models;
+        case "list_commands":
+          return commands;
         case "preferences":
           return preferences;
         case "save_profile": {
