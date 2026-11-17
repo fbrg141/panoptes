@@ -1,15 +1,14 @@
 import { Button, Icon, LoopMark } from "@panoptes/design-system";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   type DropZone,
-  dropZoneAt,
   findPane,
   type PaneNode,
   paneLeaves,
-  SESSION_DRAG_TYPE,
   type SplitDirection,
   sessionPane,
 } from "../panes";
+import { sessionDragSnapshot, subscribeSessionDrag } from "../sessionDrag";
 import { useStore } from "../store";
 import { useUi } from "../ui";
 import { ChatPane } from "./ChatPane";
@@ -153,11 +152,9 @@ function SessionLeaf({
   onSplit: (direction: SplitDirection) => void;
   onClose: () => void;
 }) {
-  const [zone, setZone] = useState<DropZone | null>(null);
+  const drag = useSyncExternalStore(subscribeSessionDrag, sessionDragSnapshot);
+  const zone = drag.paneId === paneId ? drag.zone : null;
   const session = useStore((s) => s.sessions.find((item) => item.key === sessionKey));
-
-  const zoneFor = (event: React.DragEvent<HTMLElement>) =>
-    dropZoneAt(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
 
   return (
     <section
@@ -167,24 +164,6 @@ function SessionLeaf({
       className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
-      onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes(SESSION_DRAG_TYPE)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        setZone(zoneFor(event));
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setZone(null);
-      }}
-      onDrop={(event) => {
-        const key = event.dataTransfer.getData(SESSION_DRAG_TYPE);
-        if (!key) return;
-        event.preventDefault();
-        const droppedAt = zone ?? zoneFor(event);
-        setZone(null);
-        useUi.getState().dropSession(key, paneId, droppedAt);
-        useStore.setState({ activeKey: key });
-      }}
     >
       {sessionKey ? (
         <ChatPane

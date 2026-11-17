@@ -1,7 +1,7 @@
 import { Button, Icon, LoopMark, type MenuItem } from "@panoptes/design-system";
 import { type KeyboardEvent, type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 import { relativeTime } from "../grouping";
-import { SESSION_DRAG_TYPE } from "../panes";
+import { beginSessionDrag } from "../sessionDrag";
 import { isLive, primaryAction, sessionDetail, sessionRowLabel, statusWord } from "../sessionRow";
 import { sessionMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
@@ -195,14 +195,8 @@ export function SessionItem({
   return (
     <li className={`${nested ? "ml-2" : ""} ${className}`}>
       <ContextMenu label={actionsLabel} items={items} onSelect={select}>
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: the row is a drag handle and its button opens the session */}
         <div
           className="session-row group/session"
-          draggable
-          onDragStart={(event) => {
-            event.dataTransfer.setData(SESSION_DRAG_TYPE, session.key);
-            event.dataTransfer.effectAllowed = "move";
-          }}
           data-selected={active || undefined}
           data-actions={hasActions || undefined}
           data-archived={session.archived || undefined}
@@ -228,6 +222,7 @@ export function SessionItem({
             aria-keyshortcuts={items.length > 0 ? "Shift+F10" : undefined}
             title={truncated ? title : undefined}
             onPointerEnter={measure}
+            onPointerDown={(event) => beginSessionDrag(event, session.key)}
             onFocus={measure}
             onClick={() => {
               useUi.getState().showSession(session.key);
