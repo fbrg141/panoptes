@@ -1,4 +1,4 @@
-import { Button, Dialog, LoopMark, Tabs } from "@panoptes/design-system";
+import { Button, LoopMark, Tabs } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
 import { laneMainSession } from "../laneCard";
 import { emptyLane, workLabel } from "../laneRow";
@@ -14,6 +14,7 @@ import type {
   Session,
 } from "../types";
 import { useUi } from "../ui";
+import { ModalDialog } from "./Overlay";
 import { RowMenu } from "./RowMenu";
 import { CheckoutIcon, SessionItem } from "./SessionItem";
 
@@ -478,7 +479,7 @@ function RemoveProjectDialog({ project, onClose }: { project: Project; onClose: 
   };
 
   return (
-    <Dialog
+    <ModalDialog
       title={`Remove ${project.name}?`}
       width={480}
       onClose={busy ? undefined : onClose}
@@ -497,7 +498,7 @@ function RemoveProjectDialog({ project, onClose }: { project: Project; onClose: 
         Panoptes forgets this project and its settings. The repository at{" "}
         <code>{project.repo}</code> and Pi conversation files are not changed.
       </p>
-    </Dialog>
+    </ModalDialog>
   );
 }
 
@@ -524,7 +525,7 @@ function DeleteLaneDialog({
   };
 
   return (
-    <Dialog
+    <ModalDialog
       title={`Delete ${lane.name}?`}
       width={540}
       onClose={busy ? undefined : onClose}
@@ -552,7 +553,7 @@ function DeleteLaneDialog({
           files are kept.
         </p>
       )}
-    </Dialog>
+    </ModalDialog>
   );
 }
 
@@ -605,7 +606,7 @@ function DetachedHeadDialog({
   };
 
   return (
-    <Dialog
+    <ModalDialog
       title={`${safe ? "Recover" : "Save"} ${lane.name} before ${
         operation === "archive" ? "archiving" : "deletion"
       }`}
@@ -682,7 +683,7 @@ function DetachedHeadDialog({
           </p>
         )}
       </div>
-    </Dialog>
+    </ModalDialog>
   );
 }
 
@@ -710,7 +711,7 @@ function ArchiveLaneDialog({
   };
 
   return (
-    <Dialog
+    <ModalDialog
       title={`Preserve ${lane.name} before archiving`}
       width={540}
       onClose={busy ? undefined : onClose}
@@ -736,7 +737,7 @@ function ArchiveLaneDialog({
         <code>{lane.branch}</code>, stash them on that branch, or save a private Panoptes checkpoint
         that can be restored later.
       </p>
-    </Dialog>
+    </ModalDialog>
   );
 }
 
@@ -762,7 +763,10 @@ function AdoptSessionDialog({
   };
 
   return (
-    <Dialog title={`Adopt “${session.title}” into a lane`} onClose={busy ? undefined : onClose}>
+    <ModalDialog
+      title={`Adopt “${session.title}” into a lane`}
+      onClose={busy ? undefined : onClose}
+    >
       <p className="pb-3 text-ink-muted">
         The conversation stays in the harness's own files. Only its Panoptes lane membership is
         added. Each lane can hold one session.
@@ -785,7 +789,7 @@ function AdoptSessionDialog({
           ))}
         </ul>
       )}
-    </Dialog>
+    </ModalDialog>
   );
 }
 
