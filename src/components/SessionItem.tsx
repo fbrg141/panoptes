@@ -80,6 +80,19 @@ function moveBetweenRows(from: HTMLElement, key: string) {
   target?.focus();
 }
 
+/** Distinguishes a lane's main checkout from an isolated worktree. */
+export function CheckoutIcon({ mainCheckout }: { mainCheckout: boolean }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 ${mainCheckout ? "text-waiting" : "text-ink-muted"}`}
+      data-checkout={mainCheckout ? "main" : "worktree"}
+      aria-hidden
+    >
+      <Icon name={mainCheckout ? "folder" : "git-branch"} size={12} />
+    </span>
+  );
+}
+
 /**
  * A session in the sidebar. The whole row is one button that opens it; Stop
  * (while it runs) and the actions menu sit over the meta column and fade in on
@@ -99,6 +112,7 @@ export function SessionItem({
   menuLabel,
   className = "",
   children,
+  checkout,
 }: {
   session: Session;
   context?: string;
@@ -116,6 +130,8 @@ export function SessionItem({
   className?: string;
   /** Extra sessions, disclosed separately beneath the main session card. */
   children?: ReactNode;
+  /** Checkout location and kind shown before the rest of the lane detail. */
+  checkout?: { label: string; mainCheckout: boolean };
 }) {
   const active = useStore((s) => s.activeKey === session.key);
   const status = useStore((s) => s.statuses[session.key] ?? "idle");
@@ -145,7 +161,12 @@ export function SessionItem({
   const detail = sessionDetail(session, context);
   const now = useClock();
   const time = relativeTime(session.updatedAt, Math.max(now, session.updatedAt));
-  const label = sessionRowLabel({ title: titleOverride ?? session.title, status, detail, time });
+  const label = sessionRowLabel({
+    title: titleOverride ?? session.title,
+    status,
+    detail: [checkout?.label, detail].filter(Boolean).join(" · "),
+    time,
+  });
   const title = titleOverride ?? session.title;
   const actionsLabel = menuLabel ?? `Actions for session ${session.title}`;
 
@@ -251,6 +272,13 @@ export function SessionItem({
                     <span className={`font-medium ${WORD_TONE[status]}`}>{word}</span>
                     <span aria-hidden> · </span>
                   </>
+                )}
+                {checkout && (
+                  <span className="inline-flex items-center gap-1">
+                    <CheckoutIcon mainCheckout={checkout.mainCheckout} />
+                    <span>{checkout.label}</span>
+                    {detail && <span aria-hidden> · </span>}
+                  </span>
                 )}
                 {detail}
               </span>
