@@ -152,7 +152,7 @@ function SessionLeaf({
   onSplit: (direction: SplitDirection) => void;
   onClose: () => void;
 }) {
-  const drag = useSyncExternalStore(subscribeSessionDrag, sessionDragSnapshot);
+  const drag = useSyncExternalStore(subscribeSessionDrag, sessionDragSnapshot, sessionDragSnapshot);
   const zone = drag.paneId === paneId ? drag.zone : null;
   const session = useStore((s) => s.sessions.find((item) => item.key === sessionKey));
 
