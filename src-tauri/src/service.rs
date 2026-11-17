@@ -907,18 +907,9 @@ impl Service {
             })
             .collect();
         navigation.sort_by_key(|entry| entry.lane_id);
-        // Main-checkout sessions stay on top of All sessions; each group is
-        // reverse-chronological. Lane lists keep their pinned-first ordering.
-        sessions.sort_by_key(|session| {
-            let main_checkout = session
-                .lane_id
-                .and_then(|id| lane_by_id.get(&id))
-                .is_some_and(|lane| lane.worktrees.iter().any(|tree| tree.main_checkout));
-            (
-                std::cmp::Reverse(main_checkout),
-                std::cmp::Reverse(session.updated_at),
-            )
-        });
+        // All sessions is one reverse-chronological list. The lane lists
+        // above apply their own pinned-first ordering.
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
         Listing {
             sessions,
             projects,
@@ -3387,51 +3378,6 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Cancelled);
         assert!(f.service.list().await.lanes.is_empty());
         assert!(!lane_path.exists());
-    }
-
-    #[tokio::test]
-    async fn main_checkout_sessions_lead_all_sessions() {
-        let code = tempfile::tempdir().unwrap();
-        let repo = std::fs::canonicalize(code.path()).unwrap().join("web");
-        std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
-        git(
-            &repo,
-            &["commit", "--quiet", "--allow-empty", "-m", "start"],
-        );
-        let f = fixture(FakeHarness::default());
-        let project = f
-            .service
-            .add_project(repo.to_string_lossy().into_owned())
-            .await
-            .unwrap();
-        let main_lane = f
-            .service
-            .create_lane(project.id, "Main checkout work".into(), true)
-            .await
-            .unwrap();
-        let worktree_lane = f
-            .service
-            .create_lane(project.id, "Isolated work".into(), false)
-            .await
-            .unwrap();
-        let main = f.service.create(main_lane.id, "fake").await.unwrap();
-        // Give the isolated session a newer timestamp as well as a newer lane.
-        tokio::time::sleep(Duration::from_millis(2)).await;
-        let isolated = f.service.create(worktree_lane.id, "fake").await.unwrap();
-
-        let sessions = f.service.list().await.sessions;
-        let keys: Vec<&str> = sessions
-            .iter()
-            .map(|session| session.key.as_str())
-            .collect();
-        let main_at = keys.iter().position(|key| *key == main.key).unwrap();
-        let isolated_at = keys.iter().position(|key| *key == isolated.key).unwrap();
-        assert!(
-            main_at < isolated_at,
-            "main-checkout session was not first: {keys:?}"
-        );
-        assert!(sessions[main_at].updated_at <= sessions[isolated_at].updated_at);
     }
 
     #[tokio::test]
