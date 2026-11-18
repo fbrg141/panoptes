@@ -417,7 +417,15 @@ export function createAppStore(backend: typeof api) {
           if (outcome === "handled") void reloadHistory(key);
           return true;
         } catch (e) {
-          fail(e);
+          if (errorKind(e) === "exited") {
+            // The prompt may have arrived before the process ended, so the
+            // person checks the conversation rather than resending blindly.
+            set({
+              error: `${describeError(e)}. Check whether your prompt arrived before sending it again.`,
+            });
+          } else {
+            fail(e);
+          }
           return false;
         } finally {
           set((s) => ({ sending: { ...s.sending, [key]: false } }));

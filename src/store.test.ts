@@ -425,7 +425,9 @@ describe("store", () => {
     expect(await store.getState().send("hello")).toBe(false);
     expect(fake.backend.openSession).toHaveBeenCalledTimes(1);
     expect(fake.backend.sendPrompt).toHaveBeenCalledTimes(1);
-    expect(store.getState().error).toBe("Pi exited before answering `prompt`");
+    expect(store.getState().error).toBe(
+      "Pi exited before answering `prompt`. Check whether your prompt arrived before sending it again.",
+    );
   });
 
   it("shows a rejected prompt without reopening", async () => {
