@@ -21,6 +21,7 @@ import { describeError, useStore } from "../store";
 import { proseField } from "../textFields";
 import type { CommandInfo, FileAttachment, QueuedPrompt, SessionSettings } from "../types";
 import { Picker } from "./Picker";
+import { SessionUsage } from "./SessionUsage";
 
 /** Mentions offered at once; typing narrows them. */
 const MENTION_ROWS = 8;
@@ -510,6 +511,7 @@ export function Composer({
         {settings && <ModelPicker settings={settings} sessionKey={sessionKey} input={input} />}
         {settings && <ThinkingPicker settings={settings} sessionKey={sessionKey} input={input} />}
         <div className="flex-1" />
+        <SessionUsage sessionKey={sessionKey} />
         {settings?.context && (
           <span
             className="text-code-sm tabular-nums text-ink-muted"

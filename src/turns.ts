@@ -1,5 +1,6 @@
 import type { Conversation } from "./conversation";
 import type { Approval, Block, FileEdit, Message, ToolImage, ToolKind } from "./types";
+import { sameUsage, sumUsage, type UsageTotal } from "./usage";
 
 export type ToolCallBlock = Extract<Block, { type: "toolCall" }>;
 
@@ -42,6 +43,8 @@ export interface Turn {
   stopped: boolean;
   startedAt: number | null;
   endedAt: number | null;
+  /** What the turn's model calls used, added up; null when none reported it. */
+  usage: UsageTotal | null;
 }
 
 type Source = Pick<Conversation, "messages" | "thoughtFor" | "thinking" | "busy"> &
@@ -113,7 +116,9 @@ export function buildTurns(conversation: Source): Turn[] {
       split--;
     }
     const all = prompt ? [prompt, ...replies] : replies;
-    const times = all.map((m) => m.timestamp).filter((t): t is number => t !== null);
+    const times = all
+      .flatMap((m) => [m.timestamp, m.usage?.endedAt ?? null])
+      .filter((t): t is number => t !== null);
     return {
       key: (prompt ?? replies[0]).id,
       prompt,
@@ -123,6 +128,7 @@ export function buildTurns(conversation: Source): Turn[] {
       stopped: replies.some((m) => m.stopped),
       startedAt: times.length ? Math.min(...times) : null,
       endedAt: times.length > 1 ? Math.max(...times) : null,
+      usage: sumUsage(replies),
     };
   };
 
@@ -157,6 +163,7 @@ export function sameTurn(a: Turn, b: Turn): boolean {
       a.stopped === b.stopped &&
       a.startedAt === b.startedAt &&
       a.endedAt === b.endedAt &&
+      sameUsage(a.usage, b.usage) &&
       sameSteps(a.work, b.work) &&
       sameSteps(a.answer, b.answer))
   );

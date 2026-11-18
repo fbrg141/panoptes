@@ -2288,6 +2288,7 @@ mod tests {
                 timestamp: None,
                 error: error.map(Into::into),
                 stopped: false,
+                usage: None,
             },
         }
     }

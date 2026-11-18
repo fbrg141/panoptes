@@ -64,6 +64,25 @@ export interface Message {
   error: string | null;
   /** The user stopped the agent while this message was being written. */
   stopped: boolean;
+  /** What the model call behind an assistant message used and cost; null otherwise. */
+  usage: Usage | null;
+}
+
+export type StopReason = "finished" | "toolUse" | "maxTokens" | "error" | "aborted";
+
+/** One model call: which model answered, what it used and cost, why and when it ended. */
+export interface Usage {
+  model: string | null;
+  provider: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** US dollars, as the harness priced it; null when it has no price. */
+  cost: number | null;
+  stopReason: StopReason | null;
+  /** Unix milliseconds. */
+  endedAt: number | null;
 }
 
 export type NoticeLevel = "info" | "warning" | "error";

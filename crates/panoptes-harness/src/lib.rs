@@ -164,6 +164,48 @@ pub struct Message {
     pub error: Option<String>,
     /// The user stopped the agent while this message was being written.
     pub stopped: bool,
+    /// What the model call that wrote an assistant message used and cost,
+    /// when the harness reports it. `None` for every other message.
+    /// Boxed, as most messages have none.
+    pub usage: Option<Box<Usage>>,
+}
+
+/// One model call: which model answered, what it used and cost, why it
+/// stopped and when it finished. Every field is optional because harnesses
+/// and providers report different subsets.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    /// The model's id as the provider names it, e.g. `"claude-sonnet-4-5"`.
+    pub model: Option<String>,
+    /// Who served the model, e.g. `"anthropic"`.
+    pub provider: Option<String>,
+    /// Prompt tokens not read from or written to a cache.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// In US dollars, as the harness priced it. `None` when it has no price.
+    pub cost: Option<f64>,
+    pub stop_reason: Option<StopReason>,
+    /// When the message was finished, Unix milliseconds.
+    pub ended_at: Option<i64>,
+}
+
+/// Why a model call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StopReason {
+    /// The model finished its answer.
+    Finished,
+    /// The model asked for tools and the agent carries on.
+    ToolUse,
+    /// The model hit its output token limit.
+    MaxTokens,
+    /// The request failed; [`Message::error`] says why.
+    Error,
+    /// The user stopped it.
+    Aborted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

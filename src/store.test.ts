@@ -331,6 +331,7 @@ describe("store", () => {
     timestamp: 0,
     error: null,
     stopped: false,
+    usage: null,
   };
 
   it("drops a history reply that a newer run has overtaken", async () => {

@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use panoptes_harness::{
     Approval, Block, ContextUsage, DeltaKind, FileEdit, HarnessEvent, Message, ModelInfo,
-    NoticeLevel, PromptMode, Question, QuestionKind, QueuedPrompt, Role, ToolCall, ToolImage,
-    ToolKind, ToolOutput, ToolStatus,
+    NoticeLevel, PromptMode, Question, QuestionKind, QueuedPrompt, Role, StopReason, ToolCall,
+    ToolImage, ToolKind, ToolOutput, ToolStatus, Usage,
 };
 use serde_json::Value;
 
@@ -27,6 +27,9 @@ pub struct SessionState {
     /// the UI already has. Two messages can share a key (same role in the
     /// same millisecond); history hands their ids out in the same order.
     pub live_ids: Mutex<HashMap<String, Vec<String>>>,
+    /// When each message that streamed ended, by its live id, so history
+    /// gives the end time the live event did.
+    pub ended_at: Mutex<HashMap<String, i64>>,
 }
 
 pub type Shared = Arc<SessionState>;
@@ -289,12 +292,63 @@ fn message_key(message: &Value) -> Option<String> {
     })
 }
 
+/// What an assistant message's model call used: Pi records the model,
+/// token counts, its own price and the stop reason on the message itself.
+fn usage(value: &Value, ended_at: Option<i64>) -> Usage {
+    let tokens = &value["usage"];
+    let count = |key: &str| tokens[key].as_u64().unwrap_or(0);
+    Usage {
+        model: value["model"].as_str().map(str::to_string),
+        provider: value["provider"].as_str().map(str::to_string),
+        input_tokens: count("input"),
+        output_tokens: count("output"),
+        cache_read_tokens: count("cacheRead"),
+        cache_write_tokens: count("cacheWrite"),
+        cost: tokens["cost"]["total"].as_f64(),
+        stop_reason: match value["stopReason"].as_str() {
+            Some("stop") => Some(StopReason::Finished),
+            Some("toolUse") => Some(StopReason::ToolUse),
+            Some("length") => Some(StopReason::MaxTokens),
+            Some("error") => Some(StopReason::Error),
+            Some("aborted") => Some(StopReason::Aborted),
+            _ => None,
+        },
+        ended_at,
+    }
+}
+
+/// Unix milliseconds of an ISO 8601 UTC time as JavaScript writes it,
+/// `2026-09-07T16:09:46.140Z`. Pi stamps each session entry this way when
+/// it writes it, which for a message is when the message ended.
+fn iso_millis(text: &str) -> Option<i64> {
+    let (date, time) = text.strip_suffix('Z')?.split_once('T')?;
+    let mut date = date.splitn(3, '-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
+    let mut time = time.splitn(3, ':');
+    let hours: i64 = time.next()?.parse().ok()?;
+    let minutes: i64 = time.next()?.parse().ok()?;
+    let seconds: f64 = time.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Days since 1970-01-01 in the proleptic Gregorian calendar.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let year_of_era = y - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some((days * 86_400 + hours * 3_600 + minutes * 60) * 1000 + (seconds * 1000.0).round() as i64)
+}
+
 /// Converts one Pi `AgentMessage`. System messages (prompt and tool
 /// loadout) are not part of the visible conversation, and tool results
-/// belong to their calls; both return `None`.
-pub fn message(value: &Value, id: String) -> Option<Message> {
+/// belong to their calls; both return `None`. `ended_at` is when the
+/// message finished, if known.
+pub fn message(value: &Value, id: String, ended_at: Option<i64>) -> Option<Message> {
     let timestamp = value["timestamp"].as_i64();
     let stopped = value["stopReason"].as_str() == Some("aborted");
+    let mut usage_of = None;
     let (role, blocks, error) = match value["role"].as_str()? {
         "system" => return None,
         "user" => (Role::User, content_blocks(&value["content"]), None),
@@ -308,6 +362,7 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
                 ),
                 _ => None,
             };
+            usage_of = Some(Box::new(usage(value, ended_at)));
             (Role::Assistant, content_blocks(&value["content"]), error)
         }
         // Results are folded into their calls (see `history` and
@@ -340,6 +395,7 @@ pub fn message(value: &Value, id: String) -> Option<Message> {
         timestamp,
         error,
         stopped,
+        usage: usage_of,
     })
 }
 
@@ -426,7 +482,7 @@ impl EventMapper {
                 self.counter += 1;
                 let id = format!("live-{}", self.counter);
                 self.current = Some(id.clone());
-                match message(&event["message"], id.clone()) {
+                match message(&event["message"], id.clone(), None) {
                     Some(started) => {
                         vec![HarnessEvent::MessageStarted {
                             message_id: id,
@@ -451,7 +507,8 @@ impl EventMapper {
                         .or_default()
                         .push(id.clone());
                 }
-                message(&event["message"], id)
+                self.shared.ended_at.lock().unwrap().insert(id.clone(), now);
+                message(&event["message"], id, Some(now))
                     .map(|mut message| {
                         // A call that already started keeps what is known of it.
                         for block in &mut message.blocks {
@@ -737,6 +794,7 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) 
         .collect();
     let times = shared.tool_times.lock().unwrap();
     let live_ids = shared.live_ids.lock().unwrap();
+    let ended_at = shared.ended_at.lock().unwrap();
     let finish = |call: &mut ToolCall| {
         let seen = times.get(&call.id).copied();
         if let Some(result) = results.get(call.id.as_str()) {
@@ -773,7 +831,11 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) 
                             live.cloned()
                         })
                         .unwrap_or(id);
-                    message(&entry["message"], id)
+                    let ended = ended_at
+                        .get(&id)
+                        .copied()
+                        .or_else(|| entry["timestamp"].as_str().and_then(iso_millis));
+                    message(&entry["message"], id, ended)
                 }
                 .map(|mut message| {
                     for block in &mut message.blocks {
@@ -792,6 +854,7 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) 
                     timestamp: None,
                     error: None,
                     stopped: false,
+                    usage: None,
                 }),
                 _ => None,
             }
@@ -850,6 +913,115 @@ mod tests {
         assert!(
             matches!(&done[0], HarnessEvent::MessageCompleted { message } if message.id == "live-1" && message.error.is_none())
         );
+    }
+
+    /// An assistant message as Pi writes it, with usage and price.
+    fn priced(stop: &str, timestamp: i64) -> Value {
+        json!({"role":"assistant","content":[{"type":"text","text":"Hi"}],
+            "provider":"anthropic","model":"claude-sonnet-4-5",
+            "usage":{"input":1200,"output":340,"cacheRead":9000,"cacheWrite":50,"totalTokens":10590,
+                "cost":{"input":0.0036,"output":0.0051,"cacheRead":0.0027,"cacheWrite":0.0002,"total":0.0116}},
+            "stopReason":stop,"timestamp":timestamp})
+    }
+
+    #[test]
+    fn a_finished_message_carries_its_usage_and_end_time() {
+        let mut mapper = EventMapper::default();
+        mapper.map(
+            json!({"type":"message_start","message":priced("pending", 1000)}),
+            1000,
+        );
+        let done = mapper.map(
+            json!({"type":"message_end","message":priced("length", 1000)}),
+            4500,
+        );
+        let [HarnessEvent::MessageCompleted { message }] = done.as_slice() else {
+            panic!("expected a completed message: {done:?}");
+        };
+        assert_eq!(
+            message.usage,
+            Some(Box::new(Usage {
+                model: Some("claude-sonnet-4-5".into()),
+                provider: Some("anthropic".into()),
+                input_tokens: 1200,
+                output_tokens: 340,
+                cache_read_tokens: 9000,
+                cache_write_tokens: 50,
+                cost: Some(0.0116),
+                stop_reason: Some(StopReason::MaxTokens),
+                ended_at: Some(4500),
+            }))
+        );
+    }
+
+    #[test]
+    fn only_assistant_messages_have_usage() {
+        let user = message(
+            &json!({"role":"user","content":"hi","timestamp":1}),
+            "u".into(),
+            Some(2),
+        );
+        assert_eq!(user.unwrap().usage, None);
+        // A message without usage still says why it stopped.
+        let bare = message(
+            &json!({"role":"assistant","content":[],"stopReason":"toolUse"}),
+            "a".into(),
+            None,
+        )
+        .unwrap();
+        let usage = bare.usage.unwrap();
+        assert_eq!(usage.stop_reason, Some(StopReason::ToolUse));
+        assert_eq!(
+            (usage.input_tokens, usage.cost, usage.model),
+            (0, None, None)
+        );
+    }
+
+    #[test]
+    fn history_ends_a_message_when_pi_wrote_it() {
+        let entries = vec![
+            json!({"type":"message","id":"a","parentId":null,"timestamp":"2026-09-07T16:09:44.548Z","message":{"role":"user","content":"go","timestamp":1788797384548_i64}}),
+            json!({"type":"message","id":"b","parentId":"a","timestamp":"2026-09-07T16:09:46.140Z","message":priced("stop", 1788797384611)}),
+        ];
+        let history = history(&entries, Some("b"), &SessionState::default());
+        let usage = history[1].usage.as_ref().unwrap();
+        assert_eq!(usage.ended_at, Some(1788797386140));
+        assert_eq!(usage.stop_reason, Some(StopReason::Finished));
+    }
+
+    #[test]
+    fn history_keeps_the_end_time_seen_live() {
+        let shared: Shared = Arc::default();
+        let mut mapper = EventMapper::new(shared.clone());
+        mapper.map(
+            json!({"type":"message_start","message":priced("pending", 1000)}),
+            1000,
+        );
+        mapper.map(
+            json!({"type":"message_end","message":priced("stop", 1000)}),
+            4500,
+        );
+        let entries = vec![
+            json!({"type":"message","id":"b","parentId":null,"timestamp":"2026-09-07T16:09:46.140Z","message":priced("stop", 1000)}),
+        ];
+        let history = history(&entries, Some("b"), &shared);
+        assert_eq!(history[0].id, "live-1");
+        assert_eq!(history[0].usage.as_ref().unwrap().ended_at, Some(4500));
+    }
+
+    #[test]
+    fn reads_javascript_iso_times() {
+        assert_eq!(iso_millis("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(
+            iso_millis("2024-02-29T23:59:59.999Z"),
+            Some(1_709_251_199_999)
+        );
+        assert_eq!(
+            iso_millis("2026-09-07T16:09:46.140Z"),
+            Some(1_788_797_386_140)
+        );
+        assert_eq!(iso_millis("2026-09-07T16:09:46"), None);
+        assert_eq!(iso_millis("yesterday"), None);
     }
 
     #[test]
@@ -1236,6 +1408,7 @@ mod tests {
         let stopped = message(
             &json!({"role":"assistant","content":[],"stopReason":"aborted"}),
             "m".into(),
+            None,
         )
         .unwrap();
         assert!(stopped.stopped && stopped.error.is_none());
@@ -1243,7 +1416,7 @@ mod tests {
 
     #[test]
     fn hides_system_messages() {
-        assert!(message(&json!({"role":"system","content":""}), "s".into()).is_none());
+        assert!(message(&json!({"role":"system","content":""}), "s".into(), None).is_none());
     }
 
     #[test]

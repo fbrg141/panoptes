@@ -80,6 +80,7 @@ describe("applyEvent", () => {
         timestamp: null,
         error: null,
         stopped: false,
+        usage: null,
       },
     });
     expect(c.queued).toHaveLength(2);
@@ -109,6 +110,7 @@ describe("applyEvent", () => {
           timestamp: 1,
           error: null,
           stopped: false,
+          usage: null,
         },
       },
       { type: "runSettled", aborted: false },
