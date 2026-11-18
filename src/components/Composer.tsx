@@ -288,7 +288,8 @@ export function Composer({
     saveDraft(sessionKey, { text: "", attachments: [], mentioned: [] });
     void send(prompt.text, { images: prompt.images, queue }, sessionKey).then((delivered) => {
       if (delivered || !sentFrom) return;
-      // The prompt did not reach the agent: give back what was typed.
+      // The prompt was not accepted: give back what was typed. If the process
+      // exited, it may still have arrived, and the error says to check first.
       const here = key.current === sentFrom;
       const current = here
         ? { ...live.current, mentioned: [...live.current.mentioned] }

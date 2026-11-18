@@ -394,6 +394,10 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
     );
 
     let events = until(&mut rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        HarnessEvent::MessageCompleted { message } if message.role == Role::User
+    )));
     let Some(HarnessEvent::Exited { code, stderr_tail }) = events.last() else {
         unreachable!()
     };
@@ -405,7 +409,7 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
         .unwrap_err();
     assert_eq!(
         HarnessError::kind_of(&error),
-        Some(HarnessErrorKind::Exited)
+        Some(HarnessErrorKind::NotRunning)
     );
 }
 
@@ -494,7 +498,7 @@ async fn commands_after_shutdown_fail_fast() {
     let error = session.abort().await.unwrap_err();
     assert_eq!(
         HarnessError::kind_of(&error),
-        Some(HarnessErrorKind::Exited)
+        Some(HarnessErrorKind::NotRunning)
     );
     assert!(started.elapsed() < Duration::from_secs(1));
 }
