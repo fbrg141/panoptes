@@ -226,6 +226,23 @@ describe("store", () => {
     expect(store.getState().statuses["pi:s1"]).toBe("done");
   });
 
+  it("reports a failed first open and clears the error on retry", async () => {
+    fake.backend.openSession.mockRejectedValueOnce({ kind: "other", message: "Could not start" });
+    await store.getState().open(session);
+    expect(store.getState().conversations["pi:s1"]).toBeUndefined();
+    expect(store.getState().openErrors["pi:s1"]).toBe("Could not start");
+
+    await store.getState().open(session);
+    expect(store.getState().openErrors["pi:s1"]).toBeUndefined();
+    expect(store.getState().conversations["pi:s1"]).toBeDefined();
+
+    // Reopening an already loaded session must not replace it with an error.
+    fake.backend.openSession.mockRejectedValueOnce({ kind: "other", message: "Reopen failed" });
+    await store.getState().open(session);
+    expect(store.getState().conversations["pi:s1"]).toBeDefined();
+    expect(store.getState().openErrors["pi:s1"]).toBeUndefined();
+  });
+
   it("addresses commands to an explicit pane's session, not the focused key", async () => {
     await store.getState().open(session);
     store.setState({ activeKey: "pi:another-pane" });

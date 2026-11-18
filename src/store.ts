@@ -54,6 +54,8 @@ export interface State {
   /** Backend-owned session membership for each lane. */
   navigation: LaneNavigation[];
   conversations: Record<string, Conversation>;
+  /** A failed first open, shown in its pane instead of loading forever. */
+  openErrors: Record<string, string>;
   /** Each open session's status, as the backend reports it. */
   statuses: Record<string, SessionStatus>;
   /** Keys with a prompt on its way to the harness. */
@@ -209,6 +211,7 @@ export function createAppStore(backend: typeof api) {
     const forget = (key: string) =>
       set((s) => {
         const { [key]: _closed, ...conversations } = s.conversations;
+        const { [key]: _openError, ...openErrors } = s.openErrors;
         const { [key]: _status, ...statuses } = s.statuses;
         const { [key]: _settings, ...settings } = s.settings;
         const { [key]: _models, ...models } = s.models;
@@ -216,6 +219,7 @@ export function createAppStore(backend: typeof api) {
         epochs.delete(key);
         return {
           conversations,
+          openErrors,
           statuses,
           settings,
           models,
@@ -264,6 +268,7 @@ export function createAppStore(backend: typeof api) {
       lanes: [],
       navigation: [],
       conversations: {},
+      openErrors: {},
       statuses: {},
       sending: {},
       settings: {},
@@ -304,7 +309,10 @@ export function createAppStore(backend: typeof api) {
       },
 
       open: async (session) => {
-        set({ activeKey: session.key });
+        set((s) => {
+          const { [session.key]: _openError, ...openErrors } = s.openErrors;
+          return { activeKey: session.key, openErrors };
+        });
         const epoch = bump(session.key);
         try {
           const opened = await backend.openSession(session);
@@ -313,6 +321,12 @@ export function createAppStore(backend: typeof api) {
           adopt(opened, opened.key === session.key ? epoch : undefined);
           await get().refresh();
         } catch (e) {
+          // A reopened session keeps its transcript. A first open needs its
+          // own error state, or the pane would show "Starting" forever.
+          if (!get().conversations[session.key] && epochs.get(session.key) === epoch) {
+            const message = describeError(e);
+            set((s) => ({ openErrors: { ...s.openErrors, [session.key]: message } }));
+          }
           fail(e);
         }
       },
