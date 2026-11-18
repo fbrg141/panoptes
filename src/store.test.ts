@@ -416,6 +416,18 @@ describe("store", () => {
     expect(store.getState().error).toBeNull();
   });
 
+  it("does not resend a prompt when the process exits after it may have arrived", async () => {
+    await store.getState().open(session);
+    fake.backend.sendPrompt.mockRejectedValueOnce({
+      kind: "exited",
+      message: "Pi exited before answering `prompt`",
+    });
+    expect(await store.getState().send("hello")).toBe(false);
+    expect(fake.backend.openSession).toHaveBeenCalledTimes(1);
+    expect(fake.backend.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(store.getState().error).toBe("Pi exited before answering `prompt`");
+  });
+
   it("shows a rejected prompt without reopening", async () => {
     await store.getState().open(session);
     fake.backend.sendPrompt.mockRejectedValueOnce({ kind: "rejected", message: "No model" });

@@ -143,6 +143,9 @@ export function errorKind(error: unknown): ErrorKind {
 /** The session's process is gone; opening it again starts a new one. */
 const needsReopen = (error: unknown) => ["notOpen", "exited"].includes(errorKind(error));
 
+/** Nothing was sent to the absent process, so retrying cannot duplicate it. */
+const canRetryPrompt = (error: unknown) => errorKind(error) === "notOpen";
+
 /** Builds the store around an API, so tests can pass a fake one. */
 export function createAppStore(backend: typeof api) {
   let listening = false;
@@ -402,10 +405,11 @@ export function createAppStore(backend: typeof api) {
           return backend.sendPrompt(key, text, images, mode);
         };
         try {
-          // A session whose process has gone is resumed and prompted again, once.
+          // Retry once only when nothing was sent. If the process exited
+          // after receiving the prompt, reopening and resending could duplicate it.
           // A queued prompt shows once the harness reports its queue.
           const outcome = await prompt().catch(async (e) => {
-            if (!needsReopen(e)) throw e;
+            if (!canRetryPrompt(e)) throw e;
             await reopen();
             return prompt();
           });

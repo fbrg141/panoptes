@@ -3,7 +3,7 @@
 for the adapter's tests. Prompts select behaviour:
 
   "ask"    asks a confirm question and replies with the answer
-  "crash"  exits with code 7 straight away
+  "crash"  records the prompt, then exits with code 7 before responding
   "tool"   runs a `bash` call that fails with exit code 3, then replies
   "queue"  lists two steering prompts, then one, then none, before replying
   "gate"   starts a `bash` call, asks Yes/No before running it (as a
@@ -195,6 +195,13 @@ for line in sys.stdin:
         respond(command, {"contextUsage": {"tokens": 1200, "contextWindow": model["contextWindow"], "percent": 4}})
     elif kind == "prompt":
         if command["message"] == "crash":
+            # The command may already be part of the conversation even though
+            # its caller never gets a response. Retrying it could duplicate it.
+            user = {"role": "user", "content": "crash", "timestamp": tick()}
+            send({"type": "agent_start"})
+            send({"type": "message_start", "message": user})
+            send({"type": "message_end", "message": user})
+            append(user)
             sys.stderr.write("fake pi crashed\n")
             sys.exit(7)
         if command["message"] == "orphan":

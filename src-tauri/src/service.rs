@@ -78,6 +78,7 @@ impl From<anyhow::Error> for ServiceError {
     fn from(error: anyhow::Error) -> Self {
         let kind = match HarnessError::kind_of(&error) {
             Some(HarnessErrorKind::Rejected) => ErrorKind::Rejected,
+            Some(HarnessErrorKind::NotRunning) => ErrorKind::NotOpen,
             Some(HarnessErrorKind::Exited) => ErrorKind::Exited,
             Some(HarnessErrorKind::TimedOut) => ErrorKind::TimedOut,
             None => ErrorKind::Other,
@@ -3012,6 +3013,8 @@ mod tests {
             .into();
         assert_eq!(error.kind, ErrorKind::TimedOut);
         assert_eq!(error.message, "Could not prompt: slow");
+        let error: ServiceError = anyhow::Error::from(HarnessError::not_running("gone")).into();
+        assert_eq!(error.kind, ErrorKind::NotOpen);
         let error: ServiceError = anyhow::anyhow!("disk full").into();
         assert_eq!(error.kind, ErrorKind::Other);
         assert_eq!(

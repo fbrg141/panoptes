@@ -386,7 +386,10 @@ pub struct HarnessError {
 pub enum HarnessErrorKind {
     /// The harness answered and refused the command.
     Rejected,
-    /// The harness process is gone, so nothing can answer.
+    /// The session has no running process and the command was not sent.
+    /// Reopening it and retrying cannot duplicate the command.
+    NotRunning,
+    /// The harness process ended after a command may have been sent.
     Exited,
     /// The harness did not answer in time.
     TimedOut,
@@ -402,6 +405,10 @@ impl HarnessError {
 
     pub fn rejected(message: impl Into<String>) -> Self {
         Self::new(HarnessErrorKind::Rejected, message)
+    }
+
+    pub fn not_running(message: impl Into<String>) -> Self {
+        Self::new(HarnessErrorKind::NotRunning, message)
     }
 
     pub fn exited(message: impl Into<String>) -> Self {
