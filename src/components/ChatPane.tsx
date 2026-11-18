@@ -31,6 +31,8 @@ export function ChatPane({
   canClose?: boolean;
 }) {
   const conversation = useStore((s) => s.conversations[sessionKey]);
+  const openError = useStore((s) => s.openErrors[sessionKey]);
+  const open = useStore((s) => s.open);
   const status = useStore((s) => s.statuses[sessionKey]) ?? "idle";
   const sending = useStore((s) => s.sending[sessionKey] ?? false);
   const session = useStore((s) => s.sessions.find((x) => x.key === sessionKey));
@@ -169,7 +171,25 @@ export function ChatPane({
           }}
         >
           <div ref={content} className="mx-auto flex max-w-3xl flex-col gap-6">
-            {!conversation && (
+            {!conversation && openError && (
+              <div className="flex flex-col items-start gap-3" role="alert">
+                <div className="flex items-center gap-2 text-error">
+                  <Icon name="circle-alert" size={16} />
+                  <span className="text-body-strong">Could not start the agent</span>
+                </div>
+                <p className="text-ink-muted">{openError}</p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon="refresh-cw"
+                  disabled={!session}
+                  onClick={() => session && void open(session)}
+                >
+                  Try again
+                </Button>
+              </div>
+            )}
+            {!conversation && !openError && (
               <div className="flex items-center gap-3 text-ink-muted">
                 <LoopMark size={20} state="loading" tone="current" />
                 Starting the agent…
