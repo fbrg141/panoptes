@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use panoptes_harness::{
-    AgentSession, Answer, Block, ContextUsage, Harness, HarnessError, HarnessErrorKind,
-    HarnessEvent, ImageAttachment, PromptMode, PromptOutcome, QuestionKind, Role, StartSession,
-    ToolKind, ToolOutput, ToolStatus,
+    AgentSession, Answer, Block, CommandKind, ContextUsage, Harness, HarnessError,
+    HarnessErrorKind, HarnessEvent, ImageAttachment, PromptMode, PromptOutcome, QuestionKind, Role,
+    StartSession, StopReason, ToolKind, ToolOutput, ToolStatus,
 };
 use panoptes_pi::{PiHarness, PiInstall};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -119,6 +119,20 @@ async fn a_read_only_session_gets_only_reading_tools() {
 }
 
 #[tokio::test]
+async fn profile_instructions_are_appended_at_startup() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.instructions = Some("Prefer small changes.".into());
+    let (session, mut rx) = start_with(request).await;
+    session
+        .prompt("instructions".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert_eq!(text_of(&events), "instructions=Prefer small changes.");
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_prompt_streams_and_settles() {
     let (session, mut rx) = start().await;
     assert_eq!(session.harness_ref().id, "fake-session");
@@ -168,6 +182,42 @@ async fn history_keeps_the_ids_messages_streamed_under() {
         assert_eq!(ids, streamed);
     }
     assert_eq!(streamed.len(), 4);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reply_reports_its_model_usage_and_cost_live_and_in_history() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("hi".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    let live = events
+        .into_iter()
+        .filter_map(|event| match event {
+            HarnessEvent::MessageCompleted { message } => message.usage,
+            _ => None,
+        })
+        .next()
+        .expect("the reply has usage");
+    assert_eq!(live.model.as_deref(), Some("small"));
+    assert_eq!(live.provider.as_deref(), Some("fake"));
+    assert_eq!(
+        (
+            live.input_tokens,
+            live.output_tokens,
+            live.cache_read_tokens
+        ),
+        (100, 20, 400)
+    );
+    assert_eq!(live.cost, Some(0.0007));
+    assert_eq!(live.stop_reason, Some(StopReason::Finished));
+    assert!(live.ended_at.is_some());
+
+    let history = session.history().await.unwrap();
+    assert_eq!(history[0].usage, None, "a prompt has no usage");
+    assert_eq!(history[1].usage.as_ref(), Some(&live));
     session.shutdown().await;
 }
 
@@ -344,6 +394,10 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
     );
 
     let events = until(&mut rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        HarnessEvent::MessageCompleted { message } if message.role == Role::User
+    )));
     let Some(HarnessEvent::Exited { code, stderr_tail }) = events.last() else {
         unreachable!()
     };
@@ -355,7 +409,7 @@ async fn a_crash_reports_the_exit_code_and_stderr() {
         .unwrap_err();
     assert_eq!(
         HarnessError::kind_of(&error),
-        Some(HarnessErrorKind::Exited)
+        Some(HarnessErrorKind::NotRunning)
     );
 }
 
@@ -444,7 +498,7 @@ async fn commands_after_shutdown_fail_fast() {
     let error = session.abort().await.unwrap_err();
     assert_eq!(
         HarnessError::kind_of(&error),
-        Some(HarnessErrorKind::Exited)
+        Some(HarnessErrorKind::NotRunning)
     );
     assert!(started.elapsed() < Duration::from_secs(1));
 }
@@ -471,6 +525,22 @@ async fn images_travel_with_the_prompt() {
             data: Some("iVBORw0K".into())
         }
     );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn discoverable_commands_have_neutral_names_and_kinds() {
+    let (session, _rx) = start().await;
+    let commands = session.commands().await.unwrap();
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0].name, "fix-tests");
+    assert_eq!(
+        commands[0].description.as_deref(),
+        Some("Fix failing tests")
+    );
+    assert_eq!(commands[0].kind, CommandKind::Prompt);
+    assert_eq!(commands[1].kind, CommandKind::Extension);
+    assert_eq!(commands[2].kind, CommandKind::Skill);
     session.shutdown().await;
 }
 

@@ -9,17 +9,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::Context;
 use panoptes_harness::{
-    AgentSession, Answer, DiscoveredSession, Harness, HarnessError, HarnessErrorKind, HarnessEvent,
-    HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, Role,
+    AgentSession, Answer, CommandInfo, DiscoveredSession, Harness, HarnessError, HarnessErrorKind,
+    HarnessEvent, HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, Role,
     SessionSettings, SessionStatus, StartSession,
 };
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::lanes::{self, ArchiveResult, ArchiveStrategy, LaneWork};
+use crate::changes::{self, Changes, DiffOptions, Hunk, TreeRange};
+use crate::cleanup::{self, IdleLane, LaneCleanup};
+use crate::eventlog::EventLog;
+use crate::lanes::{self, ArchiveResult, ArchiveStrategy, DeleteResult, DetachedHead, LaneWork};
 use crate::projects::{self, Location};
-use crate::store::{Lane, LaneState, Project, ProjectSettings, Store};
+use crate::store::{Lane, LaneState, Preferences, ProfileInput, Project, ProjectSettings, Store};
 use crate::writes;
+use serde_json::json;
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -74,6 +78,7 @@ impl From<anyhow::Error> for ServiceError {
     fn from(error: anyhow::Error) -> Self {
         let kind = match HarnessError::kind_of(&error) {
             Some(HarnessErrorKind::Rejected) => ErrorKind::Rejected,
+            Some(HarnessErrorKind::NotRunning) => ErrorKind::NotOpen,
             Some(HarnessErrorKind::Exited) => ErrorKind::Exited,
             Some(HarnessErrorKind::TimedOut) => ErrorKind::TimedOut,
             None => ErrorKind::Other,
@@ -155,6 +160,9 @@ struct StatusTracker {
     /// Open questions and approvals, with when the harness stops waiting
     /// (Unix ms).
     questions: HashMap<String, Option<i64>>,
+    /// The events that asked them, in order, so a reopened window can be
+    /// shown them again. Only those still in `questions` are open.
+    asked: Vec<HarnessEvent>,
     /// The latest assistant message in this run reported an error.
     errored: bool,
     /// How the last run ended: Idle before any, then Done or Failed.
@@ -167,6 +175,7 @@ impl Default for StatusTracker {
             status: SessionStatus::Idle,
             running: false,
             questions: HashMap::new(),
+            asked: Vec::new(),
             errored: false,
             settled: SessionStatus::Idle,
         }
@@ -188,10 +197,12 @@ impl StatusTracker {
             HarnessEvent::Question { question } => {
                 self.questions
                     .insert(question.id.clone(), question.expires_at);
+                self.asked.push(event.clone());
             }
             HarnessEvent::Approval { approval } => {
                 self.questions
                     .insert(approval.id.clone(), approval.expires_at);
+                self.asked.push(event.clone());
             }
             HarnessEvent::RunSettled { .. } => {
                 self.running = false;
@@ -217,10 +228,32 @@ impl StatusTracker {
         self.update(now)
     }
 
+    /// What a window that opens the session now needs to catch up: its
+    /// status, and the events that put it there (the run's start and the
+    /// questions and approvals still waiting).
+    fn snapshot(&mut self, now: i64) -> (SessionStatus, Vec<HarnessEvent>) {
+        self.update(now);
+        let mut replay = Vec::new();
+        if self.running {
+            replay.push(HarnessEvent::RunStarted);
+        }
+        replay.extend(self.asked.iter().cloned());
+        (self.status, replay)
+    }
+
     fn update(&mut self, now: i64) -> Option<SessionStatus> {
         // The harness picks a default once a question expires.
         self.questions
             .retain(|_, expires| expires.is_none_or(|at| at > now));
+        let questions = &self.questions;
+        self.asked.retain(|event| {
+            let id = match event {
+                HarnessEvent::Question { question } => &question.id,
+                HarnessEvent::Approval { approval } => &approval.id,
+                _ => return false,
+            };
+            questions.contains_key(id)
+        });
         let status = if !self.questions.is_empty() {
             SessionStatus::Waiting
         } else if self.running {
@@ -335,7 +368,23 @@ pub enum AdoptionOutcome {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ArchiveLaneOutcome {
     Archived,
-    Dirty { lane: Lane },
+    Dirty {
+        lane: Lane,
+    },
+    DetachedHead {
+        lane: Lane,
+        detached_head: DetachedHead,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum DeleteLaneOutcome {
+    Deleted,
+    DetachedHead {
+        lane: Lane,
+        detached_head: DetachedHead,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -345,6 +394,12 @@ pub struct OpenedSession {
     /// Panoptes key.
     pub key: String,
     pub history: Vec<Message>,
+    /// The session's status now, so a reloaded window does not show a
+    /// Running or Waiting session as idle until its next change.
+    pub status: SessionStatus,
+    /// Events to apply over the history to catch up: the run's start while
+    /// it runs, then the questions and approvals still waiting.
+    pub replay: Vec<HarnessEvent>,
 }
 
 type Tracker = Arc<std::sync::Mutex<StatusTracker>>;
@@ -369,6 +424,8 @@ struct Launch {
     lane: Option<i64>,
     /// Read-only for archived lanes or a missing-folder resume.
     read_only: bool,
+    /// Extra system-prompt instructions stored by a newly created session.
+    instructions: Option<String>,
 }
 
 /// Forwards one process's events, tagged with its session's key, and works
@@ -383,6 +440,7 @@ struct Forwarder {
     /// Set if the process ended before `start` had listed the session as
     /// open, with what it last wrote to stderr.
     early_exit: EarlyExit,
+    log: EventLog,
 }
 
 /// Lanes other than its own that each open session has edited, by lane.
@@ -460,6 +518,23 @@ impl Forwarder {
                     continue;
                 }
                 open.remove(&self.key);
+                if let HarnessEvent::Exited { code, stderr_tail } = &event {
+                    self.log.record(
+                        "sessionExited",
+                        json!({"key": self.key, "code": code, "stderrTail": stderr_tail}),
+                    );
+                }
+            }
+            match &event {
+                HarnessEvent::Question { question } => self.log.record(
+                    "asked",
+                    json!({"key": self.key, "id": question.id, "kind": "question"}),
+                ),
+                HarnessEvent::Approval { approval } => self.log.record(
+                    "asked",
+                    json!({"key": self.key, "id": approval.id, "kind": "approval"}),
+                ),
+                _ => {}
             }
             {
                 // Holding the tracker while emitting keeps statuses in
@@ -471,6 +546,8 @@ impl Forwarder {
                     event: SessionUpdate::Harness(event),
                 });
                 if let Some(status) = changed {
+                    self.log
+                        .record("status", json!({"key": self.key, "status": status}));
                     (self.emit)(SessionEvent {
                         key: self.key.clone(),
                         event: SessionUpdate::Status(StatusChanged { status }),
@@ -481,13 +558,44 @@ impl Forwarder {
     }
 }
 
+/// Lists a session as starting for as long as it lives.
+struct Starting {
+    starting: Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
+    key: String,
+}
+
+impl Starting {
+    fn new(
+        starting: &Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
+        key: &str,
+        lane: Option<i64>,
+    ) -> Self {
+        starting.lock().unwrap().insert(key.to_string(), lane);
+        Self {
+            starting: starting.clone(),
+            key: key.to_string(),
+        }
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        self.starting.lock().unwrap().remove(&self.key);
+    }
+}
+
 pub struct Service {
     harnesses: HashMap<String, Arc<dyn Harness>>,
     open: Arc<Mutex<HashMap<String, OpenSession>>>,
-    /// One lock per session key while it is being opened, so concurrent
-    /// opens of one session start one process, never two writers on one
-    /// session file.
-    opening: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// One lifecycle lock per session key, held by every step that starts,
+    /// stops or re-homes its process: open, create, close and adopt. So a
+    /// session never gets a second process while its first one is starting
+    /// or shutting down. Entries are never removed, so two callers can never
+    /// hold different locks for one key.
+    lifecycle: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Sessions whose process is starting, with their lane. They are not in
+    /// `open` yet, and a lane must not be archived or deleted under them.
+    starting: Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
     generations: AtomicU64,
     /// Shared with the blocking threads that run every store call.
     store: Arc<std::sync::Mutex<Store>>,
@@ -499,6 +607,8 @@ pub struct Service {
     busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
     /// Open sessions seen editing a lane that is not their own.
     lane_writers: LaneWriters,
+    /// Panoptes' own record of what happened; disabled unless given one.
+    log: EventLog,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
@@ -517,16 +627,32 @@ impl Service {
                 .map(|harness| (harness.id().to_string(), harness))
                 .collect(),
             open: Arc::default(),
-            opening: Mutex::default(),
+            lifecycle: std::sync::Mutex::default(),
+            starting: Arc::default(),
             generations: AtomicU64::new(1),
             store: Arc::new(std::sync::Mutex::new(store)),
             lanes_root,
             lane_cancellations: Arc::default(),
             busy_lanes: Arc::default(),
             lane_writers: Arc::default(),
+            log: EventLog::default(),
             locations: std::sync::Mutex::default(),
             emit,
         }
+    }
+
+    /// Records what happens from now on into `log`.
+    pub fn with_event_log(mut self, log: EventLog) -> Self {
+        self.log = log;
+        self
+    }
+
+    /// Records an error a command returned to the UI.
+    pub fn record_error(&self, command: &str, error: &ServiceError) {
+        self.log.record(
+            "error",
+            json!({"command": command, "kind": error.kind, "message": error.message}),
+        );
     }
 
     fn harness(&self, id: &str) -> ServiceResult<Arc<dyn Harness>> {
@@ -536,6 +662,33 @@ impl Service {
                 format!("The {id} harness is not available"),
             )
         })
+    }
+
+    /// Waits for, and holds, the lifecycle lock of `key`.
+    async fn lifecycle(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .lifecycle
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_default()
+            .clone();
+        lock.lock_owned().await
+    }
+
+    /// Whether a session in lane `id` is open or starting.
+    async fn lane_in_use(&self, id: i64) -> bool {
+        self.starting
+            .lock()
+            .unwrap()
+            .values()
+            .any(|lane| *lane == Some(id))
+            || self
+                .open
+                .lock()
+                .await
+                .values()
+                .any(|open| open.lane == Some(id))
     }
 
     async fn session(&self, key: &str) -> ServiceResult<Arc<dyn AgentSession>> {
@@ -779,9 +932,13 @@ impl Service {
         locator: String,
         cwd: String,
     ) -> ServiceResult<OpenedSession> {
+        let mut guard = self.lifecycle(key).await;
         let key = match panoptes_id(key) {
             Some(_) => key.to_string(),
             None => {
+                // Looked up under the conversation's own lock, which `adopt`
+                // holds while it records an adoption: an open never starts
+                // a raw process on a conversation a lane has just taken.
                 let harness_id = key
                     .strip_prefix(&format!("{harness}:"))
                     .unwrap_or_default()
@@ -791,28 +948,39 @@ impl Service {
                     .with_store(move |store| store.session_for(&name, &harness_id))
                     .await
                     .map_err(err)?;
-                adopted.map_or_else(|| key.to_string(), panoptes_key)
+                match adopted {
+                    Some(id) => {
+                        drop(guard);
+                        let key = panoptes_key(id);
+                        guard = self.lifecycle(&key).await;
+                        key
+                    }
+                    None => key.to_string(),
+                }
             }
         };
-        let lock = self
-            .opening
+
+        let existing = self
+            .open
             .lock()
             .await
-            .entry(key.clone())
-            .or_default()
-            .clone();
-        let _guard = lock.lock().await;
-
-        let existing = self.open.lock().await.get(&key).map(|o| o.session.clone());
+            .get(&key)
+            .map(|o| (o.session.clone(), o.status.clone()));
         let result = match existing {
-            Some(session) => session
-                .history()
-                .await
-                .map(|history| OpenedSession {
-                    key: key.clone(),
-                    history,
-                })
-                .map_err(err),
+            Some((session, status)) => match session.history().await {
+                Ok(history) => {
+                    // Taken after the history, so nothing asked meanwhile
+                    // is missed; the UI drops what it already has by id.
+                    let (status, replay) = status.lock().unwrap().snapshot(now_ms());
+                    Ok(OpenedSession {
+                        key: key.clone(),
+                        history,
+                        status,
+                        replay,
+                    })
+                }
+                Err(error) => Err(err(error)),
+            },
             None => match panoptes_id(&key) {
                 Some(id) => match self.recorded_launch(id).await {
                     Ok(launch) => self.start(&key, launch, None).await,
@@ -825,13 +993,13 @@ impl Service {
                         resume: Some(locator),
                         lane: None,
                         read_only: false,
+                        instructions: None,
                     };
                     self.start(&key, launch, None).await
                 }
             },
         };
-        drop(_guard);
-        self.opening.lock().await.remove(&key);
+        drop(guard);
         result
     }
 
@@ -855,6 +1023,7 @@ impl Service {
             // An archived lane has no worktree to edit; its session stays
             // readable without editing tools.
             read_only: !active,
+            instructions: record.instructions,
         })
     }
 
@@ -862,7 +1031,18 @@ impl Service {
     /// its key, exist before the harness starts.
     /// A lane that another Running or Waiting session has edited gets no
     /// session of its own until that one is Done: two writers otherwise.
+    #[cfg(test)]
     pub async fn create(&self, lane_id: i64, harness: &str) -> ServiceResult<OpenedSession> {
+        self.create_with(lane_id, harness, None).await
+    }
+
+    /// Creates a session with instructions to append to its system prompt.
+    pub async fn create_with(
+        &self,
+        lane_id: i64,
+        harness: &str,
+        instructions: Option<String>,
+    ) -> ServiceResult<OpenedSession> {
         self.harness(harness)?;
         let busy = {
             let open = self.open.lock().await;
@@ -875,14 +1055,17 @@ impl Service {
             ));
         }
         let name = harness.to_string();
+        let stored = instructions.clone();
         let (record, lane) = self
             .with_store(move |store| {
-                let record = store.add_session(lane_id, &name)?;
+                let record = store.add_session_configured(lane_id, &name, stored.as_deref())?;
                 Ok((record, store.lane(lane_id)?))
             })
             .await
             .map_err(err)?;
-        self.start_recorded(record.id, &lane, harness).await
+        let _guard = self.lifecycle(&panoptes_key(record.id)).await;
+        self.start_recorded(record.id, &lane, harness, instructions)
+            .await
     }
 
     /// Adopts a discovered harness conversation. With no explicit lane, a
@@ -908,6 +1091,9 @@ impl Service {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ServiceError::new(ErrorKind::Rejected, "Invalid harness session key"))?
             .to_string();
+        // Held until the adoption is recorded, so no open of this
+        // conversation can start a raw process in between.
+        let _guard = self.lifecycle(key).await;
         let name = harness.to_string();
         let id_for_lookup = harness_id.clone();
         if let Some(id) = self
@@ -972,6 +1158,7 @@ impl Service {
         id: i64,
         lane: &Lane,
         harness: &str,
+        instructions: Option<String>,
     ) -> ServiceResult<OpenedSession> {
         let launch = Launch {
             harness: harness.to_string(),
@@ -979,6 +1166,7 @@ impl Service {
             resume: None,
             lane: Some(lane.id),
             read_only: false,
+            instructions,
         };
         let result = self.start(&panoptes_key(id), launch, None).await;
         if result.is_err() {
@@ -998,6 +1186,18 @@ impl Service {
         status: Option<Tracker>,
     ) -> ServiceResult<OpenedSession> {
         let harness = self.harness(&launch.harness)?;
+        // Listed as starting before the busy check, while archive and
+        // delete mark the lane busy before checking for sessions: whichever
+        // comes second sees the other.
+        let _starting = Starting::new(&self.starting, key, launch.lane);
+        if let Some(lane) = launch.lane
+            && self.busy_lanes.lock().unwrap().contains(&lane)
+        {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "This lane is being archived, restored or deleted",
+            ));
+        }
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HarnessEvent>();
         let fresh = status.is_none();
@@ -1025,14 +1225,17 @@ impl Service {
                     cwd: launch.cwd.clone(),
                 },
                 early_exit: early_exit.clone(),
+                log: self.log.clone(),
             }
             .run(rx),
         );
 
+        let resumed = launch.resume.is_some();
         let request = StartSession {
             cwd: launch.cwd,
             resume: launch.resume,
             read_only: launch.read_only,
+            instructions: launch.instructions,
         };
         let started = async {
             let session: Arc<dyn AgentSession> =
@@ -1063,7 +1266,7 @@ impl Service {
                 return Err(error);
             }
         };
-        {
+        let (now, replay) = {
             let mut open = self.open.lock().await;
             let died = early_exit.lock().unwrap().take();
             if let Some(stderr_tail) = died {
@@ -1079,6 +1282,17 @@ impl Service {
                     },
                 ));
             }
+            self.log.record(
+                "sessionStarted",
+                json!({
+                    "key": key,
+                    "harness": launch.harness,
+                    "lane": launch.lane,
+                    "resumed": resumed,
+                    "readOnly": launch.read_only,
+                }),
+            );
+            let (now, replay) = status.lock().unwrap().snapshot(now_ms());
             open.insert(
                 key.to_string(),
                 OpenSession {
@@ -1088,10 +1302,13 @@ impl Service {
                     lane: launch.lane,
                 },
             );
-        }
+            (now, replay)
+        };
         Ok(OpenedSession {
             key: key.to_string(),
             history,
+            status: now,
+            replay,
         })
     }
 
@@ -1120,6 +1337,101 @@ impl Service {
 
     pub async fn models(&self, key: &str) -> ServiceResult<Vec<ModelInfo>> {
         self.session(key).await?.models().await.map_err(err)
+    }
+
+    pub async fn commands(&self, key: &str) -> ServiceResult<Vec<CommandInfo>> {
+        self.session(key).await?.commands().await.map_err(err)
+    }
+
+    pub async fn preferences(&self) -> ServiceResult<Preferences> {
+        self.with_store(|store| store.preferences())
+            .await
+            .map_err(err)
+    }
+
+    pub async fn save_profile(
+        &self,
+        id: Option<i64>,
+        input: ProfileInput,
+    ) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.save_profile(id, &input))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn delete_profile(&self, id: i64) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.delete_profile(id))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn set_model_favorite(
+        &self,
+        model_id: String,
+        favorite: bool,
+    ) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.set_model_favorite(&model_id, favorite))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn set_model_hidden(
+        &self,
+        model_id: String,
+        hidden: bool,
+    ) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.set_model_hidden(&model_id, hidden))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn set_cleanup_idle_days(&self, days: u32) -> ServiceResult<Preferences> {
+        self.with_store(move |store| store.set_cleanup_idle_days(days))
+            .await?;
+        self.preferences().await
+    }
+
+    /// The lane's complete diff against its merge-base, without patch text.
+    pub async fn lane_changes(&self, lane_id: i64) -> ServiceResult<Changes> {
+        let (project, lane) = self
+            .with_store(move |store| {
+                let lane = store.lane(lane_id)?;
+                let project = store.project(lane.project_id)?;
+                Ok((project, lane))
+            })
+            .await
+            .map_err(err)?;
+        tokio::task::spawn_blocking(move || {
+            let range = changes::lane_range(&project, &lane)?;
+            changes::diff(Path::new(&project.repo), &range, DiffOptions::default())
+        })
+        .await
+        .context("The lane diff stopped")
+        .and_then(|result| result)
+        .map_err(err)
+    }
+
+    /// Patch hunks for one file in the range the lane list returned.
+    pub async fn file_hunks(
+        &self,
+        lane_id: i64,
+        path: String,
+        range: TreeRange,
+    ) -> ServiceResult<Vec<Hunk>> {
+        let repo = self
+            .with_store(move |store| {
+                let lane = store.lane(lane_id)?;
+                Ok(store.project(lane.project_id)?.repo)
+            })
+            .await
+            .map_err(err)?;
+        tokio::task::spawn_blocking(move || {
+            changes::hunks(Path::new(&repo), &range, &path, DiffOptions::default())
+        })
+        .await
+        .context("The file diff stopped")
+        .and_then(|result| result)
+        .map_err(err)
     }
 
     /// Switches the session's model and returns its settings after the
@@ -1161,8 +1473,12 @@ impl Service {
             .answer(question_id.clone(), answer)
             .await
             .map_err(err)?;
+        self.log
+            .record("answered", json!({"key": key, "id": question_id}));
         let mut tracker = status.lock().unwrap();
         if let Some(status) = tracker.answered(&question_id, now_ms()) {
+            self.log
+                .record("status", json!({"key": key, "status": status}));
             (self.emit)(SessionEvent {
                 key: key.to_string(),
                 event: SessionUpdate::Status(StatusChanged { status }),
@@ -1171,9 +1487,14 @@ impl Service {
         Ok(())
     }
 
+    /// Stops a session's process. It waits for a start in progress to
+    /// finish, so that process is stopped too, and holds the session's lock
+    /// until the process has gone, so a reopen never overlaps it.
     pub async fn close(&self, key: &str) {
+        let _guard = self.lifecycle(key).await;
         let open = self.open.lock().await.remove(key);
         if let Some(open) = open {
+            self.log.record("sessionClosed", json!({"key": key}));
             open.session.shutdown().await;
         }
     }
@@ -1324,7 +1645,17 @@ impl Service {
         .and_then(|result| result);
         self.lane_cancellations.lock().unwrap().remove(&project_id);
         match result {
-            Ok(lane) => Ok(lane),
+            Ok(lane) => {
+                self.log.record(
+                    "laneCreated",
+                    json!({
+                        "lane": lane.id,
+                        "project": lane.project_id,
+                        "mainCheckout": lane.worktrees.iter().any(|tree| tree.main_checkout),
+                    }),
+                );
+                Ok(lane)
+            }
             Err(_) if cancelled.load(Ordering::Relaxed) => Err(ServiceError::new(
                 ErrorKind::Cancelled,
                 "Lane creation cancelled",
@@ -1339,21 +1670,140 @@ impl Service {
         }
     }
 
+    /// Disk usage and safely archivable idle lanes for one project. This is
+    /// deliberately on demand: measuring worktrees is too costly for `list`.
+    pub async fn lane_cleanup(&self, project_id: i64) -> ServiceResult<LaneCleanup> {
+        let listing = self.list().await;
+        let activity_complete = listing.errors.is_empty();
+        let (idle_days, creation_times) = self
+            .with_store(move |store| {
+                store.project(project_id)?;
+                Ok((
+                    store.preferences()?.cleanup_idle_days,
+                    store.lane_creation_times()?,
+                ))
+            })
+            .await
+            .map_err(err)?;
+        let created: HashMap<i64, i64> = creation_times.into_iter().collect();
+        let active: Vec<(Project, Lane)> = listing
+            .lanes
+            .iter()
+            .filter(|lane| lane.state == LaneState::Active)
+            .filter_map(|lane| {
+                let project = listing
+                    .projects
+                    .iter()
+                    .find(|project| project.id == lane.project_id)?;
+                Some((project.clone(), lane.clone()))
+            })
+            .collect();
+        let scan = tokio::task::spawn_blocking(move || cleanup::scan(project_id, &active))
+            .await
+            .context("The worktree cleanup scan stopped")
+            .map_err(err)?;
+
+        // Starting sessions are not listed as open yet. Include both sets so
+        // cleanup can never archive a lane under a process that is starting.
+        let mut in_use: HashSet<i64> = self
+            .starting
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|lane| *lane)
+            .collect();
+        in_use.extend(
+            self.open
+                .lock()
+                .await
+                .values()
+                .filter_map(|session| session.lane),
+        );
+        let busy_lanes = self.busy_lanes.lock().unwrap().clone();
+        let busy_writers: HashSet<i64> = listing
+            .navigation
+            .iter()
+            .filter(|entry| entry.busy_writer.is_some())
+            .map(|entry| entry.lane_id)
+            .collect();
+
+        let mut candidates = Vec::new();
+        if activity_complete {
+            let now = now_ms();
+            for lane in listing
+                .lanes
+                .iter()
+                .filter(|lane| lane.project_id == project_id && lane.state == LaneState::Active)
+            {
+                if in_use.contains(&lane.id)
+                    || busy_lanes.contains(&lane.id)
+                    || busy_writers.contains(&lane.id)
+                {
+                    continue;
+                }
+                let last_activity = listing
+                    .sessions
+                    .iter()
+                    .filter(|session| session.lane_id == Some(lane.id))
+                    .fold(
+                        created.get(&lane.id).copied().unwrap_or(0),
+                        |latest, session| latest.max(session.updated_at),
+                    );
+                if !cleanup::is_idle(last_activity, now, idle_days) {
+                    continue;
+                }
+                let Some(scanned) = scan.by_lane.get(&lane.id) else {
+                    continue;
+                };
+                let Some(preservation) = scanned.preservation else {
+                    continue;
+                };
+                candidates.push(IdleLane {
+                    lane: lane.clone(),
+                    last_activity,
+                    bytes: scanned.bytes,
+                    preservation,
+                });
+            }
+        }
+        candidates.sort_by(|a, b| {
+            b.bytes
+                .unwrap_or(0)
+                .cmp(&a.bytes.unwrap_or(0))
+                .then_with(|| a.last_activity.cmp(&b.last_activity))
+        });
+        let mut errors = listing.errors;
+        errors.extend(scan.errors);
+        Ok(LaneCleanup {
+            project: scan.project,
+            total: scan.total,
+            idle_days,
+            candidates,
+            errors,
+        })
+    }
+
     /// Archives a clean lane immediately. A dirty one is returned unchanged
     /// until the caller picks how its work should be preserved.
+    #[cfg(test)]
     pub async fn archive_lane(
         &self,
         id: i64,
         strategy: Option<ArchiveStrategy>,
     ) -> ServiceResult<ArchiveLaneOutcome> {
+        self.archive_lane_recovering(id, strategy, false).await
+    }
+
+    /// Archives after optionally performing the branch recovery the user
+    /// explicitly chose in the detached-HEAD dialog.
+    pub async fn archive_lane_recovering(
+        &self,
+        id: i64,
+        strategy: Option<ArchiveStrategy>,
+        recreate_branch: bool,
+    ) -> ServiceResult<ArchiveLaneOutcome> {
         let _busy = self.lane_busy(id)?;
-        if self
-            .open
-            .lock()
-            .await
-            .values()
-            .any(|open| open.lane == Some(id))
-        {
+        if self.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Close this lane's sessions before archiving it",
@@ -1376,8 +1826,14 @@ impl Service {
             // archive that stops in between can be finished later.
             let record =
                 |reference: Option<&str>| store.lock().unwrap().set_lane_checkpoint(id, reference);
-            match lanes::archive_recording(&project, &lane, strategy, &record)? {
+            match lanes::archive_recovering(&project, &lane, strategy, recreate_branch, &record)? {
                 ArchiveResult::Dirty => Ok(ArchiveLaneOutcome::Dirty { lane }),
+                ArchiveResult::DetachedHead(detached_head) => {
+                    Ok(ArchiveLaneOutcome::DetachedHead {
+                        lane,
+                        detached_head,
+                    })
+                }
                 ArchiveResult::Archived { checkpoint_ref } => {
                     store
                         .lock()
@@ -1389,6 +1845,45 @@ impl Service {
         })
         .await
         .context("The lane archive stopped")
+        .and_then(|result| result)
+        .map_err(err)
+        .inspect(|outcome| {
+            if matches!(outcome, ArchiveLaneOutcome::Archived) {
+                self.log
+                    .record("laneArchived", json!({"lane": id, "strategy": strategy}));
+            }
+        })
+    }
+
+    /// Saves a detached HEAD on the lane branch without removing the
+    /// worktree, so the user can then choose how to archive its changes.
+    pub async fn create_lane_branch(&self, id: i64) -> ServiceResult<()> {
+        let _busy = self.lane_busy(id)?;
+        if self.lane_in_use(id).await {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "Close this lane's sessions before recovering its branch",
+            ));
+        }
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || {
+            let lane = {
+                let store = store.lock().unwrap();
+                let lane = store.lane(id)?;
+                if lane.state != LaneState::Active {
+                    anyhow::bail!("That lane is archived; restore it before recovering its branch");
+                }
+                lane
+            };
+            let worktree = lane
+                .worktrees
+                .first()
+                .filter(|_| lane.worktrees.len() == 1)
+                .context("This operation needs exactly one worktree")?;
+            lanes::create_branch_here(Path::new(&worktree.path), &lane)
+        })
+        .await
+        .context("The lane branch recovery stopped")
         .and_then(|result| result)
         .map_err(err)
     }
@@ -1418,19 +1913,25 @@ impl Service {
         .context("The lane restore stopped")
         .and_then(|result| result)
         .map_err(err)
+        .inspect(|_| self.log.record("laneRestored", json!({"lane": id})))
     }
 
     /// Permanently deletes a lane after the UI's explicit confirmation.
     /// Open sessions are refused rather than killed underneath their user.
-    pub async fn delete_lane(&self, id: i64) -> ServiceResult<()> {
+    #[cfg(test)]
+    pub async fn delete_lane(&self, id: i64) -> ServiceResult<DeleteLaneOutcome> {
+        self.delete_lane_detached(id, false).await
+    }
+
+    /// `allow_detached` is accepted only for a clean, reachable detached HEAD
+    /// and is checked again by the lane operation.
+    pub async fn delete_lane_detached(
+        &self,
+        id: i64,
+        allow_detached: bool,
+    ) -> ServiceResult<DeleteLaneOutcome> {
         let _busy = self.lane_busy(id)?;
-        if self
-            .open
-            .lock()
-            .await
-            .values()
-            .any(|open| open.lane == Some(id))
-        {
+        if self.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Close this lane's session before deleting it",
@@ -1444,13 +1945,26 @@ impl Service {
                 let project = store.project(lane.project_id)?;
                 (lane, project)
             };
-            lanes::delete(&project, &lane)?;
-            store.lock().unwrap().delete_lane(id)
+            match lanes::delete_detached(&project, &lane, allow_detached)? {
+                DeleteResult::Deleted => {
+                    store.lock().unwrap().delete_lane(id)?;
+                    Ok(DeleteLaneOutcome::Deleted)
+                }
+                DeleteResult::DetachedHead(detached_head) => Ok(DeleteLaneOutcome::DetachedHead {
+                    lane,
+                    detached_head,
+                }),
+            }
         })
         .await
         .context("The lane deletion stopped")
         .and_then(|result| result)
         .map_err(err)
+        .inspect(|outcome| {
+            if matches!(outcome, DeleteLaneOutcome::Deleted) {
+                self.log.record("laneDeleted", json!({"lane": id}));
+            }
+        })
     }
 
     /// Marks a lane as being archived, restored or deleted until the guard drops.
@@ -1567,6 +2081,15 @@ mod tests {
         requests: std::sync::Mutex<Vec<StartSession>>,
         /// Its process ends right after it reports its session.
         dies_on_start: bool,
+        /// Processes started and not yet shut down, and the most there ever
+        /// were at once.
+        live: Arc<Live>,
+    }
+
+    #[derive(Default)]
+    struct Live {
+        now: AtomicUsize,
+        most: AtomicUsize,
     }
 
     impl FakeHarness {
@@ -1581,6 +2104,8 @@ mod tests {
         id: String,
         cwd: String,
         events: EventSink,
+        live: Arc<Live>,
+        down: AtomicBool,
     }
 
     #[async_trait]
@@ -1623,6 +2148,8 @@ mod tests {
             events: EventSink,
         ) -> anyhow::Result<Box<dyn AgentSession>> {
             let start = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
+            let now = self.live.now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.live.most.fetch_max(now, Ordering::SeqCst);
             // Slow enough that concurrent opens overlap.
             tokio::time::sleep(Duration::from_millis(50)).await;
             let id = request
@@ -1644,7 +2171,13 @@ mod tests {
                 // would be listed as open.
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            Ok(Box::new(FakeSession { id, cwd, events }))
+            Ok(Box::new(FakeSession {
+                id,
+                cwd,
+                events,
+                live: self.live.clone(),
+                down: AtomicBool::new(false),
+            }))
         }
     }
 
@@ -1676,6 +2209,11 @@ mod tests {
             Ok(())
         }
         async fn shutdown(&self) {
+            // A process takes a moment to go, as Pi's does.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            if !self.down.swap(true, Ordering::SeqCst) {
+                self.live.now.fetch_sub(1, Ordering::SeqCst);
+            }
             let _ = self.events.send(HarnessEvent::Exited {
                 code: Some(0),
                 stderr_tail: String::new(),
@@ -1700,7 +2238,8 @@ mod tests {
             Store::open(dir.path()).unwrap(),
             dir.path().join("lanes"),
             Arc::new(move |event| sink.lock().unwrap().push(event)),
-        );
+        )
+        .with_event_log(EventLog::open(&dir.path().join("logs")));
         Fixture {
             service: Arc::new(service),
             harness,
@@ -1750,6 +2289,7 @@ mod tests {
                 timestamp: None,
                 error: error.map(Into::into),
                 stopped: false,
+                usage: None,
             },
         }
     }
@@ -1780,6 +2320,98 @@ mod tests {
         assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn a_reopen_waits_for_the_close_before_it() {
+        let f = fixture(FakeHarness::default());
+        let service = f.service.clone();
+        service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap();
+        let (_, reopened) = tokio::join!(
+            service.close("fake:s1"),
+            service.open("fake", "fake:s1", "s1".into(), "/tmp".into())
+        );
+        reopened.unwrap();
+        assert_eq!(f.harness.starts.load(Ordering::SeqCst), 2);
+        assert_eq!(f.harness.live.most.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_close_during_a_start_stops_that_process() {
+        let f = fixture(FakeHarness::default());
+        let service = f.service.clone();
+        let opening = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+                    .await
+            }
+        });
+        // The harness is still starting the process.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        service.close("fake:s1").await;
+        opening.await.unwrap().unwrap();
+        assert!(!service.list().await.sessions[0].open);
+        assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_starts_never_overlap() {
+        let f = fixture(FakeHarness {
+            dies_on_start: true,
+            ..FakeHarness::default()
+        });
+        let open = |service: Arc<Service>| async move {
+            service
+                .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+                .await
+        };
+        let s = f.service.clone();
+        let (a, b, c) = tokio::join!(open(s.clone()), open(s.clone()), open(s.clone()));
+        assert!(a.is_err() && b.is_err() && c.is_err());
+        assert_eq!(f.harness.live.most.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn adopting_waits_for_an_open_of_the_same_conversation() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let service = f.service.clone();
+        let opening = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // The open got there first, so adoption is refused rather than
+        // leaving its process running beside the lane's.
+        let adopted = service
+            .adopt("fake", "fake:s1", "s1".into(), "/tmp".into(), Some(lane.id))
+            .await;
+        opening.await.unwrap().unwrap();
+        assert!(adopted.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_lane_cannot_be_archived_while_its_session_starts() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let service = f.service.clone();
+        let creating = tokio::spawn({
+            let service = service.clone();
+            async move { service.create(lane.id, "fake").await }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(service.archive_lane(lane.id, None).await.is_err());
+        assert!(service.delete_lane(lane.id).await.is_err());
+        creating.await.unwrap().unwrap();
+    }
+
     /// A registered repository with one main-checkout lane, which needs no
     /// worktree on disk.
     async fn lane_of(f: &Fixture) -> (tempfile::TempDir, Lane) {
@@ -1802,6 +2434,31 @@ mod tests {
             .await
             .unwrap();
         (code, lane)
+    }
+
+    #[tokio::test]
+    async fn lane_changes_and_file_hunks_come_from_the_lane_tree() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        std::fs::write(
+            Path::new(&lane.worktrees[0].path).join("untracked.txt"),
+            "review me\n",
+        )
+        .unwrap();
+        let changes = f.service.lane_changes(lane.id).await.unwrap();
+        assert_eq!(changes.files.len(), 1);
+        assert_eq!(changes.files[0].path, "untracked.txt");
+        let range = TreeRange {
+            from: changes.from,
+            to: changes.to,
+        };
+        let hunks = f
+            .service
+            .file_hunks(lane.id, "untracked.txt".into(), range)
+            .await
+            .unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].lines[0].text, "review me");
     }
 
     #[tokio::test]
@@ -1844,6 +2501,35 @@ mod tests {
             .unwrap();
         assert_eq!(again.key, opened.key);
         assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_new_session_keeps_profile_instructions_across_reopen() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        f.service
+            .create_with(lane.id, "fake", Some("Prefer small changes.".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.harness.requests.lock().unwrap()[0]
+                .instructions
+                .as_deref(),
+            Some("Prefer small changes.")
+        );
+
+        let opened = f.service.list().await.sessions[0].clone();
+        f.service.close(&opened.key).await;
+        f.service
+            .open("fake", &opened.key, String::new(), String::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            f.harness.requests.lock().unwrap()[1]
+                .instructions
+                .as_deref(),
+            Some("Prefer small changes.")
+        );
     }
 
     #[tokio::test]
@@ -2146,6 +2832,150 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_replays_the_run_and_what_still_waits() {
+        let mut tracker = StatusTracker::default();
+        assert_eq!(tracker.snapshot(0), (SessionStatus::Idle, Vec::new()));
+        tracker.apply(&HarnessEvent::RunStarted, 0);
+        tracker.apply(&question("q1", None), 10);
+        tracker.apply(&question("q2", Some(100)), 10);
+        tracker.apply(&question("q3", None), 10);
+        tracker.answered("q3", 20);
+        // q2 has expired by now and q3 was answered: only q1 is shown again.
+        let (status, replay) = tracker.snapshot(200);
+        assert_eq!(status, SessionStatus::Waiting);
+        assert_eq!(replay, vec![HarnessEvent::RunStarted, question("q1", None)]);
+
+        tracker.apply(&HarnessEvent::RunSettled { aborted: false }, 300);
+        assert_eq!(tracker.snapshot(300), (SessionStatus::Done, Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn reopening_an_open_session_brings_back_its_status_and_questions() {
+        let f = fixture(FakeHarness::default());
+        let open = || {
+            f.service
+                .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+        };
+        let first = open().await.unwrap();
+        assert_eq!(first.status, SessionStatus::Idle);
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(question("q1", None)).unwrap();
+        settle().await;
+
+        // A reloaded window opens it again and gets the same process.
+        let again = open().await.unwrap();
+        assert_eq!(f.harness.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(again.status, SessionStatus::Waiting);
+        assert_eq!(
+            again.replay,
+            vec![HarnessEvent::RunStarted, question("q1", None)]
+        );
+    }
+
+    /// Every event line in the fixture's log, in order.
+    fn logged(f: &Fixture) -> Vec<serde_json::Value> {
+        let dir = f._dir.path().join("logs");
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .flat_map(|file| {
+                std::fs::read_to_string(file)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_session_leaves_a_record_without_its_words() {
+        let f = fixture(FakeHarness::default());
+        f.service
+            .open("fake", "fake:s1", "s1".into(), "/tmp".into())
+            .await
+            .unwrap();
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        sink.send(question("q1", None)).unwrap();
+        settle().await;
+        f.service
+            .answer(
+                "fake:s1",
+                "q1".into(),
+                Answer::Confirmed { confirmed: true },
+            )
+            .await
+            .unwrap();
+        f.service.close("fake:s1").await;
+        f.service.record_error("send_prompt", &not_open());
+
+        let lines = logged(&f);
+        let events: Vec<&str> = lines
+            .iter()
+            .map(|line| line["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "sessionStarted",
+                "status",
+                "asked",
+                "status",
+                "answered",
+                "status",
+                "sessionClosed",
+                "error"
+            ]
+        );
+        assert_eq!(lines[0]["key"], "fake:s1");
+        assert_eq!(lines[0]["resumed"], true);
+        assert_eq!(lines[2]["kind"], "question");
+        assert_eq!(lines[7]["kind"], "notOpen");
+        // What the question said is not kept.
+        let text = serde_json::to_string(&lines).unwrap();
+        assert!(!text.contains("Proceed?"), "{text}");
+        assert!(lines.iter().all(|line| line["at"].is_i64()));
+    }
+
+    #[tokio::test]
+    async fn lane_changes_and_crashes_are_recorded() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let key = f.service.create(lane.id, "fake").await.unwrap().key;
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+        sink.send(HarnessEvent::Exited {
+            code: Some(2),
+            stderr_tail: "boom\n".into(),
+        })
+        .unwrap();
+        settle().await;
+        f.service.archive_lane(lane.id, None).await.unwrap();
+        f.service.restore_lane(lane.id).await.unwrap();
+        f.service.delete_lane(lane.id).await.unwrap();
+
+        let lines = logged(&f);
+        let find = |event: &str| {
+            lines
+                .iter()
+                .find(|line| line["event"] == event)
+                .unwrap_or_else(|| panic!("no {event} in {lines:?}"))
+        };
+        assert_eq!(find("laneCreated")["lane"], lane.id);
+        assert_eq!(find("sessionStarted")["key"], key);
+        assert_eq!(find("sessionExited")["code"], 2);
+        assert_eq!(find("sessionExited")["stderrTail"], "boom\n");
+        assert_eq!(find("laneArchived")["lane"], lane.id);
+        assert_eq!(find("laneRestored")["lane"], lane.id);
+        assert_eq!(find("laneDeleted")["lane"], lane.id);
+    }
+
+    #[test]
     fn an_expired_question_stops_waiting() {
         let mut tracker = StatusTracker::default();
         tracker.apply(&HarnessEvent::RunStarted, 0);
@@ -2183,6 +3013,8 @@ mod tests {
             .into();
         assert_eq!(error.kind, ErrorKind::TimedOut);
         assert_eq!(error.message, "Could not prompt: slow");
+        let error: ServiceError = anyhow::Error::from(HarnessError::not_running("gone")).into();
+        assert_eq!(error.kind, ErrorKind::NotOpen);
         let error: ServiceError = anyhow::anyhow!("disk full").into();
         assert_eq!(error.kind, ErrorKind::Other);
         assert_eq!(
@@ -2238,7 +3070,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
+        let status = crate::git::command()
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -2418,6 +3250,48 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_detached_lane_waits_for_recovery_before_its_store_record_changes() {
+        let code = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(code.path()).unwrap().join("web");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let f = fixture(FakeHarness::default());
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let lane = f
+            .service
+            .create_lane(project.id, "Detached work".into(), false)
+            .await
+            .unwrap();
+        let path = PathBuf::from(&lane.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "--detach"]);
+        std::fs::write(path.join("work.txt"), "keep me").unwrap();
+        git(&path, &["add", "work.txt"]);
+        git(&path, &["commit", "--quiet", "-m", "detached work"]);
+
+        let outcome = f.service.archive_lane(lane.id, None).await.unwrap();
+        let ArchiveLaneOutcome::DetachedHead { detached_head, .. } = outcome else {
+            panic!("a detached HEAD should need recovery");
+        };
+        assert_eq!(detached_head.unreachable_commits.len(), 1);
+        assert_eq!(f.service.list().await.lanes[0].state, LaneState::Active);
+        assert!(path.exists());
+
+        f.service.create_lane_branch(lane.id).await.unwrap();
+        let outcome = f.service.archive_lane(lane.id, None).await.unwrap();
+        assert!(matches!(outcome, ArchiveLaneOutcome::Archived));
+        assert_eq!(f.service.list().await.lanes[0].state, LaneState::Archived);
+        assert!(!path.exists());
+    }
+
     /// A project with two worktree lanes, and a session started in the first.
     async fn two_lanes(f: &Fixture) -> (tempfile::TempDir, Lane, Lane, EventSink) {
         let code = tempfile::tempdir().unwrap();
@@ -2449,6 +3323,141 @@ mod tests {
         (code, a, b, sink)
     }
 
+    #[tokio::test]
+    async fn cleanup_measures_worktrees_and_offers_only_safe_idle_lanes() {
+        let f = fixture(FakeHarness::default());
+        let (_code, a, b, _sink) = two_lanes(&f).await;
+        let c = f
+            .service
+            .create_lane(a.project_id, "Write the docs".into(), false)
+            .await
+            .unwrap();
+        let main = f
+            .service
+            .create_lane(a.project_id, "Use the checkout".into(), true)
+            .await
+            .unwrap();
+        let other_repo = _code.path().join("other");
+        std::fs::create_dir_all(&other_repo).unwrap();
+        git(
+            &other_repo,
+            &["init", "--quiet", "--initial-branch", "trunk"],
+        );
+        git(
+            &other_repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let other_project = f
+            .service
+            .add_project(other_repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let _other = f
+            .service
+            .create_lane(other_project.id, "Another project's lane".into(), false)
+            .await
+            .unwrap();
+        let old = now_ms() - 5 * 24 * 60 * 60 * 1_000;
+        for lane in [&a, &b, &c, &main] {
+            f.service
+                .store
+                .lock()
+                .unwrap()
+                .set_lane_created_at(lane.id, old)
+                .unwrap();
+        }
+        std::fs::write(Path::new(&b.worktrees[0].path).join("dirty.txt"), "keep me").unwrap();
+
+        let cleanup = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(cleanup.idle_days, 4);
+        assert_eq!(cleanup.project.worktrees, 3);
+        assert_eq!(cleanup.total.worktrees, 4);
+        assert!(cleanup.project.bytes > 0);
+        assert!(cleanup.total.bytes > cleanup.project.bytes);
+        assert!(cleanup.errors.is_empty(), "{:?}", cleanup.errors);
+        assert_eq!(cleanup.candidates.len(), 2);
+        let dirty = cleanup
+            .candidates
+            .iter()
+            .find(|candidate| candidate.lane.id == b.id)
+            .unwrap();
+        assert_eq!(dirty.preservation, lanes::ArchivePreservation::Checkpoint);
+        assert!(dirty.bytes.unwrap() > 0);
+        let clean = cleanup
+            .candidates
+            .iter()
+            .find(|candidate| candidate.lane.id == c.id)
+            .unwrap();
+        assert_eq!(clean.preservation, lanes::ArchivePreservation::Clean);
+        // `a` has an open session; the main checkout is not reclaimable.
+        assert!(
+            cleanup
+                .candidates
+                .iter()
+                .all(|candidate| candidate.lane.id != a.id && candidate.lane.id != main.id)
+        );
+
+        git(
+            Path::new(&b.worktrees[0].path),
+            &["switch", "--quiet", "-c", "somebody-elses-branch"],
+        );
+        let cleanup = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(
+            cleanup
+                .candidates
+                .iter()
+                .map(|candidate| candidate.lane.id)
+                .collect::<Vec<_>>(),
+            [c.id]
+        );
+
+        git(
+            Path::new(&b.worktrees[0].path),
+            &["checkout", "--quiet", "--detach"],
+        );
+        let detached = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(
+            detached
+                .candidates
+                .iter()
+                .map(|candidate| candidate.lane.id)
+                .collect::<Vec<_>>(),
+            [c.id]
+        );
+
+        let preferences = f.service.set_cleanup_idle_days(7).await.unwrap();
+        assert_eq!(preferences.cleanup_idle_days, 7);
+        let cleanup = f.service.lane_cleanup(a.project_id).await.unwrap();
+        assert_eq!(cleanup.idle_days, 7);
+        assert!(cleanup.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_does_not_guess_idle_activity_when_sessions_cannot_be_listed() {
+        let f = fixture(FakeHarness {
+            fail_listing: true,
+            ..Default::default()
+        });
+        let (_code, _a, b, _sink) = two_lanes(&f).await;
+        f.service
+            .store
+            .lock()
+            .unwrap()
+            .set_lane_created_at(b.id, now_ms() - 5 * 24 * 60 * 60 * 1_000)
+            .unwrap();
+
+        let cleanup = f.service.lane_cleanup(b.project_id).await.unwrap();
+        assert!(cleanup.candidates.is_empty());
+        assert!(
+            cleanup
+                .errors
+                .iter()
+                .any(|error| error.contains("Could not list fake sessions")),
+            "{:?}",
+            cleanup.errors
+        );
+    }
+
     fn edit(id: &str, path: &str) -> HarnessEvent {
         HarnessEvent::ToolCallUpdated {
             call: Box::new(panoptes_harness::ToolCall {
@@ -2459,6 +3468,7 @@ mod tests {
                 input: serde_json::Value::Null,
                 status: panoptes_harness::ToolStatus::Done,
                 output: None,
+                images: Vec::new(),
                 started_at: None,
                 ended_at: None,
             }),
@@ -2686,6 +3696,19 @@ mod tests {
                 .contains("already has an active main-checkout"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_project_whose_repository_moved_can_still_be_cleared_away() {
+        let f = fixture(FakeHarness::default());
+        let (code, lane) = lane_of(&f).await;
+        let repo = PathBuf::from(&lane.worktrees[0].path);
+        std::fs::rename(&repo, code.path().join("moved")).unwrap();
+
+        f.service.list().await;
+        f.service.delete_lane(lane.id).await.unwrap();
+        f.service.remove_project(lane.project_id).await.unwrap();
+        assert!(f.service.list().await.projects.is_empty());
     }
 
     #[tokio::test]

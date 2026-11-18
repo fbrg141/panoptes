@@ -121,6 +121,7 @@ export function applyEvent(conversation: Conversation, event: HarnessEvent): Con
             timestamp: Date.now(),
             error: null,
             stopped: false,
+            usage: null,
           },
         ],
       };

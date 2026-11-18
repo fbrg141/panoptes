@@ -3,7 +3,7 @@
 for the adapter's tests. Prompts select behaviour:
 
   "ask"    asks a confirm question and replies with the answer
-  "crash"  exits with code 7 straight away
+  "crash"  records the prompt, then exits with code 7 before responding
   "tool"   runs a `bash` call that fails with exit code 3, then replies
   "queue"  lists two steering prompts, then one, then none, before replying
   "gate"   starts a `bash` call, asks Yes/No before running it (as a
@@ -17,6 +17,7 @@ for the adapter's tests. Prompts select behaviour:
   "orphan" starts a child outside its process group that keeps stdout
            open, writes the child's process id to stderr, and exits with 7
   "tools"  replies with the tools it was started with ("all" by default)
+  "instructions" replies with the additional system prompt it was started with
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -29,6 +30,7 @@ import sys
 # Panoptes passes its approvals extension; only a real file counts.
 extension = sys.argv[sys.argv.index("--extension") + 1] if "--extension" in sys.argv else None
 tools = sys.argv[sys.argv.index("--tools") + 1] if "--tools" in sys.argv else "all"
+instructions = sys.argv[sys.argv.index("--append-system-prompt") + 1] if "--append-system-prompt" in sys.argv else "none"
 tags_approvals = extension is not None and "panoptes.approval" in open(extension).read()
 
 entries = []
@@ -115,6 +117,8 @@ def run(text, images):
         reply += f" [{len(images)} {images[0]['mimeType']}]"
     if text == "tools":
         reply = f"tools={tools}"
+    elif text == "instructions":
+        reply = f"instructions={instructions}"
     if text == "spawn":
         child = subprocess.Popen(["sleep", "300"])
         reply = f"child={child.pid}"
@@ -143,7 +147,11 @@ def run(text, images):
         send({"type": "extension_ui_request", "id": "q1", "method": "confirm", "title": "Proceed?"})
         answer = json.loads(sys.stdin.readline())
         reply = f"confirmed={answer.get('confirmed')}"
-    assistant = {"role": "assistant", "content": [{"type": "text", "text": reply}], "stopReason": "stop", "timestamp": tick()}
+    assistant = {"role": "assistant", "content": [{"type": "text", "text": reply}],
+                 "provider": model["provider"], "model": model["id"],
+                 "usage": {"input": 100, "output": 20, "cacheRead": 400, "cacheWrite": 0, "totalTokens": 520,
+                           "cost": {"input": 0.0003, "output": 0.0003, "cacheRead": 0.0001, "cacheWrite": 0, "total": 0.0007}},
+                 "stopReason": "stop", "timestamp": tick()}
     send({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending"}})
     send({"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 0}})
     send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": reply}})
@@ -165,6 +173,12 @@ for line in sys.stdin:
         })
     elif kind == "get_available_models":
         respond(command, {"models": models})
+    elif kind == "get_commands":
+        respond(command, {"commands": [
+            {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
+            {"name": "review", "description": None, "source": "extension"},
+            {"name": "skill:review", "description": "Review with a skill", "source": "skill"},
+        ]})
     elif kind == "set_model":
         found = [m for m in models if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
         if not found:
@@ -181,6 +195,13 @@ for line in sys.stdin:
         respond(command, {"contextUsage": {"tokens": 1200, "contextWindow": model["contextWindow"], "percent": 4}})
     elif kind == "prompt":
         if command["message"] == "crash":
+            # The command may already be part of the conversation even though
+            # its caller never gets a response. Retrying it could duplicate it.
+            user = {"role": "user", "content": "crash", "timestamp": tick()}
+            send({"type": "agent_start"})
+            send({"type": "message_start", "message": user})
+            send({"type": "message_end", "message": user})
+            append(user)
             sys.stderr.write("fake pi crashed\n")
             sys.exit(7)
         if command["message"] == "orphan":

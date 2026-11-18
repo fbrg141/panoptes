@@ -1,12 +1,16 @@
-import { Button, Icon, LoopMark } from "@panoptes/design-system";
-import { type KeyboardEvent, useRef, useState, useSyncExternalStore } from "react";
+import { Button, Icon, LoopMark, type MenuItem } from "@panoptes/design-system";
+import { type KeyboardEvent, type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 import { relativeTime } from "../grouping";
+import { beginSessionDrag } from "../sessionDrag";
 import { isLive, primaryAction, sessionDetail, sessionRowLabel, statusWord } from "../sessionRow";
 import { sessionMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { Session, SessionStatus } from "../types";
+import { useUi } from "../ui";
 import { ContextMenu } from "./ContextMenu";
 import { RowMenu } from "./RowMenu";
+
+const MENU_SEPARATOR: MenuItem = { separator: true };
 
 const WORD_TONE: Record<SessionStatus, string> = {
   running: "text-running",
@@ -76,6 +80,19 @@ function moveBetweenRows(from: HTMLElement, key: string) {
   target?.focus();
 }
 
+/** Distinguishes a lane's main checkout from an isolated worktree. */
+export function CheckoutIcon({ mainCheckout }: { mainCheckout: boolean }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 ${mainCheckout ? "text-waiting" : "text-ink-muted"}`}
+      data-checkout={mainCheckout ? "main" : "worktree"}
+      aria-hidden
+    >
+      <Icon name={mainCheckout ? "folder" : "git-branch"} size={12} />
+    </span>
+  );
+}
+
 /**
  * A session in the sidebar. The whole row is one button that opens it; Stop
  * (while it runs) and the actions menu sit over the meta column and fade in on
@@ -88,12 +105,33 @@ export function SessionItem({
   onAdopt,
   laneActions = false,
   nested = false,
+  title: titleOverride,
+  expand,
+  extraMenuItems = [],
+  onExtraMenuSelect,
+  menuLabel,
+  className = "",
+  children,
+  checkout,
 }: {
   session: Session;
   context?: string;
   onAdopt?: () => void;
   laneActions?: boolean;
   nested?: boolean;
+  /** A lane card keeps the lane's task as its visible title. */
+  title?: string;
+  /** A separate disclosure button; the session hit target always opens. */
+  expand?: { expanded: boolean; label: string; onToggle: () => void };
+  /** Lane actions share the main session card's context and row menus. */
+  extraMenuItems?: MenuItem[];
+  onExtraMenuSelect?: (id: string) => void;
+  menuLabel?: string;
+  className?: string;
+  /** Extra sessions, disclosed separately beneath the main session card. */
+  children?: ReactNode;
+  /** Checkout location and kind shown before the rest of the lane detail. */
+  checkout?: { label: string; mainCheckout: boolean };
 }) {
   const active = useStore((s) => s.activeKey === session.key);
   const status = useStore((s) => s.statuses[session.key] ?? "idle");
@@ -108,19 +146,35 @@ export function SessionItem({
   const fromKeyboard = useRef(false);
   const menuFromKeyboard = useRef(false);
 
-  const items = sessionMenuItems(session, { adoptable: onAdopt !== undefined, laneActions });
+  const sessionItems = sessionMenuItems(session, {
+    adoptable: onAdopt !== undefined,
+    laneActions,
+  });
+  const items: MenuItem[] = [
+    ...sessionItems,
+    ...(sessionItems.length > 0 && extraMenuItems.length > 0 ? [MENU_SEPARATOR] : []),
+    ...extraMenuItems,
+  ];
   const primary = primaryAction(session, status);
   const hasActions = items.length > 0 || primary !== null;
   const word = statusWord(status);
   const detail = sessionDetail(session, context);
   const now = useClock();
   const time = relativeTime(session.updatedAt, Math.max(now, session.updatedAt));
-  const label = sessionRowLabel({ title: session.title, status, detail, time });
+  const label = sessionRowLabel({
+    title: titleOverride ?? session.title,
+    status,
+    detail: [checkout?.label, detail].filter(Boolean).join(" · "),
+    time,
+  });
+  const title = titleOverride ?? session.title;
+  const actionsLabel = menuLabel ?? `Actions for session ${session.title}`;
 
   const select = (id: string) => {
     if (id === "adopt") onAdopt?.();
     if (id === "stop") void close(session.key);
     if (id === "archive") void setArchived(session.key, !session.archived);
+    onExtraMenuSelect?.(id);
   };
 
   // A title tooltip only when the title is actually cut off.
@@ -160,26 +214,41 @@ export function SessionItem({
   };
 
   return (
-    <li className={nested ? "ml-2" : ""}>
-      <ContextMenu label={`Actions for session ${session.title}`} items={items} onSelect={select}>
+    <li className={`${nested ? "ml-2" : ""} ${className}`}>
+      <ContextMenu label={actionsLabel} items={items} onSelect={select}>
         <div
           className="session-row group/session"
           data-selected={active || undefined}
           data-actions={hasActions || undefined}
           data-archived={session.archived || undefined}
         >
+          {expand && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={expand.expanded ? "chevron-down" : "chevron-right"}
+              className="session-expand"
+              aria-label={`${expand.expanded ? "Collapse" : "Expand"} ${expand.label}`}
+              title={`${expand.expanded ? "Collapse" : "Expand"} ${expand.label}`}
+              onClick={expand.onToggle}
+            />
+          )}
           <button
             ref={hit}
             type="button"
             data-session-hit
-            className="session-hit"
+            className={`session-hit ${expand ? "session-hit-expandable" : ""}`}
             aria-current={active ? "page" : undefined}
             aria-label={label}
             aria-keyshortcuts={items.length > 0 ? "Shift+F10" : undefined}
-            title={truncated ? session.title : undefined}
+            title={truncated ? title : undefined}
             onPointerEnter={measure}
+            onPointerDown={(event) => beginSessionDrag(event, session.key)}
             onFocus={measure}
-            onClick={() => void open(session)}
+            onClick={() => {
+              useUi.getState().showSession(session.key);
+              void open(session);
+            }}
             onKeyDown={onRowKey}
             onContextMenu={(event) => {
               // The menu key already opened the anchored menu; skip the pointer one.
@@ -195,7 +264,7 @@ export function SessionItem({
                 ref={titleRef}
                 className={`session-title truncate ${isLive(status) ? "text-body-strong" : "text-body"}`}
               >
-                {session.title}
+                {title}
               </span>
               <span className="truncate text-xs text-ink-muted">
                 {word && (
@@ -203,6 +272,13 @@ export function SessionItem({
                     <span className={`font-medium ${WORD_TONE[status]}`}>{word}</span>
                     <span aria-hidden> · </span>
                   </>
+                )}
+                {checkout && (
+                  <span className="inline-flex items-center gap-1">
+                    <CheckoutIcon mainCheckout={checkout.mainCheckout} />
+                    <span>{checkout.label}</span>
+                    {detail && <span aria-hidden> · </span>}
+                  </span>
                 )}
                 {detail}
               </span>
@@ -230,7 +306,7 @@ export function SessionItem({
               )}
               {items.length > 0 && (
                 <RowMenu
-                  label={`Actions for session ${session.title}`}
+                  label={actionsLabel}
                   items={items}
                   onSelect={select}
                   triggerClassName=""
@@ -250,6 +326,7 @@ export function SessionItem({
           )}
         </div>
       </ContextMenu>
+      {children}
     </li>
   );
 }

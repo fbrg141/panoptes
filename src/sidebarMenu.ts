@@ -7,6 +7,7 @@ import type { Lane, Session } from "./types";
  */
 export const projectMenuItems = (laneCount = 0): MenuItem[] => [
   { id: "new-lane", label: "New lane", icon: "git-branch" },
+  { id: "cleanup-lanes", label: "Clean up lanes…", icon: "folder" },
   { separator: true },
   {
     id: "remove-project",

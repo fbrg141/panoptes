@@ -149,6 +149,20 @@ short list is [the gate](backlog.md#the-gate): bug-only intake lasts until it
 is closed, not until every P1 to P4 issue is. The rest is closed and kept as
 one "Later" list in [backlog.md](backlog.md).
 
+**Gate refresh, 2026-11-15.** Every gate fix but CI (#3) is closed, and CI
+waits only on a billing lock, with local `pnpm check` standing in. Bug-only
+intake now lasts until the bet review instead of ending with the gate, so the
+review decides from the observation log rather than from a fresh feature
+backlog. The one exception is a small fix for pain hit in daily use that the
+log records, such as clearing finished lanes (#264).
+
+**Event log, 2026-11-13.** An exception to bug-only intake, made by the
+product owner: the 2026-12-05 bet review needs a record of how Panoptes
+behaved in daily use, not only memory and the observation log. The service
+writes one JSON line per event to `<app data>/logs/` (see `eventlog.rs`).
+It records what happened, never what was said, and never leaves the
+machine. It is the smallest part of #43; the rest of #43 stays parked.
+
 ## Lanes are the unit of work
 
 *Decided 2026-11-07.* The full model is in
@@ -169,8 +183,9 @@ discarded, and a new task gets a new lane.
    worktrees, so multi-repo lanes (#21) need no migration, but the UI only
    ever creates one. Room without complexity.
 3. **Archiving never destroys tracked or configured work.** A dirty tree is
-   never removed as it is: Panoptes offers commit, stash onto the branch, or
-   keeping it as a checkpoint (see the checkpoint decision below). Archive
+   never removed as it is: Panoptes offers commit, stash (into the
+   repository's own stash, named after the lane; restoring the lane does not
+   reapply it, so it stays in `git stash list`), or keeping it as a checkpoint (see the checkpoint decision below). Archive
    leaves the branch alone. Current `copyFiles` values are preserved separately
    under `refs/panoptes/lanes/<lane>/copy-files` and restored without staging
    them. Other ignored files are not captured and may be removed with the
@@ -340,8 +355,10 @@ Images go to the model inline. Any other attached file is appended to the
 prompt as an `@path` mention, so the agent reads it with its own tools and no
 harness needs a file-attachment command. @-mentions are plain text drawn as
 chips by a backdrop behind the text field, which keeps the field a native
-`textarea`. Slash commands are left for later: they need Pi to list its
-commands over RPC.
+`textarea`. Typing `/` as the first token offers the commands the harness
+can run through a normal prompt (Pi's extension commands, prompt templates
+and skills, listed over RPC). Built-in terminal UI commands are not offered,
+since they do not run over RPC.
 
 ## Open gaps
 

@@ -15,8 +15,9 @@ Why the model is shaped this way is recorded in
 
 - **The harness owns the conversation. Panoptes owns the organisation.**
   Messages stay in each harness's own storage (Pi's session files). Projects,
-  lanes, groups, titles, tags and archiving live in Panoptes, because they
-  must work the same across every harness.
+  lanes, titles, tags and archiving live in Panoptes, because they must work
+  the same across every harness. Reusable session profiles and model-picker
+  preferences live here too; they never rewrite the harness's own settings.
 - **The lane is the durable unit with one session.** A lane owns a worktree,
   a branch, a task and exactly one session. Closing that session never touches
   the lane's work; reopening resumes the same conversation. A new task is a new
@@ -90,6 +91,29 @@ worktree it happens in, and its one session. The name was chosen over
   read-only non-holder session or lock queue. Parallel work means separate
   lanes.
 
+### Profile
+
+A named, reusable setup for a new session, owned by Panoptes rather than the
+harness. Its model, thinking level and additional instructions are all
+optional; an empty field keeps the harness default. The new lane form applies
+a profile before its first prompt, and its individual fields can still be
+overridden.
+
+Additional instructions are appended to the harness's system prompt at
+startup, never used to replace it. Panoptes stores the chosen instructions on
+its session record and appends them again when the process resumes, so closing
+the app does not silently drop them. Later profile edits do not change an
+existing session. The harness adapter owns how this neutral request maps to
+its CLI or protocol.
+
+### Model preferences
+
+Favorite and hidden model ids are Panoptes presentation preferences. Ordered
+favorites form the first model-picker group; hidden models are omitted from
+pickers but remain configured in the harness and valid for existing sessions
+or saved profiles. Neither preference changes harness defaults or CLI
+behaviour.
+
 ### Session
 
 One conversation, run by one harness, inside one lane.
@@ -122,6 +146,9 @@ system's words:
 | Waiting | The agent needs you (a question or an approval) |
 | Failed | The process ended unexpectedly, or the last run errored |
 | Done | Idle and ready for the next prompt |
+
+A session whose process has just started and has not run yet is sent as
+`idle`, which the UI shows as a plain dot with no status word (#114).
 
 A session whose process is not running has no status. It is simply closed and
 can be reopened.
@@ -169,15 +196,17 @@ The sidebar has two tabs (#57):
    new branch from `baseBranch`, copies `copyFiles` from the main checkout,
    runs `setup`, then creates the lane's one session and sends the prompt.
    With the main-checkout opt-in, it uses the project's checkout instead.
-2. If worktree setup fails or you cancel, everything created so far is removed,
-   so nothing is left behind (#9). If session startup fails, its record is
+2. If worktree setup fails or you cancel, Panoptes removes the worktree and
+   the new branch it created (#9). A cleanup step that itself fails is not
+   reported, so in that rare case a folder or branch can be left behind. If session startup fails, its record is
    discarded and the empty lane offers a retry.
 3. **Use:** close and reopen the lane's one session as needed.
 4. **Archive**, on request. Archiving never touches the branch.
    - A clean tree: the worktree is removed.
    - A dirty tree never loses work. Panoptes offers three ways out and does
      nothing until you pick one: **commit** the changes on the lane's branch,
-     **stash** them onto the branch, or **keep it as a checkpoint**: the tree
+     **stash** them into the repository's stash (named after the lane;
+     restoring does not reapply it), or **keep it as a checkpoint**: the tree
      is saved to a checkpoint ref and the worktree is removed, and restoring
      creates a fresh worktree with the same uncommitted changes, without
      moving the branch (see
@@ -195,6 +224,9 @@ The sidebar has two tabs (#57):
      refs, then its lane and Panoptes session records. A main-checkout lane
      deletes only those records. Harness conversation files are never
      deleted. Once its last lane is deleted, the project can be removed.
+     If the repository has been moved or deleted, deleting a lane removes
+     only its worktree folder, since the branch and refs went with the
+     repository.
 
 ### Session
 

@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use panoptes_harness::{
-    AgentSession, Answer, DiscoveredSession, EventSink, Harness, HarnessError, HarnessRef,
-    ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, SessionSettings, StartSession,
+    AgentSession, Answer, CommandInfo, CommandKind, DiscoveredSession, EventSink, Harness,
+    HarnessError, HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
+    SessionSettings, StartSession,
 };
 use serde_json::{Value, json};
 
@@ -77,7 +78,15 @@ impl Harness for PiHarness {
         };
         let shared = map::Shared::default();
         let mapper = map::EventMapper::new(shared.clone());
-        let process = rpc::RpcProcess::spawn(&self.install, cwd, file, read_only, events, mapper)?;
+        let process = rpc::RpcProcess::spawn(
+            &self.install,
+            cwd,
+            file,
+            read_only,
+            request.instructions.as_deref(),
+            events,
+            mapper,
+        )?;
 
         let state = match process.call(json!({"type": "get_state"})).await {
             Ok(state) => state,
@@ -247,6 +256,30 @@ impl AgentSession for PiSession {
         Ok(data["models"]
             .as_array()
             .map(|models| models.iter().filter_map(map::model).collect())
+            .unwrap_or_default())
+    }
+
+    async fn commands(&self) -> anyhow::Result<Vec<CommandInfo>> {
+        let data = self.process.call(json!({"type": "get_commands"})).await?;
+        Ok(data["commands"]
+            .as_array()
+            .map(|commands| {
+                commands
+                    .iter()
+                    .filter_map(|command| {
+                        Some(CommandInfo {
+                            name: command["name"].as_str()?.to_string(),
+                            description: command["description"].as_str().map(str::to_string),
+                            kind: match command["source"].as_str() {
+                                Some("extension") => CommandKind::Extension,
+                                Some("prompt") => CommandKind::Prompt,
+                                Some("skill") => CommandKind::Skill,
+                                _ => CommandKind::Other,
+                            },
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default())
     }
 

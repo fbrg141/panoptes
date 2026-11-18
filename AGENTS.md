@@ -12,10 +12,14 @@ this way.
 | `crates/panoptes-harness` | The neutral interface: `Harness` and `AgentSession` traits, `HarnessEvent`, `Message`, `Block`, `Question` |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
 | `src-tauri/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
-| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes and session records |
+| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
 | `src-tauri/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
+| `src-tauri/src/changes.rs` | Read-only tree diffs: lane file lists, totals and lazily loaded hunks |
+| `src-tauri/src/cleanup.rs` | On-demand worktree disk usage and safe idle-lane suggestions |
+| `src-tauri/src/git.rs` | Bounded Git process execution, including descendants and large output |
 | `src-tauri/src/projects.rs` | Which git repository a folder belongs to (worktrees included), a new project's defaults, and the rules its settings follow |
 | `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |
+| `src-tauri/src/eventlog.rs` | The local event log for evaluating the app: one JSON line per event, never prompt or file contents |
 | `src-tauri/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
 | `src/conversation.ts` | Pure reducer: harness events to conversation state |
 | `src/composer.ts` | Pure composer logic: mention parsing, fuzzy file matching, labels |
@@ -27,10 +31,11 @@ this way.
 
 ## Issue intake
 
-Until every issue on [the gate list](docs/backlog.md#the-gate) is closed, file
-GitHub issues for bugs only. Do not file feature or enhancement issues. Put feature ideas in the
-[observation log](docs/bets.md#observation-log) instead. Parked features wait
-for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md#observe-pi-do-not-orchestrate-agents).
+Until the bet review on 2026-12-05, file GitHub issues for bugs only. Do not
+file feature or enhancement issues; put feature ideas in the
+[observation log](docs/bets.md#observation-log) instead, where parked features
+wait for the review. The one exception is a small fix for pain hit in daily
+use that the observation log records ([backlog](docs/backlog.md#intake-until-the-bet-review)). See [the direction decision](docs/decisions.md#observe-pi-do-not-orchestrate-agents).
 
 ## Rules
 
@@ -50,7 +55,9 @@ for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md
   the history is then reloaded as the authoritative message list; a message
   keeps the id it streamed under, so nothing is swapped. A session's status (Running,
   Waiting, Failed, Done) is worked out once, in the service, and sent as
-  `statusChanged`; the UI never derives it. Errors reach the UI as
+  `statusChanged`; the UI never derives it. Opening a session that is
+  already open also returns its status and the events to replay (the run's
+  start, waiting questions and approvals), so a reloaded window catches up. Errors reach the UI as
   `{ kind, message }`, and adapters mark theirs with `HarnessError` so the
   kind survives. Keep `src/types.ts` in step with the Rust types.
 - **Sessions belong to the harness.** Pi keeps its sessions in its own files
@@ -66,14 +73,17 @@ for the bet review on 2026-12-05. See [the direction decision](docs/decisions.md
   migrated stops the app with an error, never a silent fresh start.
   Debug builds use their own store (`<app data>/dev`) and lanes folder
   (`~/Panoptes/dev/lanes`), so a step can be reworked freely until it ships.
-- **One process per open session.** `Service::open` serialises opens of the
-  same key. Never start a second process on a session that is already open.
+- **One process per open session.** Open, create, close and adopt each hold
+  the session key's lifecycle lock in `Service`, so a process never starts
+  while another for the same session is starting or shutting down. Never
+  start a second process on a session that is already open.
 - **Style only through the design system.** Use its components first
   (`Button`, `Input`, `AgentRow`, `StatusPill`, `LoopMark`, `Icon`, ...),
   then Tailwind utilities mapped to its tokens (`bg-surface`,
   `text-ink-muted`, `border-line`, `text-caption`). No raw colours, no
   Tailwind palette colours (`neutral-500` and the like), no emoji. Status
-  words are exactly Running, Waiting, Failed and Done. Files under
+  words are exactly Running, Waiting, Failed and Done; a session that has
+  not run yet is `idle` on the wire and shows no word. Files under
   `packages/design-system` are exported by the design tool; change the design
   system there and re-export rather than editing them here.
 - Logic goes where it can be tested without a window: the adapter, the

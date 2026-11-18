@@ -1,14 +1,82 @@
-import { Icon } from "@panoptes/design-system";
+import { Dialog, type DialogProps, Icon } from "@panoptes/design-system";
 import { useEffect, useRef } from "react";
-
-const FOCUSABLE =
-  'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+import { trapFocus } from "../modal";
 
 /**
- * The window's modal layer: a scrim, a panel near the top like a command
- * palette, and the keyboard behaviour a modal owes. Escape and a click on the
- * scrim close it, Tab stays inside, and focus goes back where it was when it
- * closes. The panel's content decides its own header and footer.
+ * Give a panel the keyboard behaviour a modal owes (see `trapFocus`): focus
+ * inside on open, Tab cycling inside, Escape to close, focus back on close.
+ */
+export function useModal(
+  onClose: (() => void) | undefined,
+  /** Finds the panel within the element the ref is on; that element by default. */
+  pick: (element: HTMLElement) => HTMLElement | null = (element) => element,
+) {
+  const panel = useRef<HTMLDivElement>(null);
+  const find = useRef(pick);
+  const close = useRef(onClose);
+  close.current = onClose;
+  // What had focus before the panel rendered: by the time effects run, an
+  // `autoFocus` field inside has already taken it.
+  const opener = useRef<Element | null>(null);
+  if (opener.current === null && typeof document !== "undefined") {
+    opener.current = document.activeElement;
+  }
+  useEffect(() => {
+    const target = panel.current && find.current(panel.current);
+    if (!target) return;
+    return trapFocus(target, () => close.current, opener.current);
+  }, []);
+  return panel;
+}
+
+/**
+ * The window's modal layer without a panel of its own: a scrim, and a dialog
+ * near the top like a command palette that holds the keyboard. A click on
+ * the scrim closes it. For content that brings its own panel, such as the
+ * design system's command palette.
+ */
+export function ModalLayer({
+  label,
+  onClose,
+  className,
+  style,
+  children,
+}: {
+  /** The dialog's accessible name. */
+  label: string;
+  /** Absent while the panel must not be dismissed, as during a submit. */
+  onClose?: () => void;
+  className?: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  const panel = useModal(onClose);
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: the scrim closes on click; Escape is handled by the modal
+    <div
+      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center bg-scrim px-6 pt-[12vh]"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose?.();
+      }}
+    >
+      <div
+        ref={panel}
+        role="dialog"
+        aria-modal
+        aria-label={label}
+        tabIndex={-1}
+        className={`focus:outline-none ${className ?? ""}`}
+        style={style}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The window's modal layer with its panel: the panel's content decides its
+ * own header and footer.
  */
 export function Overlay({
   label,
@@ -23,59 +91,45 @@ export function Overlay({
   onClose?: () => void;
   children: React.ReactNode;
 }) {
-  const panel = useRef<HTMLDivElement>(null);
-
-  // Remember what had focus, and give it back on close.
-  useEffect(() => {
-    const before = document.activeElement as HTMLElement | null;
-    if (!panel.current?.contains(document.activeElement)) {
-      panel.current?.querySelector<HTMLElement>("[autofocus], [data-autofocus]")?.focus();
-    }
-    return () => {
-      if (before?.isConnected) before.focus();
-    };
-  }, []);
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape" && onClose) {
-      e.preventDefault();
-      onClose();
-      return;
-    }
-    if (e.key !== "Tab" || !panel.current) return;
-    const items = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    if (items.length === 0) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
-
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: the scrim closes on click; Escape is handled inside
-    <div
-      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center bg-scrim px-6 pt-[12vh]"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose?.();
-      }}
+    <ModalLayer
+      label={label}
+      onClose={onClose}
+      className="overlay-panel flex max-h-[76vh] max-w-full flex-col rounded-lg bg-surface-raised text-ink shadow-[var(--shadow-pop)]"
+      style={{ width }}
     >
-      <div
-        ref={panel}
-        role="dialog"
-        aria-modal
-        aria-label={label}
-        tabIndex={-1}
-        onKeyDown={onKeyDown}
-        className="overlay-panel flex max-h-[76vh] max-w-full flex-col rounded-lg bg-surface-raised text-ink shadow-[var(--shadow-pop)] focus:outline-none"
-        style={{ width }}
-      >
-        {children}
-      </div>
+      {children}
+    </ModalLayer>
+  );
+}
+
+/**
+ * The design system's confirmation dialog with the modal keyboard contract.
+ * The dialog itself handles Escape only while focus is inside it and never
+ * moves focus there, so the trap holds its panel; a close it and the trap
+ * both start on one Escape runs once.
+ */
+export function ModalDialog(props: DialogProps) {
+  const { onClose } = props;
+  const closing = useRef(false);
+  const once = onClose
+    ? () => {
+        if (closing.current) return;
+        closing.current = true;
+        queueMicrotask(() => {
+          closing.current = false;
+        });
+        onClose();
+      }
+    : undefined;
+  const layer = useModal(once, (element) => {
+    const panel = element.querySelector<HTMLElement>('[role="dialog"]');
+    panel?.setAttribute("tabindex", "-1");
+    return panel;
+  });
+  return (
+    <div ref={layer} className="contents">
+      <Dialog {...props} onClose={once} />
     </div>
   );
 }

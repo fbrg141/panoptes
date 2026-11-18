@@ -96,6 +96,7 @@ impl RpcProcess {
         cwd: &Path,
         session_file: Option<&str>,
         read_only: bool,
+        instructions: Option<&str>,
         events: EventSink,
         mapper: EventMapper,
     ) -> anyhow::Result<Self> {
@@ -109,6 +110,10 @@ impl RpcProcess {
             // Pi's own tools that cannot change files; `bash` can, so it
             // is left out.
             command.args(["--tools", READ_ONLY_TOOLS]);
+        }
+        if let Some(instructions) = instructions {
+            // Append rather than replace Pi's tool and safety instructions.
+            command.args(["--append-system-prompt", instructions]);
         }
         // Pi leads its own process group, so stopping the session also stops
         // what Pi started (its launcher's node, a shell command still
@@ -228,6 +233,8 @@ impl RpcProcess {
     }
 
     /// Sends a command and waits for its response. Returns `data` on success.
+    /// `NotRunning` means the command definitely was not sent. Once it enters
+    /// the stdin channel, an exit is ambiguous: Pi may already have handled it.
     pub async fn call(&self, mut command: Value) -> anyhow::Result<Value> {
         let id = format!("panoptes-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let kind = command["type"].as_str().unwrap_or("command").to_string();
@@ -306,7 +313,7 @@ fn kill_group(leader: Option<u32>) {
 }
 
 fn not_running() -> anyhow::Error {
-    HarnessError::exited("Pi is not running").into()
+    HarnessError::not_running("Pi is not running").into()
 }
 
 async fn read_stdout(

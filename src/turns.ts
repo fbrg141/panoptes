@@ -1,5 +1,6 @@
 import type { Conversation } from "./conversation";
-import type { Approval, Block, FileEdit, Message, ToolKind } from "./types";
+import type { Approval, Block, FileEdit, Message, ToolImage, ToolKind } from "./types";
+import { sameUsage, sumUsage, type UsageTotal } from "./usage";
 
 export type ToolCallBlock = Extract<Block, { type: "toolCall" }>;
 
@@ -42,6 +43,8 @@ export interface Turn {
   stopped: boolean;
   startedAt: number | null;
   endedAt: number | null;
+  /** What the turn's model calls used, added up; null when none reported it. */
+  usage: UsageTotal | null;
 }
 
 type Source = Pick<Conversation, "messages" | "thoughtFor" | "thinking" | "busy"> &
@@ -113,7 +116,9 @@ export function buildTurns(conversation: Source): Turn[] {
       split--;
     }
     const all = prompt ? [prompt, ...replies] : replies;
-    const times = all.map((m) => m.timestamp).filter((t): t is number => t !== null);
+    const times = all
+      .flatMap((m) => [m.timestamp, m.usage?.endedAt ?? null])
+      .filter((t): t is number => t !== null);
     return {
       key: (prompt ?? replies[0]).id,
       prompt,
@@ -123,6 +128,7 @@ export function buildTurns(conversation: Source): Turn[] {
       stopped: replies.some((m) => m.stopped),
       startedAt: times.length ? Math.min(...times) : null,
       endedAt: times.length > 1 ? Math.max(...times) : null,
+      usage: sumUsage(replies),
     };
   };
 
@@ -142,7 +148,44 @@ export function buildTurns(conversation: Source): Turn[] {
   return turns;
 }
 
-/** Runs of two or more successful read and search calls become one group. */
+/**
+ * Whether two builds of a turn would render the same. The reducer keeps
+ * unchanged messages and blocks by identity, so the fields of a step can be
+ * compared by reference: a turn that did not receive the latest token
+ * compares equal, while only the streaming one differs.
+ */
+export function sameTurn(a: Turn, b: Turn): boolean {
+  return (
+    a === b ||
+    (a.key === b.key &&
+      a.prompt === b.prompt &&
+      a.live === b.live &&
+      a.stopped === b.stopped &&
+      a.startedAt === b.startedAt &&
+      a.endedAt === b.endedAt &&
+      sameUsage(a.usage, b.usage) &&
+      sameSteps(a.work, b.work) &&
+      sameSteps(a.answer, b.answer))
+  );
+}
+
+function sameSteps(a: Step[], b: Step[]): boolean {
+  return a.length === b.length && a.every((step, i) => sameStep(step, b[i]));
+}
+
+function sameStep(a: Step, b: Step): boolean {
+  if (a === b) return true;
+  if (a.type !== b.type) return false;
+  if (a.type === "group" && b.type === "group") {
+    return a.key === b.key && sameSteps(a.steps, b.steps);
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const fields = Object.keys(left);
+  return fields.length === Object.keys(right).length && fields.every((f) => left[f] === right[f]);
+}
+
+/** Runs of two or more successful read and search calls without images become one group. */
 function groupQuiet(steps: Step[]): Step[] {
   const out: Step[] = [];
   let run: ToolStep[] = [];
@@ -156,7 +199,10 @@ function groupQuiet(steps: Step[]): Step[] {
       step.type === "tool" &&
       QUIET.includes(step.call.kind) &&
       step.call.status !== "failed" &&
-      !step.approval
+      !step.approval &&
+      // A call that returned an image stays on its own row, so the image
+      // shows without opening a group.
+      step.call.images.length === 0
     ) {
       run.push(step);
     } else {
@@ -177,6 +223,11 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 /** The tool calls among a turn's steps, groups opened up. */
 export function toolSteps(steps: Step[]): ToolStep[] {
   return steps.flatMap((s) => (s.type === "tool" ? [s] : s.type === "group" ? s.steps : []));
+}
+
+/** Every image the steps' tool calls returned, in order. */
+export function toolImages(steps: Step[]): ToolImage[] {
+  return toolSteps(steps).flatMap((s) => s.call.images);
 }
 
 /** Approvals whose tool call no message holds, to show on their own. */

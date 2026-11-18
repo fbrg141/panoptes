@@ -113,3 +113,7 @@ ideas here too instead of opening GitHub issues; they wait for the review above.
 | Date | What happened | Points to |
 |---|---|---|
 | 2026-11-12 | A session in lane A created lane B and did all of B's work itself. B looked empty and nothing tied its diff to the conversation. Attribution of edits, shell commands included, across lanes is prototyped on the `bet1-lane-attribution` branch | 1 |
+| 2026-11-13 | A project whose repository moved can only be cleared away (delete its lanes, remove it, add it again), which loses the lanes' history. Pointing the project at the new path would keep it (#84) | none |
+| 2026-11-14 | Worktrees pile up because every lane has its own. Letting a lane run in the main checkout for quick one-off tasks would keep that workflow open without a worktree. Clearing finished lanes is tracked as a fix (#264) | none |
+| 2026-11-14 | Reusing worktrees from a pool across lanes was considered and not built: it brings back leftover files, stale branches and checkpoints tied to the wrong lane, and needs an "is it clean?" check the audit already called fragile | none |
+| 2026-11-17 | Slash commands are essential in daily use: without them, Pi's prompt templates, skills and extension commands can't be found or run from the composer. Taken as a daily-use fix ahead of the review (#273) | none |

@@ -1,9 +1,13 @@
 import { Button, Icon } from "@panoptes/design-system";
 import { useEffect } from "react";
 import { api } from "./api";
-import { ChatPane } from "./components/ChatPane";
+import { CleanupDialog } from "./components/CleanupDialog";
+import { CrashNotice, ErrorBoundary } from "./components/ErrorBoundary";
 import { NewLaneDialog } from "./components/NewLaneDialog";
 import { SearchPalette } from "./components/SearchPalette";
+import { SessionPicker } from "./components/SessionPicker";
+import { SessionWorkspace } from "./components/SessionWorkspace";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { pickProjectFolder } from "./pickProject";
@@ -39,15 +43,25 @@ export default function App() {
   }, []);
 
   // The window shortcuts: ⌘P searches, ⌘T starts a lane from a prompt,
-  // ⌘N adds a project, ⌘/ shows the cheatsheet. An open overlay keeps the
+  // ⌘N adds a project, ⌘D splits a pane, and ⌘/ shows the cheatsheet. An open overlay keeps the
   // keyboard, so a second shortcut does not yank it away from under the user.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const id = shortcutFor(e);
+      const editing =
+        e.target instanceof HTMLElement &&
+        (e.target.isContentEditable || e.target.closest("input, textarea") !== null);
+      const id = shortcutFor(e, editing);
       if (!id || useUi.getState().overlay) return;
       e.preventDefault();
       if (id === "newProject") {
         void pickProjectFolder();
+        return;
+      }
+      if (id === "splitVertical" || id === "splitHorizontal") {
+        const paneId = useUi
+          .getState()
+          .splitFocused(id === "splitVertical" ? "vertical" : "horizontal");
+        if (paneId) useStore.setState({ activeKey: null });
         return;
       }
       const overlay =
@@ -88,14 +102,46 @@ export default function App() {
         </div>
       )}
       <div className="flex min-h-0 flex-1">
-        <Sidebar />
-        <ChatPane />
+        <ErrorBoundary
+          label="sidebar"
+          fallback={({ error, reset }) => (
+            <aside className="flex w-80 shrink-0 border-r border-line bg-surface">
+              <CrashNotice title="The sidebar hit an error" error={error}>
+                <Button variant="secondary" size="sm" onClick={reset}>
+                  Try again
+                </Button>
+              </CrashNotice>
+            </aside>
+          )}
+        >
+          <Sidebar />
+        </ErrorBoundary>
+        <SessionWorkspace />
       </div>
-      {overlay?.type === "search" && <SearchPalette />}
-      {overlay?.type === "shortcuts" && <ShortcutsDialog />}
-      {overlay?.type === "newLane" && (
-        <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
-      )}
+      {/* A crashed dialog closes on its own; the window behind it keeps working. */}
+      <ErrorBoundary
+        label="dialog"
+        resetKey={overlay}
+        fallback={({ error }) => <OverlayCrash error={error} />}
+      >
+        {overlay?.type === "search" && <SearchPalette />}
+        {overlay?.type === "shortcuts" && <ShortcutsDialog />}
+        {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
+        {overlay?.type === "settings" && <SettingsDialog />}
+        {overlay?.type === "cleanup" && <CleanupDialog projectId={overlay.projectId} />}
+        {overlay?.type === "newLane" && (
+          <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
+        )}
+      </ErrorBoundary>
     </div>
   );
+}
+
+function OverlayCrash({ error }: { error: Error }) {
+  const close = useUi((s) => s.close);
+  useEffect(() => {
+    useStore.setState({ error: `That dialog hit an error and was closed: ${error.message}` });
+    close();
+  }, [error, close]);
+  return null;
 }

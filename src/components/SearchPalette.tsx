@@ -4,6 +4,7 @@ import { paletteGroups, paletteTarget } from "../palette";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
 import { useUi } from "../ui";
+import { ModalLayer } from "./Overlay";
 
 /**
  * The ⌘P overlay: one search box over projects, lanes, sessions and a few
@@ -16,18 +17,19 @@ export function SearchPalette() {
   const activeKey = useStore((s) => s.activeKey);
   const open = useStore((s) => s.open);
   const create = useStore((s) => s.create);
+  const showLogs = useStore((s) => s.showLogs);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
   const groups = useMemo(
     () => paletteGroups(sessions, projects, lanes, activeKey),
     [sessions, projects, lanes, activeKey],
   );
-  const scrim = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
 
   // The palette moves its highlight but never scrolls to it; keep the
   // highlighted row in view as the arrows walk past the list's edge.
   useEffect(() => {
-    const root = scrim.current;
+    const root = list.current;
     if (!root) return;
     const follow = new MutationObserver(() => {
       root
@@ -44,12 +46,15 @@ export function SearchPalette() {
     if (!target) return;
     switch (target.kind) {
       case "session":
+        useUi.getState().showSession(target.session.key);
         await open(target.session);
         break;
       case "lane": {
         const session = sessions.find((item) => item.laneId === target.lane.id);
-        if (session) await open(session);
-        else await create(target.lane.id);
+        if (session) {
+          useUi.getState().showSession(session.key);
+          await open(session);
+        } else await create(target.lane.id);
         break;
       }
       case "project":
@@ -64,28 +69,25 @@ export function SearchPalette() {
       case "shortcuts":
         show({ type: "shortcuts" });
         break;
+      case "showLogs":
+        await showLogs();
+        break;
     }
   };
 
   return (
     // The palette ships without its own scrim; this is the Dialog one, with
     // the panel pushed toward the top like a command palette.
-    // biome-ignore lint/a11y/noStaticElementInteractions: Escape closes it from the keyboard inside
-    <div
-      ref={scrim}
-      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center bg-scrim px-6 pt-[12vh]"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close();
-      }}
-    >
-      <CommandPalette
-        className="overlay-panel"
-        groups={groups}
-        placeholder="Jump to a session, lane or project"
-        autoFocus
-        onSelect={(id) => void select(id)}
-        onClose={close}
-      />
-    </div>
+    <ModalLayer label="Search" onClose={close} className="max-w-full">
+      <div ref={list} className="contents">
+        <CommandPalette
+          className="overlay-panel"
+          groups={groups}
+          placeholder="Jump to a session, lane or project"
+          autoFocus
+          onSelect={(id) => void select(id)}
+        />
+      </div>
+    </ModalLayer>
   );
 }

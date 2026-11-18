@@ -6,13 +6,20 @@ import type {
   AppInfo,
   ArchiveLaneOutcome,
   ArchiveStrategy,
+  Changes,
+  CommandInfo,
+  DeleteLaneOutcome,
   FileAttachment,
+  Hunk,
   ImageAttachment,
   Lane,
+  LaneCleanup,
   Listing,
   Message,
   ModelInfo,
   OpenedSession,
+  Preferences,
+  ProfileInput,
   Project,
   ProjectSettings,
   PromptMode,
@@ -20,6 +27,7 @@ import type {
   Session,
   SessionEvent,
   SessionSettings,
+  TreeRange,
 } from "./types";
 
 /** Typed wrappers for the commands in src-tauri/src/lib.rs. */
@@ -34,8 +42,8 @@ export const api = {
       locator: s.harnessRef?.locator ?? "",
       cwd: s.cwd,
     }),
-  newSession: (laneId: number, harness: string) =>
-    invoke<OpenedSession>("new_session", { laneId, harness }),
+  newSession: (laneId: number, harness: string, instructions?: string) =>
+    invoke<OpenedSession>("new_session", { laneId, harness, instructions }),
   adoptSession: (
     s: Pick<Session, "harness" | "key" | "harnessRef" | "cwd">,
     laneId: number | null,
@@ -56,6 +64,16 @@ export const api = {
     invoke<PromptOutcome>("send_prompt", { key, text, images, mode }),
   settings: (key: string) => invoke<SessionSettings>("session_settings", { key }),
   listModels: (key: string) => invoke<ModelInfo[]>("list_models", { key }),
+  listCommands: (key: string) => invoke<CommandInfo[]>("list_commands", { key }),
+  preferences: () => invoke<Preferences>("preferences"),
+  saveProfile: (id: number | null, input: ProfileInput) =>
+    invoke<Preferences>("save_profile", { id, input }),
+  deleteProfile: (id: number) => invoke<Preferences>("delete_profile", { id }),
+  setModelFavorite: (modelId: string, favorite: boolean) =>
+    invoke<Preferences>("set_model_favorite", { modelId, favorite }),
+  setModelHidden: (modelId: string, hidden: boolean) =>
+    invoke<Preferences>("set_model_hidden", { modelId, hidden }),
+  setCleanupIdleDays: (days: number) => invoke<Preferences>("set_cleanup_idle_days", { days }),
   setModel: (key: string, modelId: string) =>
     invoke<SessionSettings>("set_model", { key, modelId }),
   setThinkingLevel: (key: string, level: string) =>
@@ -73,11 +91,19 @@ export const api = {
   removeProject: (id: number) => invoke<void>("remove_project", { id }),
   createLane: (projectId: number, task: string, mainCheckout: boolean) =>
     invoke<Lane>("create_lane", { projectId, task, mainCheckout }),
+  laneChanges: (laneId: number) => invoke<Changes>("lane_changes", { laneId }),
+  laneCleanup: (projectId: number) => invoke<LaneCleanup>("lane_cleanup", { projectId }),
+  fileHunks: (laneId: number, path: string, range: TreeRange) =>
+    invoke<Hunk[]>("file_hunks", { laneId, path, range }),
   cancelLaneCreation: (projectId: number) => invoke<void>("cancel_lane_creation", { projectId }),
-  archiveLane: (id: number, strategy: ArchiveStrategy | null) =>
-    invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy }),
+  archiveLane: (id: number, strategy: ArchiveStrategy | null, recreateBranch = false) =>
+    invoke<ArchiveLaneOutcome>("archive_lane", { id, strategy, recreateBranch }),
+  createLaneBranch: (id: number) => invoke<void>("create_lane_branch", { id }),
   restoreLane: (id: number) => invoke<Lane>("restore_lane", { id }),
-  deleteLane: (id: number) => invoke<void>("delete_lane", { id }),
+  deleteLane: (id: number, allowDetached = false) =>
+    invoke<DeleteLaneOutcome>("delete_lane", { id, allowDetached }),
+  /** Opens the event log folder in Finder. */
+  showLogs: () => invoke<void>("show_logs"),
   onSessionEvent: (handler: (event: SessionEvent) => void) =>
     listen<SessionEvent>("session-event", (e) => handler(e.payload)),
 };

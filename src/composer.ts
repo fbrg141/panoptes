@@ -1,7 +1,7 @@
 // The composer's text logic: @-mentions, file matching and labels. Pure, so
 // it is tested without a window.
 
-import type { ContextUsage, Draft, FileAttachment, ImageAttachment } from "./types";
+import type { CommandInfo, ContextUsage, Draft, FileAttachment, ImageAttachment } from "./types";
 
 /** An `@query` being typed: where its `@` is and what follows it. */
 export interface MentionQuery {
@@ -15,6 +15,45 @@ export function mentionAt(text: string, caret: number): MentionQuery | null {
   const match = /(^|\s)@([^\s@]*)$/.exec(text.slice(0, caret));
   if (!match) return null;
   return { start: caret - match[2].length - 1, query: match[2] };
+}
+
+/** A `/command` being typed as the message's first token. */
+export function commandAt(text: string, caret: number): MentionQuery | null {
+  const match = /^\/([^\s]*)$/.exec(text.slice(0, caret));
+  if (!match || caret === 0) return null;
+  return { start: 0, query: match[1] };
+}
+
+/** Narrows discoverable commands by every word typed. */
+export function matchCommands(query: string, commands: CommandInfo[], limit = 8): CommandInfo[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return commands
+    .filter((command) => {
+      const text = `${command.name} ${command.description ?? ""}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    })
+    .sort((a, b) => {
+      const q = query.toLowerCase();
+      return (
+        Number(b.name.toLowerCase().startsWith(q)) - Number(a.name.toLowerCase().startsWith(q)) ||
+        a.name.localeCompare(b.name)
+      );
+    })
+    .slice(0, limit);
+}
+
+/** Completes a slash command, leaving a space for its arguments. */
+export function insertCommand(
+  text: string,
+  caret: number,
+  command: CommandInfo,
+): { text: string; caret: number } {
+  const rest = text.slice(caret);
+  const inserted = /^\s/.test(rest) ? `/${command.name}` : `/${command.name} `;
+  return {
+    text: inserted + rest,
+    caret: `/${command.name} `.length,
+  };
 }
 
 /** Replaces the mention being typed with `@path`, returning the new text and
@@ -76,6 +115,55 @@ export function matchFiles(query: string, files: string[], limit = 50): string[]
   }
   scored.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   return scored.slice(0, limit).map(([file]) => file);
+}
+
+/** A line that opens a list item: its indentation, a marker and a space. */
+const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)]) /;
+
+/**
+ * Enter inside a list: the item's marker continues on the next line, ordered
+ * numbers counting on, an open task item continuing unchecked. An item with
+ * nothing after its marker ends the list instead. Returns null when the line
+ * is not a list item, so the newline is left to the field.
+ */
+export function continueList(
+  original: string,
+  start: number,
+  end = start,
+): { text: string; caret: number } | null {
+  // A selection is replaced by the newline, as the field itself would do.
+  const text = original.slice(0, start) + original.slice(end);
+  const caret = start;
+  const lineStart = text.lastIndexOf("\n", caret - 1) + 1;
+  const lineEnd = text.indexOf("\n", caret);
+  const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
+  const match = LIST_ITEM.exec(line);
+  if (!match) return null;
+  const [opened, indent, marker] = match;
+  // Only once the caret is past the marker does Enter continue the list.
+  if (caret < lineStart + opened.length) return null;
+  const item = line.slice(opened.length);
+  // An item with nothing after its marker ends the list: the marker goes and
+  // the caret stays on the now empty line.
+  if (!item.trim()) {
+    return {
+      text: text.slice(0, lineStart) + (lineEnd < 0 ? "" : text.slice(lineEnd)),
+      caret: lineStart,
+    };
+  }
+  const next = /^\d/.test(marker)
+    ? `${Number.parseInt(marker, 10) + 1}${marker.slice(-1)}`
+    : marker;
+  // An open task item continues unchecked.
+  const task = /^\[[ xX]\] /.test(item) ? "[ ] " : "";
+  const inserted = `\n${indent}${next} ${task}`;
+  // Splitting an item mid-line moves the rest after the new marker, without
+  // the space that separated it from the text before the caret.
+  const rest = text.slice(caret).replace(/^[ \t]+/, "");
+  return {
+    text: text.slice(0, caret) + inserted + rest,
+    caret: caret + inserted.length,
+  };
 }
 
 export interface Segment {

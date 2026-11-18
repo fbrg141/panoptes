@@ -6,9 +6,12 @@ import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   Answer,
+  CommandInfo,
   Lane,
   Message,
   ModelInfo,
+  Preferences,
+  ProfileInput,
   Project,
   QueuedPrompt,
   Session,
@@ -16,6 +19,7 @@ import type {
   SessionUpdate,
   ToolCall,
   ToolOutput,
+  Usage,
 } from "../types";
 
 const now = Date.now();
@@ -115,14 +119,46 @@ let lanes: Lane[] = [
       },
     ],
   },
+  {
+    id: 2,
+    projectId: 1,
+    name: "old-documentation",
+    task: "Update the old documentation",
+    branch: "panoptes/old-documentation",
+    state: "active",
+    worktrees: [
+      {
+        projectId: 1,
+        path: "/Users/you/Panoptes/lanes/old-documentation/panoptes",
+        mainCheckout: false,
+        checkpointRef: null,
+      },
+    ],
+  },
 ];
-let nextLaneId = 2;
+let nextLaneId = 3;
 
 /** What each lane's worktree holds; lanes created here start empty. */
 const laneWork: Record<number, { changedFiles: number; commitsAhead: number | null }> = {
   1: { changedFiles: 3, commitsAhead: 1 },
+  2: { changedFiles: 2, commitsAhead: 0 },
 };
 let nextSessionId = 2;
+let preferences: Preferences = {
+  profiles: [
+    {
+      id: 1,
+      name: "Careful implementation",
+      modelId: "anthropic/claude-sonnet-4-5",
+      thinkingLevel: "high",
+      instructions: "Prefer small changes. Run all relevant tests.",
+    },
+  ],
+  favoriteModels: ["anthropic/claude-sonnet-4-5"],
+  hiddenModels: [],
+  cleanupIdleDays: 4,
+};
+let nextProfileId = 2;
 
 /** Records a Panoptes session in a lane, as the backend does before it starts. */
 const recordSession = (laneId: number): Session => {
@@ -172,15 +208,33 @@ const call = (
   input,
   status: "done",
   output,
+  images: [],
   startedAt: now - tookMs,
   endedAt: now,
 });
+
+/** A small generated PNG standing in for a screenshot a tool returned. */
+const SCREENSHOT =
+  "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAA2UlEQVR42u3ZMQ1AIQxAQZQwoQVNzF8dhggrIjqQXy55CnpT21JrU+KKEQAWYAEWYAEWYAEGLMACLMACLMAC/CzwWluJAwxYgAVYgAVYgAUYsAALsAALsAArDjx7VyTAgAEDBgwYMGDAgAVYgAEDBgwYMGDAgF8HlnehAAuwAAuwAAMWYAEWYAEWYIWAx/h0K8CAAQMGDFh5gWVNEmABFmABFmDAAizfJBclwIABAwYMGDBgWZMEWIAFWIAFGLARABZgARZgARZgAQYswAIswAIswAIMWID1vw7pu4Ggx/h9qQAAAABJRU5ErkJggg==";
 
 const text = (text: string): ToolOutput => ({ type: "text", text });
 const shell = (text: string, exitCode: number | null = 0): ToolOutput => ({
   type: "shell",
   text,
   exitCode,
+});
+
+/** What a model call of the mock's used, ending `tookMs` after it started. */
+const usage = (startedAt: number, tookMs = 2_400): Usage => ({
+  model: "claude-sonnet-4-5",
+  provider: "anthropic",
+  inputTokens: 1_850,
+  outputTokens: 420,
+  cacheReadTokens: 18_200,
+  cacheWriteTokens: 600,
+  cost: 0.0177,
+  stopReason: "finished",
+  endedAt: startedAt + tookMs,
 });
 
 const msg = (
@@ -195,6 +249,7 @@ const msg = (
   timestamp: now - at,
   error: null,
   stopped: false,
+  usage: role === "assistant" ? usage(now - at) : null,
 });
 
 const RETRY_OLD = `      {message.error && (
@@ -287,6 +342,17 @@ const history: Message[] = [
         "src/conversation.ts",
         text("export interface Conversation {\n  messages: Message[];\n}"),
       ),
+      {
+        ...call(
+          "t3s",
+          "read",
+          "read",
+          { path: "screenshots/error-banner.png" },
+          "screenshots/error-banner.png",
+          text("Read image file [image/png]"),
+        ),
+        images: [{ mimeType: "image/png", data: SCREENSHOT }],
+      },
       call(
         "t4",
         "grep",
@@ -339,6 +405,12 @@ const history: Message[] = [
     ],
     10 * 60_000 - 78_000,
   ),
+];
+
+const commands: CommandInfo[] = [
+  { name: "review", description: "Review the current changes", kind: "prompt" },
+  { name: "fix-tests", description: "Fix failing tests", kind: "extension" },
+  { name: "skill:implement", description: "Implement from a skill", kind: "skill" },
 ];
 
 const models: ModelInfo[] = [
@@ -414,6 +486,7 @@ async function stream(key: string, text: string) {
     timestamp: Date.now(),
     error: null,
     stopped: false,
+    usage: null,
   };
   await send({ type: "messageCompleted", message: user });
   if (text === "ask") {
@@ -454,6 +527,7 @@ async function stream(key: string, text: string) {
     input: { command: "pnpm test" },
     status: "pending",
     output: null,
+    images: [],
     startedAt: null,
     endedAt: null,
   };
@@ -643,6 +717,41 @@ export function installMockBackend() {
           lanes.push(lane);
           return lane;
         }
+        case "lane_cleanup": {
+          const projectId = (args as { projectId: number }).projectId;
+          const owned = lanes.flatMap((lane) =>
+            lane.state === "active"
+              ? lane.worktrees.filter((tree) => !tree.mainCheckout).map((tree) => ({ lane, tree }))
+              : [],
+          );
+          const usage = (entries: typeof owned) => ({
+            worktrees: entries.length,
+            bytes: entries.reduce(
+              (total, entry) => total + (entry.lane.id === 2 ? 5 * 1024 ** 3 : 512 * 1024 ** 2),
+              0,
+            ),
+          });
+          return {
+            project: usage(owned.filter((entry) => entry.tree.projectId === projectId)),
+            total: usage(owned),
+            idleDays: preferences.cleanupIdleDays,
+            candidates: lanes
+              .filter(
+                (lane) =>
+                  lane.id === 2 &&
+                  lane.projectId === projectId &&
+                  lane.state === "active" &&
+                  preferences.cleanupIdleDays <= 9,
+              )
+              .map((lane) => ({
+                lane,
+                lastActivity: now - 9 * 24 * hour,
+                bytes: 5 * 1024 ** 3,
+                preservation: (laneWork[lane.id]?.changedFiles ?? 0) > 0 ? "checkpoint" : "clean",
+              })),
+            errors: [],
+          };
+        }
         case "archive_lane": {
           const request = args as unknown as { id: number; strategy: string | null };
           const lane = lanes.find((item) => item.id === request.id);
@@ -655,6 +764,8 @@ export function installMockBackend() {
           );
           return { type: "archived" };
         }
+        case "create_lane_branch":
+          return null;
         case "restore_lane": {
           const id = (args as { id: number }).id;
           const lane = lanes.find((item) => item.id === id);
@@ -676,7 +787,7 @@ export function installMockBackend() {
           }
           sessions = sessions.filter((session) => session.laneId !== id);
           lanes = lanes.filter((lane) => lane.id !== id);
-          return null;
+          return { type: "deleted" };
         }
         case "open_session":
           if (!open.has(a.key)) {
@@ -686,11 +797,11 @@ export function installMockBackend() {
             });
           }
           open.add(a.key);
-          return { key: a.key, history };
+          return { key: a.key, history, status: "idle" as const, replay: [] };
         case "new_session": {
           const recorded = recordSession((args as { laneId: number }).laneId);
           open.add(recorded.key);
-          return { key: recorded.key, history: [] };
+          return { key: recorded.key, history: [], status: "idle", replay: [] };
         }
         case "adopt_session": {
           const request = args as unknown as { key: string; laneId: number | null };
@@ -761,6 +872,57 @@ export function installMockBackend() {
           return { ...settings };
         case "list_models":
           return models;
+        case "list_commands":
+          return commands;
+        case "preferences":
+          return preferences;
+        case "save_profile": {
+          const request = args as unknown as { id: number | null; input: ProfileInput };
+          const id = request.id ?? nextProfileId++;
+          const profile = { id, ...request.input };
+          preferences = {
+            ...preferences,
+            profiles: request.id
+              ? preferences.profiles.map((item) => (item.id === id ? profile : item))
+              : [...preferences.profiles, profile],
+          };
+          return preferences;
+        }
+        case "delete_profile": {
+          const id = (args as unknown as { id: number }).id;
+          preferences = {
+            ...preferences,
+            profiles: preferences.profiles.filter((profile) => profile.id !== id),
+          };
+          return preferences;
+        }
+        case "set_model_favorite": {
+          const request = args as unknown as { modelId: string; favorite: boolean };
+          const favorites = preferences.favoriteModels.filter((id) => id !== request.modelId);
+          preferences = {
+            ...preferences,
+            favoriteModels: request.favorite ? [...favorites, request.modelId] : favorites,
+          };
+          return preferences;
+        }
+        case "set_model_hidden": {
+          const request = args as unknown as { modelId: string; hidden: boolean };
+          preferences = {
+            ...preferences,
+            hiddenModels: request.hidden
+              ? [...new Set([...preferences.hiddenModels, request.modelId])]
+              : preferences.hiddenModels.filter((id) => id !== request.modelId),
+          };
+          return preferences;
+        }
+        case "set_cleanup_idle_days": {
+          const days = (args as { days: number }).days;
+          if (!Number.isInteger(days) || days < 1 || days > 365) {
+            throw { kind: "other", message: "Idle lane threshold must be between 1 and 365 days" };
+          }
+          preferences = { ...preferences, cleanupIdleDays: days };
+          return preferences;
+        }
         case "set_model": {
           const model = models.find((m) => m.id === a.modelId) ?? null;
           settings.model = model;
@@ -809,6 +971,16 @@ async function showcase(open: Set<string>) {
       title: "Run the migration tests",
       updatedAt: now - 40 * 60_000,
     }),
+    session({
+      name: "lane-summary",
+      key: "panoptes:100",
+      id: 100,
+      laneId: 1,
+      cwd: "/Users/you/Panoptes/lanes/reviewable-work/panoptes",
+      title: "Review the lane summary",
+      parentLocator: "/sessions/a.jsonl",
+      updatedAt: now - 40 * 60_000,
+    }),
   );
   const statuses: [string, string][] = [
     ["panoptes:1", "running"],
@@ -817,6 +989,7 @@ async function showcase(open: Set<string>) {
     ["pi:b", "done"],
     ["pi:c", "running"],
     ["pi:d", "waiting"],
+    ["panoptes:100", "done"],
   ];
   // Give the store a moment to subscribe before the events arrive.
   await new Promise((resolve) => setTimeout(resolve, 600));

@@ -59,6 +59,7 @@ describe("paletteGroups", () => {
       "action:newSession",
       "action:newProject",
       "action:shortcuts",
+      "action:showLogs",
     ]);
     // Keys contain colons, so the id is split on the first one only.
     expect(groups[0].items[0]).toMatchObject({ id: "session:pi:s1", label: "Release checklist" });
@@ -125,6 +126,9 @@ describe("paletteTarget", () => {
     });
     expect(paletteTarget("action:shortcuts", [session], [project], [lane])).toEqual({
       kind: "shortcuts",
+    });
+    expect(paletteTarget("action:showLogs", [session], [project], [lane])).toEqual({
+      kind: "showLogs",
     });
   });
 

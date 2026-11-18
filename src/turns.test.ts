@@ -5,7 +5,9 @@ import {
   formatDuration,
   groupLabel,
   looseApprovals,
+  sameTurn,
   summarizeWork,
+  toolImages,
   toolSteps,
 } from "./turns";
 import type { Block, Message, ToolCall, ToolKind } from "./types";
@@ -22,6 +24,7 @@ const message = (
   timestamp: null,
   error: null,
   stopped: false,
+  usage: null,
   ...over,
 });
 const text = (t: string): Block => ({ type: "text", text: t });
@@ -39,6 +42,7 @@ const call = (
   input: {},
   status: "done",
   output: null,
+  images: [],
   startedAt: null,
   endedAt: null,
   ...over,
@@ -91,6 +95,23 @@ describe("buildTurns", () => {
     );
   });
 
+  it("keeps a read that returned an image out of a group", () => {
+    const shot = { mimeType: "image/png", data: "aGVsbG8=" };
+    const [turn] = turnsOf([
+      message("u1", "user", [text("look")]),
+      message("a1", "assistant", [
+        call("c1", "read", "a.ts"),
+        call("c2", "read", "shot.png", { images: [shot] }),
+        call("c3", "read", "b.ts"),
+      ]),
+    ]);
+    expect(turn.work.map((s) => s.type)).toEqual(["tool", "tool", "tool"]);
+    expect(toolSteps(turn.work)[1].call.images).toEqual([shot]);
+    // A finished turn folds its work; the images stay listed for the fold.
+    expect(summarizeWork(turn.work)).not.toBeNull();
+    expect(toolImages(turn.work)).toEqual([shot]);
+  });
+
   it("puts an approval on the call it is about, outside any group", () => {
     const approval = {
       id: "a1",
@@ -128,6 +149,30 @@ describe("buildTurns", () => {
     expect(turns.map((t) => t.live)).toEqual([false, true]);
     expect(turns[0]).toMatchObject({ startedAt: 1, endedAt: 5 });
     expect(turns[1].endedAt).toBeNull();
+  });
+
+  it("adds up a turn's usage and ends it when its last call ended", () => {
+    const usage = (endedAt: number, cost: number) => ({
+      model: "m",
+      provider: "p",
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cost,
+      stopReason: "finished" as const,
+      endedAt,
+    });
+    const [first, second] = turnsOf([
+      message("u1", "user", [text("a")], { timestamp: 1_000 }),
+      message("a1", "assistant", [text("b")], { timestamp: 1_200, usage: usage(3_000, 0.1) }),
+      message("a2", "assistant", [text("c")], { timestamp: 3_100, usage: usage(8_000, 0.2) }),
+      message("u2", "user", [text("d")], { timestamp: 9_000 }),
+    ]);
+    expect(first).toMatchObject({ startedAt: 1_000, endedAt: 8_000 });
+    expect(first.usage).toMatchObject({ calls: 2, inputTokens: 20, outputTokens: 10 });
+    expect(first.usage?.cost).toBeCloseTo(0.3);
+    expect(second.usage).toBeNull();
   });
 
   it("keeps errors in the answer and carries the stopped flag", () => {
@@ -175,5 +220,39 @@ describe("summarizeWork", () => {
 describe("formatDuration", () => {
   it("reads like a clock for long runs", () => {
     expect([400, 8_200, 72_000].map(formatDuration)).toEqual(["0.4s", "8s", "1m 12s"]);
+  });
+});
+
+describe("sameTurn", () => {
+  const finished = [
+    message("u1", "user", [text("First")]),
+    message("a1", "assistant", [call("t1", "edit", "a.ts"), text("Done")]),
+  ];
+  const streaming = (reply: string) =>
+    turnsOf(
+      [
+        ...finished,
+        message("u2", "user", [text("Second")]),
+        message("a2", "assistant", [text(reply)]),
+      ],
+      true,
+    );
+
+  it("treats a finished turn as unchanged when another turn streams", () => {
+    const before = streaming("Hel");
+    // The reducer keeps every untouched message by identity.
+    const after = streaming("Hello");
+    expect(sameTurn(before[0], after[0])).toBe(true);
+    expect(sameTurn(before[1], after[1])).toBe(false);
+  });
+
+  it("notices a changed tool call and a turn finishing", () => {
+    const base = turnsOf(finished);
+    const updated = turnsOf([
+      finished[0],
+      message("a1", "assistant", [call("t1", "edit", "a.ts", { status: "failed" }), text("Done")]),
+    ]);
+    expect(sameTurn(base[0], updated[0])).toBe(false);
+    expect(sameTurn(turnsOf(finished, true)[0], base[0])).toBe(false);
   });
 });

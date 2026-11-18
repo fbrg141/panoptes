@@ -3,7 +3,6 @@
 //! follow. The service stores what this decides.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, bail};
 
@@ -96,12 +95,8 @@ pub fn default_settings(repo: &Path) -> ProjectSettings {
 /// `main`.
 pub fn default_branch(repo: &Path) -> String {
     let git = |args: &[&str]| -> Option<String> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .output()
-            .ok()?;
+        let output =
+            crate::git::output(crate::git::command().arg("-C").arg(repo).args(args), None).ok()?;
         let text = String::from_utf8(output.stdout).ok()?;
         let text = text.trim();
         (output.status.success() && !text.is_empty()).then(|| text.to_string())
@@ -162,7 +157,7 @@ mod tests {
     use super::*;
 
     fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = crate::git::command()
             .arg("-C")
             .arg(dir)
             .args(args)

@@ -1,9 +1,20 @@
 import { Button, Icon } from "@panoptes/design-system";
-import { useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { continueList } from "../composer";
+import {
+  borrowedModels,
+  DEFAULT_CHOICE,
+  modelGroups,
+  profileGroups,
+  shortModelId,
+  thinkingGroups,
+} from "../newSession";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
+import { proseField } from "../textFields";
 import { useUi } from "../ui";
 import { OptionToggle, Overlay, OverlayFooter, OverlayHeader } from "./Overlay";
+import { Picker } from "./Picker";
 
 /**
  * The project + flow: one prompt creates a lane and its only session. The
@@ -14,9 +25,46 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
   const createFromPrompt = useStore((s) => s.createFromPrompt);
   const cancelLaneCreation = useStore((s) => s.cancelLaneCreation);
   const close = useUi((s) => s.close);
+  const activeKey = useStore((s) => s.activeKey);
+  const modelsByKey = useStore((s) => s.models);
+  const settingsByKey = useStore((s) => s.settings);
+  const preferences = useStore((s) => s.preferences);
+  const loadModels = useStore((s) => s.loadModels);
   const [task, setTask] = useState(prompt ?? "");
   const [mainCheckout, setMainCheckout] = useState(false);
+  const [model, setModel] = useState(DEFAULT_CHOICE);
+  const [thinking, setThinking] = useState(DEFAULT_CHOICE);
+  const [profileId, setProfileId] = useState<number | null>(null);
+  const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState(false);
+  const [modelsFailed, setModelsFailed] = useState(false);
+  const field = useRef<HTMLTextAreaElement>(null);
+
+  // Model and thinking choices are read from an open session: listing them
+  // needs a harness process. Without one, the harness default is the only
+  // honest choice, and the composer offers the rest once the session runs.
+  const models = useMemo(() => borrowedModels(modelsByKey, activeKey), [activeKey, modelsByKey]);
+  const levels = useMemo(() => {
+    const settings =
+      (activeKey ? settingsByKey[activeKey] : undefined) ??
+      Object.values(settingsByKey).find((item) => item && item.thinkingLevels.length > 0);
+    return settings?.thinkingLevels ?? [];
+  }, [activeKey, settingsByKey]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: asks once, when the panel opens
+  useEffect(() => {
+    if (!models && activeKey) {
+      void loadModels().then((loaded) => setModelsFailed(!loaded));
+    }
+  }, []);
+
+  // Fit the field to its lines, including lines wrapped by the panel.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the value drives the measurement
+  useEffect(() => {
+    const el = field.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [task]);
 
   if (!project) {
     return (
@@ -37,16 +85,53 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
     );
   }
 
+  const chosenModel = models?.find((item) => item.id === model);
+  const chosenProfile = preferences.profiles.find((profile) => profile.id === profileId);
+  const focusTask = () => field.current?.focus();
+
+  const chooseProfile = (id: string) => {
+    const profile = preferences.profiles.find((item) => item.id === Number(id));
+    setProfileId(profile?.id ?? null);
+    setModel(profile?.modelId ?? DEFAULT_CHOICE);
+    setThinking(profile?.thinkingLevel ?? DEFAULT_CHOICE);
+    setInstructions(profile?.instructions ?? "");
+  };
+
   const submit = async () => {
     const text = task.trim();
     if (!text || busy) return;
     setBusy(true);
-    const created = await createFromPrompt(project.id, text, mainCheckout);
+    const created = await createFromPrompt(project.id, text, mainCheckout, {
+      model: model || undefined,
+      thinking: thinking || undefined,
+      instructions: instructions || undefined,
+    });
     if (created) {
       close();
     } else {
       setBusy(false);
     }
+  };
+
+  // Enter creates the lane; Shift+Enter starts a new line, continuing a list
+  // when the line opens one.
+  const onTaskKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key !== "Enter") return;
+    if (!event.shiftKey) {
+      event.preventDefault();
+      void submit();
+      return;
+    }
+    const next = continueList(
+      task,
+      event.currentTarget.selectionStart,
+      event.currentTarget.selectionEnd,
+    );
+    if (!next) return;
+    event.preventDefault();
+    setTask(next.text);
+    requestAnimationFrame(() => field.current?.setSelectionRange(next.caret, next.caret));
   };
 
   const cancel = () => {
@@ -73,18 +158,23 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
         </OverlayHeader>
 
         <div className="flex flex-col gap-2 px-4 pt-1 pb-4">
-          <input
+          <textarea
+            ref={field}
+            {...proseField}
             aria-label="First prompt"
             aria-describedby="new-lane-help"
             placeholder="What should Pi do? e.g. Fix login redirects"
+            rows={1}
             value={task}
             onChange={(event) => setTask(event.target.value)}
+            onKeyDown={onTaskKeyDown}
             disabled={busy}
             // biome-ignore lint/a11y/noAutofocus: the prompt is what this panel asks for
             autoFocus
-            className="menu-search h-9 w-full bg-transparent text-heading font-medium text-ink placeholder:font-normal placeholder:text-ink-faint"
+            className="block max-h-60 w-full resize-none overflow-y-auto bg-transparent text-heading font-medium text-ink focus:outline-none placeholder:font-normal placeholder:text-ink-faint"
           />
           <p id="new-lane-help" className="text-label font-normal text-ink-muted">
+            <span className="sr-only">Enter creates the lane. Shift+Enter adds a line.</span>
             {mainCheckout
               ? "Shares the project's own checkout: no worktree, copied files or setup command. Archiving the lane never removes it."
               : `Gets its own worktree and branch from ${project.baseBranch}. Your prompt starts the lane's one session.`}
@@ -99,6 +189,61 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             disabled={busy}
             onChange={setMainCheckout}
           />
+          <Picker
+            label="Profile"
+            icon="agent"
+            title="Apply saved model, thinking and additional instructions to this new session"
+            value={chosenProfile?.name ?? "No profile"}
+            groups={profileGroups(preferences.profiles, profileId)}
+            searchable={preferences.profiles.length > 6}
+            disabled={busy}
+            returnFocus={focusTask}
+            onSelect={chooseProfile}
+          />
+          <Picker
+            label="Model"
+            icon="agent"
+            title={
+              models
+                ? undefined
+                : modelsFailed
+                  ? "Could not load models. Close and reopen this panel to retry."
+                  : activeKey
+                    ? "Loading models"
+                    : "Models are listed from an open session; switch in the composer once this one runs"
+            }
+            value={
+              chosenModel ? (
+                <span className="text-code-sm">{shortModelId(chosenModel)}</span>
+              ) : (
+                "Default model"
+              )
+            }
+            valueText={chosenModel?.name ?? "Default model"}
+            groups={models ? modelGroups(models, model, preferences) : []}
+            emptyText={modelsFailed ? "Could not load models" : "Loading models…"}
+            disabled={busy || !models}
+            returnFocus={focusTask}
+            onSelect={(id) => {
+              setModel(id);
+              // The borrowed levels belong to the previously active model.
+              // A new choice starts with that model's own default.
+              setThinking(DEFAULT_CHOICE);
+            }}
+          />
+          {levels.length > 0 && (
+            <Picker
+              label="Thinking"
+              icon="circle-dot"
+              value={thinking ? `Thinking: ${thinking}` : "Default thinking"}
+              groups={thinkingGroups(levels, thinking)}
+              searchable={false}
+              width={200}
+              disabled={busy}
+              returnFocus={focusTask}
+              onSelect={setThinking}
+            />
+          )}
           <Button
             type="submit"
             variant="primary"

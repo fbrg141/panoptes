@@ -1,17 +1,32 @@
-import { Button, Dialog, LoopMark, Tabs } from "@panoptes/design-system";
+import { Button, LoopMark, Tabs } from "@panoptes/design-system";
 import { useMemo, useState } from "react";
+import { laneMainSession } from "../laneCard";
 import { emptyLane, workLabel } from "../laneRow";
 import { pickProjectFolder } from "../pickProject";
 import { laneMenuItems, projectMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
-import type { ArchiveStrategy, Lane, LaneNavigation, Project, Session } from "../types";
+import type {
+  ArchiveStrategy,
+  DetachedHead,
+  Lane,
+  LaneNavigation,
+  Project,
+  Session,
+} from "../types";
 import { useUi } from "../ui";
+import { ModalDialog } from "./Overlay";
 import { RowMenu } from "./RowMenu";
-import { SessionItem } from "./SessionItem";
+import { CheckoutIcon, SessionItem } from "./SessionItem";
 
 type NavigationTab = "lanes" | "all";
 
 const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
+
+type DetachedLaneRecovery = {
+  lane: Lane;
+  detachedHead: DetachedHead;
+  operation: "archive" | "delete";
+};
 
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
@@ -26,6 +41,7 @@ export function Sidebar() {
   const [tab, setTab] = useState<NavigationTab>("lanes");
   const [dirtyLane, setDirtyLane] = useState<Lane | null>(null);
   const [deletingLane, setDeletingLane] = useState<Lane | null>(null);
+  const [detachedRecovery, setDetachedRecovery] = useState<DetachedLaneRecovery | null>(null);
   const [adopting, setAdopting] = useState<Session | null>(null);
   const navigationByLane = useMemo(
     () => new Map(navigation.map((entry) => [entry.laneId, entry])),
@@ -39,6 +55,13 @@ export function Sidebar() {
   const requestArchive = async (lane: Lane) => {
     const outcome = await archiveLane(lane.id, null);
     if (outcome?.type === "dirty") setDirtyLane(outcome.lane);
+    if (outcome?.type === "detachedHead") {
+      setDetachedRecovery({
+        lane: outcome.lane,
+        detachedHead: outcome.detachedHead,
+        operation: "archive",
+      });
+    }
   };
 
   const requestAdoption = async (session: Session) => {
@@ -66,6 +89,14 @@ export function Sidebar() {
           aria-label="Keyboard shortcuts"
           title="Keyboard shortcuts (⌘/)"
           onClick={() => show({ type: "shortcuts" })}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="settings"
+          aria-label="Settings"
+          title="Profiles and model preferences"
+          onClick={() => show({ type: "settings" })}
         />
         <Button
           variant="ghost"
@@ -104,6 +135,7 @@ export function Sidebar() {
                 lanes={lanes.filter((lane) => lane.projectId === project.id)}
                 navigationByLane={navigationByLane}
                 onNewLane={() => show({ type: "newLane", projectId: project.id })}
+                onCleanup={() => show({ type: "cleanup", projectId: project.id })}
                 onWork={(lane) => void create(lane.id)}
                 onArchive={(lane) => void requestArchive(lane)}
                 onDelete={setDeletingLane}
@@ -140,10 +172,32 @@ export function Sidebar() {
           lane={dirtyLane}
           onClose={() => setDirtyLane(null)}
           onArchived={() => setDirtyLane(null)}
+          onDetached={(lane, detachedHead) => {
+            setDirtyLane(null);
+            setDetachedRecovery({ lane, detachedHead, operation: "archive" });
+          }}
         />
       )}
       {deletingLane && (
-        <DeleteLaneDialog lane={deletingLane} onClose={() => setDeletingLane(null)} />
+        <DeleteLaneDialog
+          lane={deletingLane}
+          onClose={() => setDeletingLane(null)}
+          onDetached={(lane, detachedHead) => {
+            setDeletingLane(null);
+            setDetachedRecovery({ lane, detachedHead, operation: "delete" });
+          }}
+        />
+      )}
+      {detachedRecovery && (
+        <DetachedHeadDialog
+          recovery={detachedRecovery}
+          onChange={setDetachedRecovery}
+          onClose={() => setDetachedRecovery(null)}
+          onDirty={(lane) => {
+            setDetachedRecovery(null);
+            setDirtyLane(lane);
+          }}
+        />
       )}
       {adopting && (
         <AdoptSessionDialog
@@ -173,6 +227,7 @@ function ProjectItem({
   lanes,
   navigationByLane,
   onNewLane,
+  onCleanup,
   onWork,
   onArchive,
   onDelete,
@@ -181,6 +236,7 @@ function ProjectItem({
   lanes: Lane[];
   navigationByLane: Map<number, LaneNavigation>;
   onNewLane: () => void;
+  onCleanup: () => void;
   onWork: (lane: Lane) => void;
   onArchive: (lane: Lane) => void;
   onDelete: (lane: Lane) => void;
@@ -225,6 +281,7 @@ function ProjectItem({
           items={projectMenuItems(lanes.length)}
           onSelect={(id) => {
             if (id === "new-lane") onNewLane();
+            if (id === "cleanup-lanes") onCleanup();
             if (id === "remove-project") setRemoving(true);
           }}
         />
@@ -271,8 +328,8 @@ function ProjectItem({
   );
 }
 
-/** A lane and its backend-assigned sessions, both independently collapsible. */
-function LaneItem({
+/** A lane's root session is its card; only extra sessions disclose. */
+export function LaneItem({
   lane,
   navigation,
   onWork,
@@ -285,40 +342,104 @@ function LaneItem({
   onAction: () => void;
   onDelete: () => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
+  const mainCheckout = lane.worktrees.some((worktree) => worktree.mainCheckout);
   const archived = lane.state === "archived";
   const checkpoint = lane.worktrees.some((worktree) => worktree.checkpointRef);
   const sessions = navigation?.sessions ?? [];
   const archivedSessions = navigation?.archivedSessions ?? [];
   const empty = emptyLane(lane, navigation);
   const work = workLabel(navigation?.work ?? null);
+  const location = mainCheckout ? "Main checkout" : lane.branch;
+  const detail = [archived ? (checkpoint ? "archived with a checkpoint" : "archived") : "", work]
+    .filter(Boolean)
+    .join(" · ");
+  const laneSessions = [...sessions, ...archivedSessions];
+  const mainSession = laneMainSession(laneSessions);
+  const extraSessions = laneSessions.filter((session) => session.key !== mainSession?.key);
+  const subsessions = archived
+    ? extraSessions
+    : extraSessions.filter((session) => !session.archived);
+  const archivedExtras = archived ? [] : extraSessions.filter((session) => session.archived);
+  const expandable = extraSessions.length > 0;
+  const selectLaneAction = (id: string) => {
+    if (id === "archive-lane" || id === "restore-lane") onAction();
+    if (id === "delete-lane") onDelete();
+  };
+  const archivedSessionList = archivedExtras.length > 0 && (
+    <>
+      <Button variant="ghost" size="sm" onClick={() => setShowArchived((shown) => !shown)}>
+        {showArchived ? "Hide archived sessions" : `${archivedExtras.length} archived sessions`}
+      </Button>
+      {showArchived && (
+        <ul>
+          {archivedExtras.map((session) => (
+            <SessionItem key={session.key} session={session} laneActions nested />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+
+  if (mainSession) {
+    return (
+      <SessionItem
+        session={mainSession}
+        title={lane.task}
+        context={detail}
+        checkout={{ label: location, mainCheckout }}
+        laneActions
+        className={archived ? "text-ink-muted" : ""}
+        menuLabel={`Actions for lane ${lane.name}`}
+        extraMenuItems={laneMenuItems(lane)}
+        onExtraMenuSelect={selectLaneAction}
+        expand={
+          expandable
+            ? {
+                expanded,
+                label: `lane ${lane.name}`,
+                onToggle: () => setExpanded((value) => !value),
+              }
+            : undefined
+        }
+      >
+        {expanded && expandable && (
+          <div className="ml-4">
+            {subsessions.length > 0 && (
+              <ul>
+                {subsessions.map((session) => (
+                  <SessionItem key={session.key} session={session} laneActions nested />
+                ))}
+              </ul>
+            )}
+            {archivedSessionList}
+          </div>
+        )}
+      </SessionItem>
+    );
+  }
 
   return (
     <li className={archived ? "text-ink-muted" : ""}>
       <div className="group/lane relative flex min-h-12 items-center px-1">
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={collapsed ? "chevron-right" : "chevron-down"}
-          aria-label={`${collapsed ? "Expand" : "Collapse"} lane ${lane.name}`}
-          onClick={() => setCollapsed((value) => !value)}
-        />
         <button
           type="button"
-          className="min-w-0 flex-1 py-1 pr-8 text-left"
-          onClick={() => setCollapsed((value) => !value)}
+          className="min-w-0 flex-1 py-1 pl-2 pr-8 text-left"
+          onClick={empty?.kind === "startable" ? onWork : undefined}
         >
           <p className="truncate" title={lane.task}>
             {lane.task}
           </p>
           <p
-            className={`truncate ${main ? "text-caption text-waiting" : "text-code-sm text-ink-muted"}`}
+            className={`flex items-center gap-1 ${mainCheckout ? "text-caption text-waiting" : "text-code-sm text-ink-muted"}`}
             title={lane.worktrees[0]?.path}
           >
-            {main ? "Main checkout" : lane.branch}
-            {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
+            <CheckoutIcon mainCheckout={mainCheckout} />
+            <span className="truncate">
+              {location}
+              {archived && (checkpoint ? " · archived with a checkpoint" : " · archived")}
+            </span>
           </p>
           {work && <p className="truncate text-xs text-ink-muted">{work}</p>}
         </button>
@@ -326,47 +447,22 @@ function LaneItem({
           label={`Actions for lane ${lane.name}`}
           className={`absolute inset-y-0 right-1 flex items-center ${REVEAL_ON_HOVER} group-hover/lane:opacity-100 group-focus-within/lane:opacity-100`}
           items={laneMenuItems(lane)}
-          onSelect={(id) => {
-            if (id === "archive-lane" || id === "restore-lane") onAction();
-            if (id === "delete-lane") onDelete();
-          }}
+          onSelect={selectLaneAction}
         />
       </div>
-      {!collapsed && (
-        <div className="ml-4">
-          <ul>
-            {(archived ? [...sessions, ...archivedSessions] : sessions).map((session) => (
-              <SessionItem key={session.key} session={session} laneActions nested />
-            ))}
-          </ul>
-          {!archived && archivedSessions.length > 0 && (
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setShowArchived((shown) => !shown)}>
-                {showArchived
-                  ? "Hide archived sessions"
-                  : `${archivedSessions.length} archived sessions`}
-              </Button>
-              {showArchived && (
-                <ul>
-                  {archivedSessions.map((session) => (
-                    <SessionItem key={session.key} session={session} laneActions nested />
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-          {empty?.kind === "startable" && onWork && (
-            <Button variant="ghost" size="sm" className="ml-2" onClick={onWork}>
-              Start session
-            </Button>
-          )}
-          {empty?.kind === "busy" && (
-            <p className="ml-2 py-1 text-xs text-ink-muted">
-              “{empty.writer}” is changing this lane. Start a session here once it is Done.
-            </p>
-          )}
-        </div>
-      )}
+      <div className="ml-4">
+        {archivedSessionList}
+        {empty?.kind === "startable" && onWork && (
+          <Button variant="ghost" size="sm" className="ml-2" onClick={onWork}>
+            Start session
+          </Button>
+        )}
+        {empty?.kind === "busy" && (
+          <p className="ml-2 py-1 text-xs text-ink-muted">
+            “{empty.writer}” is changing this lane. Start a session here once it is Done.
+          </p>
+        )}
+      </div>
     </li>
   );
 }
@@ -383,7 +479,7 @@ function RemoveProjectDialog({ project, onClose }: { project: Project; onClose: 
   };
 
   return (
-    <Dialog
+    <ModalDialog
       title={`Remove ${project.name}?`}
       width={480}
       onClose={busy ? undefined : onClose}
@@ -402,11 +498,19 @@ function RemoveProjectDialog({ project, onClose }: { project: Project; onClose: 
         Panoptes forgets this project and its settings. The repository at{" "}
         <code>{project.repo}</code> and Pi conversation files are not changed.
       </p>
-    </Dialog>
+    </ModalDialog>
   );
 }
 
-function DeleteLaneDialog({ lane, onClose }: { lane: Lane; onClose: () => void }) {
+function DeleteLaneDialog({
+  lane,
+  onClose,
+  onDetached,
+}: {
+  lane: Lane;
+  onClose: () => void;
+  onDetached: (lane: Lane, detachedHead: DetachedHead) => void;
+}) {
   const deleteLane = useStore((s) => s.deleteLane);
   const [busy, setBusy] = useState(false);
   const main = lane.worktrees.some((worktree) => worktree.mainCheckout);
@@ -414,12 +518,14 @@ function DeleteLaneDialog({ lane, onClose }: { lane: Lane; onClose: () => void }
   const remove = async () => {
     if (busy) return;
     setBusy(true);
-    if (await deleteLane(lane.id)) onClose();
+    const outcome = await deleteLane(lane.id);
+    if (outcome?.type === "deleted") onClose();
+    else if (outcome?.type === "detachedHead") onDetached(outcome.lane, outcome.detachedHead);
     else setBusy(false);
   };
 
   return (
-    <Dialog
+    <ModalDialog
       title={`Delete ${lane.name}?`}
       width={540}
       onClose={busy ? undefined : onClose}
@@ -447,7 +553,137 @@ function DeleteLaneDialog({ lane, onClose }: { lane: Lane; onClose: () => void }
           files are kept.
         </p>
       )}
-    </Dialog>
+    </ModalDialog>
+  );
+}
+
+function DetachedHeadDialog({
+  recovery,
+  onChange,
+  onClose,
+  onDirty,
+}: {
+  recovery: DetachedLaneRecovery;
+  onChange: (recovery: DetachedLaneRecovery) => void;
+  onClose: () => void;
+  onDirty: (lane: Lane) => void;
+}) {
+  const archiveLane = useStore((s) => s.archiveLane);
+  const deleteLane = useStore((s) => s.deleteLane);
+  const createLaneBranch = useStore((s) => s.createLaneBranch);
+  const [busy, setBusy] = useState(false);
+  const { lane, detachedHead, operation } = recovery;
+  const safe = !detachedHead.dirty && detachedHead.unreachableCommits.length === 0;
+
+  const archive = async () => {
+    if (busy) return;
+    setBusy(true);
+    const outcome = await archiveLane(lane.id, null, true);
+    setBusy(false);
+    if (outcome?.type === "archived") onClose();
+    else if (outcome?.type === "dirty") onDirty(outcome.lane);
+    else if (outcome?.type === "detachedHead") {
+      onChange({ lane: outcome.lane, detachedHead: outcome.detachedHead, operation });
+    }
+  };
+
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    const outcome = await deleteLane(lane.id, true);
+    setBusy(false);
+    if (outcome?.type === "deleted") onClose();
+    else if (outcome?.type === "detachedHead") {
+      onChange({ lane: outcome.lane, detachedHead: outcome.detachedHead, operation });
+    }
+  };
+
+  const saveBranch = async () => {
+    if (busy) return;
+    setBusy(true);
+    if (await createLaneBranch(lane.id)) onClose();
+    else setBusy(false);
+  };
+
+  return (
+    <ModalDialog
+      title={`${safe ? "Recover" : "Save"} ${lane.name} before ${
+        operation === "archive" ? "archiving" : "deletion"
+      }`}
+      width={560}
+      onClose={busy ? undefined : onClose}
+      actions={
+        <>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          {!safe && (
+            <Button disabled={busy} onClick={() => void saveBranch()}>
+              Create branch here
+            </Button>
+          )}
+          {safe && operation === "archive" && (
+            <Button disabled={busy} onClick={() => void archive()}>
+              Recreate branch and archive
+            </Button>
+          )}
+          {safe && (
+            <Button variant="danger" disabled={busy} onClick={() => void remove()}>
+              Delete lane
+            </Button>
+          )}
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <p>
+          The worktree HEAD is detached at <code>{detachedHead.commit.slice(0, 12)}</code>.{" "}
+          {safe
+            ? "Its tree is clean, and this commit is already reachable from a local or remote branch. Removing the worktree would not lose that work."
+            : "Nothing has been changed or removed, because archiving or deleting now could lose work."}
+        </p>
+        {detachedHead.unreachableCommits.length > 0 && (
+          <div>
+            <p>
+              {operation === "delete"
+                ? `These commits are not on any local or remote branch other than ${lane.branch}, which deleting the lane removes:`
+                : "These commits exist only at detached HEAD and are not on any local or remote branch:"}
+            </p>
+            <ul className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto">
+              {detachedHead.unreachableCommits.map((commit) => (
+                <li key={commit.hash}>
+                  <code>{commit.hash.slice(0, 12)}</code> {commit.subject || "No commit subject"}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {detachedHead.dirty && (
+          <p>The worktree has uncommitted changes that removal would also delete.</p>
+        )}
+        {safe && operation === "archive" ? (
+          <p>
+            Recreate <code>{lane.branch}</code> at this commit, then archive as usual. If the branch
+            already exists elsewhere, Panoptes will advance it only when this commit is ahead of it;
+            a diverged branch is never reset. Deleting the lane instead permanently removes its
+            worktree, local branch and recovery refs. Commits that exist only on that local branch
+            will be lost.
+          </p>
+        ) : safe ? (
+          <p>
+            Delete the lane to permanently remove its worktree, local branch and recovery refs.
+            Commits that exist only on that local branch will be lost. The detached commit remains
+            on its existing local or remote branch.
+          </p>
+        ) : (
+          <p>
+            Create <code>{lane.branch}</code> at HEAD to keep the detached commits on a branch. The
+            worktree stays in place, and you can then choose how to preserve any uncommitted
+            changes. An existing diverged branch will not be moved.
+          </p>
+        )}
+      </div>
+    </ModalDialog>
   );
 }
 
@@ -455,10 +691,12 @@ function ArchiveLaneDialog({
   lane,
   onClose,
   onArchived,
+  onDetached,
 }: {
   lane: Lane;
   onClose: () => void;
   onArchived: () => void;
+  onDetached: (lane: Lane, detachedHead: DetachedHead) => void;
 }) {
   const archiveLane = useStore((s) => s.archiveLane);
   const [busy, setBusy] = useState(false);
@@ -469,10 +707,11 @@ function ArchiveLaneDialog({
     const outcome = await archiveLane(lane.id, strategy);
     setBusy(false);
     if (outcome?.type === "archived") onArchived();
+    else if (outcome?.type === "detachedHead") onDetached(outcome.lane, outcome.detachedHead);
   };
 
   return (
-    <Dialog
+    <ModalDialog
       title={`Preserve ${lane.name} before archiving`}
       width={540}
       onClose={busy ? undefined : onClose}
@@ -498,7 +737,7 @@ function ArchiveLaneDialog({
         <code>{lane.branch}</code>, stash them on that branch, or save a private Panoptes checkpoint
         that can be restored later.
       </p>
-    </Dialog>
+    </ModalDialog>
   );
 }
 
@@ -524,7 +763,10 @@ function AdoptSessionDialog({
   };
 
   return (
-    <Dialog title={`Adopt “${session.title}” into a lane`} onClose={busy ? undefined : onClose}>
+    <ModalDialog
+      title={`Adopt “${session.title}” into a lane`}
+      onClose={busy ? undefined : onClose}
+    >
       <p className="pb-3 text-ink-muted">
         The conversation stays in the harness's own files. Only its Panoptes lane membership is
         added. Each lane can hold one session.
@@ -547,7 +789,7 @@ function AdoptSessionDialog({
           ))}
         </ul>
       )}
-    </Dialog>
+    </ModalDialog>
   );
 }
 

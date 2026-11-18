@@ -1,5 +1,5 @@
 import { Button, Diff, Icon, LoopMark, StatusPill, Terminal } from "@panoptes/design-system";
-import { type ReactNode, useState } from "react";
+import { memo, type ReactNode, useMemo, useState } from "react";
 import { diffStat, editDiff } from "../diff";
 import {
   answerText,
@@ -8,11 +8,14 @@ import {
   groupLabel,
   outputText,
   type Step,
+  sameTurn,
   summarizeWork,
   type ToolStep,
   type Turn,
+  toolImages,
 } from "../turns";
-import type { Message, ToolKind } from "../types";
+import type { Message, ToolImage, ToolKind } from "../types";
+import { turnUsageParts } from "../usage";
 import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 
@@ -29,32 +32,38 @@ const TOOL_ICON: Record<ToolKind, string> = {
   other: "command",
 };
 
-/** One prompt and the agent's reply: its work as quiet rows, then its answer. */
-export function TurnView({ turn }: { turn: Turn }) {
-  const summary = turn.live ? null : summarizeWork(turn.work);
-  return (
-    <article className="group/turn flex flex-col gap-1">
-      {turn.prompt && <Prompt message={turn.prompt} />}
-      <div className="flex flex-col gap-1 pt-1">
-        {summary ? (
-          <Folded title={summary.title} detail={summary.detail}>
-            <Steps steps={turn.work} live={false} />
-          </Folded>
-        ) : (
-          <Steps steps={turn.work} live={turn.live} />
-        )}
-        <Steps steps={turn.answer} live={turn.live} />
-        {turn.stopped && (
-          <div className="flex items-center gap-2 text-ink-muted">
-            <Icon name="square" size={14} />
-            Stopped
-          </div>
-        )}
-      </div>
-      {!turn.live && <Footer turn={turn} />}
-    </article>
-  );
-}
+/**
+ * One prompt and the agent's reply: its work as quiet rows, then its answer.
+ * Memoized by content, so while one turn streams the finished ones stay put.
+ */
+export const TurnView = memo(
+  function TurnView({ turn }: { turn: Turn }) {
+    const summary = turn.live ? null : summarizeWork(turn.work);
+    return (
+      <article className="group/turn flex flex-col gap-1">
+        {turn.prompt && <Prompt message={turn.prompt} />}
+        <div className="flex flex-col gap-1 pt-1">
+          {summary ? (
+            <Folded title={summary.title} detail={summary.detail} images={toolImages(turn.work)}>
+              <Steps steps={turn.work} live={false} />
+            </Folded>
+          ) : (
+            <Steps steps={turn.work} live={turn.live} />
+          )}
+          <Steps steps={turn.answer} live={turn.live} />
+          {turn.stopped && (
+            <div className="flex items-center gap-2 text-ink-muted">
+              <Icon name="square" size={14} />
+              Stopped
+            </div>
+          )}
+        </div>
+        {!turn.live && <Footer turn={turn} />}
+      </article>
+    );
+  },
+  (prev, next) => sameTurn(prev.turn, next.turn),
+);
 
 function Prompt({ message }: { message: Message }) {
   const text = message.blocks
@@ -179,8 +188,9 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
   const { call } = step;
   const { status } = call;
   const running = status === "running" || (live && status === "pending");
-  const diffs = editsOf(call).map(editDiff);
-  const stat = diffs.length > 0 ? diffStat(diffs) : null;
+  // The line diff is the costly part of a row; redo it only when the call changes.
+  const diffs = useMemo(() => editsOf(call).map(editDiff), [call]);
+  const stat = useMemo(() => (diffs.length > 0 ? diffStat(diffs) : null), [diffs]);
   const row = (
     <Disclosure
       icon={TOOL_ICON[call.kind]}
@@ -214,13 +224,17 @@ function ToolCall({ step, live }: { step: ToolStep; live: boolean }) {
       </div>
     </Disclosure>
   );
-  if (!step.approval) return row;
+  if (!step.approval && call.images.length === 0) return row;
   return (
     <div className="flex flex-col gap-1">
       {row}
-      <div className="pl-6">
-        <ApprovalCard approval={step.approval} pill={false} />
-      </div>
+      {/* Images stay in view, like an approval: what the agent saw is the point. */}
+      <ToolImages images={call.images} />
+      {step.approval && (
+        <div className="pl-6">
+          <ApprovalCard approval={step.approval} pill={false} />
+        </div>
+      )}
     </div>
   );
 }
@@ -337,6 +351,7 @@ function Disclosure({
   subject,
   right,
   defaultOpen = false,
+  closed,
   children,
 }: {
   icon: string;
@@ -345,6 +360,8 @@ function Disclosure({
   subject?: string;
   right?: ReactNode;
   defaultOpen?: boolean;
+  /** Shown under the row while it is closed. */
+  closed?: ReactNode;
   children: ReactNode;
 }) {
   // Null until the user toggles it, so the default can follow the call's
@@ -365,7 +382,21 @@ function Disclosure({
         <span className="text-code-sm min-w-0 flex-1 truncate">{subject}</span>
         {right}
       </button>
-      {open && children}
+      {open ? children : closed}
+    </div>
+  );
+}
+
+/** Images tool calls returned, as thumbnails under their row. */
+function ToolImages({ images }: { images: ToolImage[] }) {
+  if (images.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2 py-1 pl-6">
+      {images.map((image, i) => (
+        // Images are positional within their calls.
+        // biome-ignore lint/suspicious/noArrayIndexKey: see above
+        <Thumbnail key={i} mimeType={image.mimeType} data={image.data} />
+      ))}
     </div>
   );
 }
@@ -374,14 +405,22 @@ function Disclosure({
 function Folded({
   title,
   detail,
+  images,
   children,
 }: {
   title: string;
   detail: string;
+  /** Images the folded calls returned, kept in view while the row is closed. */
+  images: ToolImage[];
   children: ReactNode;
 }) {
   return (
-    <Disclosure icon="history" title={title} subject={detail}>
+    <Disclosure
+      icon="history"
+      title={title}
+      subject={detail}
+      closed={<ToolImages images={images} />}
+    >
       <div className="flex flex-col gap-1 border-l border-line pl-3">{children}</div>
     </Disclosure>
   );
@@ -397,12 +436,14 @@ function Footer({ turn }: { turn: Turn }) {
     turn.startedAt !== null && turn.endedAt !== null
       ? formatDuration(turn.endedAt - turn.startedAt)
       : null,
+    ...(turn.usage ? turnUsageParts(turn.usage) : []),
   ].filter(Boolean);
   if (parts.length === 0 && !text) return null;
   return (
     <div className="flex h-[var(--control-sm)] items-center gap-3 opacity-0 transition-opacity duration-[var(--duration-fast)] select-none group-hover/turn:opacity-100 focus-within:opacity-100">
-      <Time>{parts.join(" · ")}</Time>
-      <div className="flex-1" />
+      <span className="text-code-sm min-w-0 flex-1 truncate tabular-nums text-ink-muted">
+        {parts.join(" · ")}
+      </span>
       {text && (
         <Button
           variant="ghost"

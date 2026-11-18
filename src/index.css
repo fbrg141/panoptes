@@ -162,6 +162,17 @@ textarea:focus-visible {
   text-align: left;
   cursor: pointer;
 }
+.session-hit-expandable {
+  padding-left: var(--space-8);
+}
+/* Disclosure is separate from the hit target: the card opens, never expands. */
+.session-expand {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 1;
+  transform: translateY(-50%);
+}
 /* Inset, so the ring is never clipped by the scrolling list. */
 .session-hit:focus-visible {
   outline: 2px solid var(--focus);

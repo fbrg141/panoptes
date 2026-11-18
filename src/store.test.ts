@@ -4,9 +4,13 @@ import { createAppStore, describeError } from "./store";
 import type {
   AdoptionOutcome,
   ArchiveLaneOutcome,
+  ArchiveStrategy,
+  DeleteLaneOutcome,
   Lane,
   Listing,
   OpenedSession,
+  Preferences,
+  ProfileInput,
   Project,
   PromptOutcome,
   Session,
@@ -61,7 +65,7 @@ const lane: Lane = {
   ],
 };
 
-const opened: OpenedSession = { key: "pi:s1", history: [] };
+const opened: OpenedSession = { key: "pi:s1", history: [], status: "idle", replay: [] };
 
 /** A session recorded in `lane`, as the backend lists it. */
 const laneSession: Session = {
@@ -81,6 +85,13 @@ const settings: SessionSettings = {
   thinkingLevel: "low",
   thinkingLevels: ["off", "low", "high"],
   context: { tokens: 1200, window: 32_000 },
+};
+
+const preferences: Preferences = {
+  profiles: [],
+  favoriteModels: [],
+  hiddenModels: [],
+  cleanupIdleDays: 4,
 };
 
 function fakeBackend() {
@@ -107,6 +118,24 @@ function fakeBackend() {
     sendPrompt: vi.fn(async (): Promise<PromptOutcome> => "started"),
     settings: vi.fn(async () => settings),
     listModels: vi.fn(async () => (settings.model ? [settings.model] : [])),
+    preferences: vi.fn(async () => preferences),
+    saveProfile: vi.fn(async (_id: number | null, input: ProfileInput) => ({
+      ...preferences,
+      profiles: [{ id: 1, ...input }],
+    })),
+    deleteProfile: vi.fn(async () => preferences),
+    setModelFavorite: vi.fn(async (modelId: string, favorite: boolean) => ({
+      ...preferences,
+      favoriteModels: favorite ? [modelId] : [],
+    })),
+    setModelHidden: vi.fn(async (modelId: string, hidden: boolean) => ({
+      ...preferences,
+      hiddenModels: hidden ? [modelId] : [],
+    })),
+    setCleanupIdleDays: vi.fn(async (days: number) => ({
+      ...preferences,
+      cleanupIdleDays: days,
+    })),
     setModel: vi.fn(async () => settings),
     setThinkingLevel: vi.fn(async (_key: string, level: string) => ({
       ...settings,
@@ -123,9 +152,17 @@ function fakeBackend() {
     removeProject: vi.fn(async () => {}),
     createLane: vi.fn(async (): Promise<Lane> => lane),
     cancelLaneCreation: vi.fn(async () => {}),
-    archiveLane: vi.fn(async (): Promise<ArchiveLaneOutcome> => ({ type: "archived" })),
+    archiveLane: vi.fn(
+      async (
+        _id: number,
+        _strategy: ArchiveStrategy | null,
+        _recreateBranch = false,
+      ): Promise<ArchiveLaneOutcome> => ({ type: "archived" }),
+    ),
+    createLaneBranch: vi.fn(async () => {}),
     restoreLane: vi.fn(async (): Promise<Lane> => lane),
-    deleteLane: vi.fn(async () => {}),
+    deleteLane: vi.fn(async (): Promise<DeleteLaneOutcome> => ({ type: "deleted" })),
+    showLogs: vi.fn(async () => {}),
     onSessionEvent: vi.fn(async (handler: (event: SessionEvent) => void) => {
       emit = handler;
       return () => {};
@@ -158,6 +195,51 @@ describe("store", () => {
   it("listens once even when initialised twice", () => {
     expect(fake.backend.onSessionEvent).toHaveBeenCalledTimes(1);
     expect(store.getState().sessions).toEqual([session]);
+  });
+
+  it("catches a reopened session up on its run, status and waiting questions", async () => {
+    const question = {
+      id: "q1",
+      title: "Ok?",
+      message: null,
+      kind: { type: "confirm" as const },
+      expiresAt: null,
+    };
+    fake.backend.openSession.mockResolvedValueOnce({
+      ...opened,
+      status: "waiting",
+      replay: [{ type: "runStarted" }, { type: "question", question }],
+    });
+    await store.getState().open(session);
+    const conversation = store.getState().conversations["pi:s1"];
+    expect(conversation.busy).toBe(true);
+    expect(conversation.questions).toEqual([question]);
+    expect(store.getState().statuses["pi:s1"]).toBe("waiting");
+  });
+
+  it("keeps a status that arrived while the session was opening", async () => {
+    fake.backend.openSession.mockImplementationOnce(async () => {
+      fake.emit({ key: "pi:s1", event: { type: "statusChanged", status: "done" } });
+      return { ...opened, status: "running" };
+    });
+    await store.getState().open(session);
+    expect(store.getState().statuses["pi:s1"]).toBe("done");
+  });
+
+  it("addresses commands to an explicit pane's session, not the focused key", async () => {
+    await store.getState().open(session);
+    store.setState({ activeKey: "pi:another-pane" });
+
+    await store.getState().send("from this pane", {}, "pi:s1");
+    await store.getState().setThinkingLevel("high", "pi:s1");
+    await store.getState().loadModels("pi:s1");
+    await store.getState().abort("pi:s1");
+
+    expect(fake.backend.sendPrompt).toHaveBeenCalledWith("pi:s1", "from this pane", [], "start");
+    expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("pi:s1", "high");
+    expect(fake.backend.listModels).toHaveBeenCalledWith("pi:s1");
+    expect(fake.backend.abort).toHaveBeenCalledWith("pi:s1");
+    expect(store.getState().activeKey).toBe("pi:another-pane");
   });
 
   it("steers when the agent is already busy", async () => {
@@ -193,14 +275,45 @@ describe("store", () => {
     await vi.waitFor(() => expect(fake.backend.settings).toHaveBeenCalledTimes(2));
   });
 
+  it("saves profiles and model presentation as Panoptes preferences", async () => {
+    const saved = await store.getState().saveProfile(null, {
+      name: "Careful",
+      modelId: "p/small",
+      thinkingLevel: "high",
+      instructions: "Run the tests.",
+    });
+    expect(saved).toBe(true);
+    expect(store.getState().preferences.profiles[0]).toMatchObject({
+      id: 1,
+      name: "Careful",
+    });
+
+    await store.getState().setModelFavorite("p/small", true);
+    expect(store.getState().preferences.favoriteModels).toEqual(["p/small"]);
+    await store.getState().setModelHidden("p/large", true);
+    expect(store.getState().preferences.hiddenModels).toEqual(["p/large"]);
+    expect(await store.getState().setCleanupIdleDays(7)).toBe(true);
+    expect(fake.backend.setCleanupIdleDays).toHaveBeenCalledWith(7);
+    expect(store.getState().preferences.cleanupIdleDays).toBe(7);
+    await store.getState().deleteProfile(1);
+    expect(fake.backend.deleteProfile).toHaveBeenCalledWith(1);
+  });
+
   it("changes the thinking level and keeps the reported settings", async () => {
     await store.getState().open(session);
     await store.getState().setThinkingLevel("high");
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("pi:s1", "high");
     expect(store.getState().settings["pi:s1"].thinkingLevel).toBe("high");
 
-    await store.getState().loadModels();
+    expect(await store.getState().loadModels()).toBe(true);
     expect(store.getState().models["pi:s1"]).toHaveLength(1);
+  });
+
+  it("reports model loading failure instead of leaving a perpetual loading state", async () => {
+    await store.getState().open(session);
+    fake.backend.listModels.mockRejectedValueOnce({ kind: "other", message: "No catalog" });
+    expect(await store.getState().loadModels()).toBe(false);
+    expect(store.getState().error).toBe("No catalog");
   });
 
   it("reloads history when a run settles", async () => {
@@ -218,6 +331,7 @@ describe("store", () => {
     timestamp: 0,
     error: null,
     stopped: false,
+    usage: null,
   };
 
   it("drops a history reply that a newer run has overtaken", async () => {
@@ -302,6 +416,20 @@ describe("store", () => {
     expect(store.getState().error).toBeNull();
   });
 
+  it("does not resend a prompt when the process exits after it may have arrived", async () => {
+    await store.getState().open(session);
+    fake.backend.sendPrompt.mockRejectedValueOnce({
+      kind: "exited",
+      message: "Pi exited before answering `prompt`",
+    });
+    expect(await store.getState().send("hello")).toBe(false);
+    expect(fake.backend.openSession).toHaveBeenCalledTimes(1);
+    expect(fake.backend.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(store.getState().error).toBe(
+      "Pi exited before answering `prompt`. Check whether your prompt arrived before sending it again.",
+    );
+  });
+
   it("shows a rejected prompt without reopening", async () => {
     await store.getState().open(session);
     fake.backend.sendPrompt.mockRejectedValueOnce({ kind: "rejected", message: "No model" });
@@ -341,6 +469,30 @@ describe("store", () => {
       confirmed: true,
     });
     expect(store.getState().conversations["pi:s1"].questions).toHaveLength(0);
+  });
+
+  it("finds an inline question's session even when another pane is focused", async () => {
+    await store.getState().open(session);
+    fake.emit({
+      key: "pi:s1",
+      event: {
+        type: "question",
+        question: {
+          id: "q1",
+          title: "Ok?",
+          message: null,
+          kind: { type: "confirm" },
+          expiresAt: null,
+        },
+      },
+    });
+    store.setState({ activeKey: "pi:another-pane" });
+
+    await store.getState().answer("q1", { type: "confirmed", confirmed: true });
+    expect(fake.backend.answer).toHaveBeenCalledWith("pi:s1", "q1", {
+      type: "confirmed",
+      confirmed: true,
+    });
   });
 
   it("forgets a closed session's conversation", async () => {
@@ -436,11 +588,22 @@ describe("store", () => {
   });
 
   it("creates a lane and its only session from the project prompt", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
-    const created = await store.getState().createFromPrompt(1, "Fix login", true);
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
+    const created = await store.getState().createFromPrompt(1, "Fix login", true, {
+      model: "p/small",
+      thinking: "high",
+      instructions: "Run the tests.",
+    });
     expect(created).toBe(true);
     expect(fake.backend.createLane).toHaveBeenCalledWith(1, "Fix login", true);
-    expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(lane.id, "pi", "Run the tests.");
+    expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:7", "p/small");
+    expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:7", "high");
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:7", "Fix login", [], "start");
   });
 
@@ -457,7 +620,7 @@ describe("store", () => {
     fake.backend.archiveLane.mockResolvedValueOnce({ type: "dirty", lane });
     const dirty = await store.getState().archiveLane(1, null);
     expect(dirty).toEqual({ type: "dirty", lane });
-    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, null);
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, null, false);
 
     fake.backend.archiveLane.mockResolvedValueOnce({ type: "archived" });
     fake.backend.listSessions.mockResolvedValueOnce({
@@ -470,6 +633,67 @@ describe("store", () => {
     const archived = await store.getState().archiveLane(1, "checkpoint");
     expect(archived).toEqual({ type: "archived" });
     expect(store.getState().lanes[0].state).toBe("archived");
+  });
+
+  it("bulk-archives sequentially with checkpoints and reports individual failures", async () => {
+    const second = { ...lane, id: 2, name: "docs", task: "Write docs" };
+    store.setState({ lanes: [lane, second] });
+    const calls: number[] = [];
+    fake.backend.archiveLane.mockImplementation(async (id: number) => {
+      calls.push(id);
+      if (id === 2) throw { kind: "other", message: "Git could not remove it" };
+      return { type: "archived" };
+    });
+    const listings = fake.backend.listSessions.mock.calls.length;
+
+    const result = await store.getState().archiveLanes([1, 2]);
+
+    expect(calls).toEqual([1, 2]);
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(1, "checkpoint");
+    expect(fake.backend.archiveLane).toHaveBeenCalledWith(2, "checkpoint");
+    expect(result).toEqual({
+      archived: 1,
+      failed: [{ laneId: 2, message: "Git could not remove it" }],
+    });
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings + 1);
+  });
+
+  it("returns detached-head recovery without archiving, and forwards the explicit choices", async () => {
+    const detachedHead = {
+      commit: "abc123",
+      dirty: false,
+      unreachableCommits: [],
+    };
+    fake.backend.archiveLane.mockResolvedValueOnce({
+      type: "detachedHead",
+      lane,
+      detachedHead,
+    });
+    const listings = fake.backend.listSessions.mock.calls.length;
+    const detached = await store.getState().archiveLane(1, null);
+    expect(detached).toEqual({ type: "detachedHead", lane, detachedHead });
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings);
+
+    fake.backend.archiveLane.mockResolvedValueOnce({ type: "archived" });
+    await store.getState().archiveLane(1, null, true);
+    expect(fake.backend.archiveLane).toHaveBeenLastCalledWith(1, null, true);
+
+    fake.backend.deleteLane.mockResolvedValueOnce({
+      type: "detachedHead",
+      lane,
+      detachedHead: { ...detachedHead, dirty: true },
+    });
+    const refused = await store.getState().deleteLane(1, true);
+    expect(refused).toMatchObject({ type: "detachedHead" });
+    expect(fake.backend.deleteLane).toHaveBeenLastCalledWith(1, true);
+    expect(store.getState().sessions).toEqual([session]);
+  });
+
+  it("creates a branch for a detached head and refreshes the lane work", async () => {
+    const listings = fake.backend.listSessions.mock.calls.length;
+    expect(await store.getState().createLaneBranch(1)).toBe(true);
+    expect(fake.backend.createLaneBranch).toHaveBeenCalledWith(1);
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(listings + 1);
   });
 
   it("deletes a lane, forgets its sessions and refreshes the projects", async () => {
@@ -494,8 +718,8 @@ describe("store", () => {
 
     const deleted = await store.getState().deleteLane(lane.id);
 
-    expect(deleted).toBe(true);
-    expect(fake.backend.deleteLane).toHaveBeenCalledWith(lane.id);
+    expect(deleted).toEqual({ type: "deleted" });
+    expect(fake.backend.deleteLane).toHaveBeenCalledWith(lane.id, false);
     expect(store.getState().activeKey).toBeNull();
     expect(store.getState().sessions).toEqual([]);
     expect(store.getState().lanes).toEqual([]);
@@ -517,13 +741,27 @@ describe("store", () => {
 
     const deleted = await store.getState().deleteLane(lane.id);
 
-    expect(deleted).toBe(false);
+    expect(deleted).toBeNull();
     expect(store.getState().lanes).toEqual([lane]);
     expect(store.getState().error).toBe("Close this lane's session before deleting it");
   });
 
+  it("shows the error when the logs folder cannot be opened", async () => {
+    fake.backend.showLogs.mockRejectedValueOnce({ kind: "io", message: "No Finder" });
+
+    await store.getState().showLogs();
+
+    expect(fake.backend.showLogs).toHaveBeenCalled();
+    expect(store.getState().error).toBe("No Finder");
+  });
+
   it("starts a session in a lane and lists it at once, from its record", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     fake.backend.listSessions.mockResolvedValueOnce({
       sessions: [laneSession, session],
       projects: [project],
@@ -534,20 +772,26 @@ describe("store", () => {
       errors: [],
     });
     await store.getState().create(lane.id);
-    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi", undefined);
     expect(store.getState().activeKey).toBe("panoptes:7");
     expect(store.getState().sessions[0]).toEqual(laneSession);
     expect(store.getState().navigation[0].sessions).toEqual([laneSession]);
   });
 
   it("starts a session with the chosen model, thinking level and first prompt", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().create(lane.id, {
       model: "p/small",
       thinking: "high",
+      instructions: "Run the tests.",
       prompt: "Fix the login redirect",
     });
-    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi");
+    expect(fake.backend.newSession).toHaveBeenCalledWith(1, "pi", "Run the tests.");
     expect(fake.backend.setModel).toHaveBeenCalledWith("panoptes:9", "p/small");
     expect(fake.backend.setThinkingLevel).toHaveBeenCalledWith("panoptes:9", "high");
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith(
@@ -561,7 +805,12 @@ describe("store", () => {
   });
 
   it("starts a bare session when no launch options are given", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().create(lane.id);
     expect(fake.backend.setModel).not.toHaveBeenCalled();
     expect(fake.backend.setThinkingLevel).not.toHaveBeenCalled();
@@ -569,7 +818,12 @@ describe("store", () => {
   });
 
   it("starts the session even when a launch choice is refused", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     fake.backend.setModel.mockRejectedValueOnce({ kind: "rejected", message: "No such model" });
     await store.getState().create(lane.id, { model: "p/missing", prompt: "Go" });
     expect(fake.backend.sendPrompt).toHaveBeenCalledWith("panoptes:9", "Go", [], "start");
@@ -577,7 +831,12 @@ describe("store", () => {
   });
 
   it("reloads history when the launch prompt was handled synchronously", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:9", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:9",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     fake.backend.sendPrompt.mockResolvedValueOnce("handled");
     await store.getState().create(lane.id, { prompt: "Go" });
     expect(fake.backend.history).toHaveBeenCalledWith("panoptes:9");
@@ -605,7 +864,12 @@ describe("store", () => {
   });
 
   it("follows an adopted conversation to its Panoptes key", async () => {
-    fake.backend.openSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.openSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().open(session);
     expect(store.getState().activeKey).toBe("panoptes:7");
   });
@@ -618,7 +882,12 @@ describe("store", () => {
   });
 
   it("archives a session, closing it here", async () => {
-    fake.backend.newSession.mockResolvedValueOnce({ key: "panoptes:7", history: [] });
+    fake.backend.newSession.mockResolvedValueOnce({
+      key: "panoptes:7",
+      history: [],
+      status: "idle",
+      replay: [],
+    });
     await store.getState().create(lane.id);
     await store.getState().setArchived("panoptes:7", true);
     expect(fake.backend.archiveSession).toHaveBeenCalledWith("panoptes:7", true);

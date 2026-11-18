@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { AppErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 
 // Outside the Tauri app (a plain browser tab), use fixture data instead.
@@ -19,6 +20,8 @@ light.addEventListener("change", applyTheme);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
   </React.StrictMode>,
 );

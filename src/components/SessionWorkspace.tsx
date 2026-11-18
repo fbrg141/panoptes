@@ -1,0 +1,281 @@
+import { Button, Icon, LoopMark } from "@panoptes/design-system";
+import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useShallow } from "zustand/react/shallow";
+import {
+  type DropZone,
+  findPane,
+  type PaneNode,
+  paneLeaves,
+  type SplitDirection,
+  sessionPane,
+} from "../panes";
+import { sessionDragSnapshot, subscribeSessionDrag } from "../sessionDrag";
+import { useStore } from "../store";
+import { useUi } from "../ui";
+import { ChatPane } from "./ChatPane";
+import { CrashNotice, ErrorBoundary } from "./ErrorBoundary";
+
+/** The tiled session area. Pane layout is view state; the store owns sessions. */
+export function SessionWorkspace() {
+  const layout = useUi((s) => s.layout);
+  const focusedPaneId = useUi((s) => s.focusedPaneId);
+  const activeKey = useStore((s) => s.activeKey);
+  // Only which sessions are open matters here. Subscribing to the
+  // conversations themselves would re-render every pane on every token.
+  const openKeys = useStore(useShallow((s) => Object.keys(s.conversations)));
+  const previousKeys = useRef(openKeys);
+
+  // Creating a session still goes through the store's active key. Adopt that
+  // result in the focused pane; ordinary row and palette selections also place
+  // themselves explicitly so selecting the same key still works.
+  useEffect(() => {
+    if (activeKey) useUi.getState().showSession(activeKey);
+  }, [activeKey]);
+
+  // Closing or archiving a session forgets its conversation. Remove a pane
+  // only after a conversation disappears, never while its first open is pending.
+  useEffect(() => {
+    const previous = previousKeys.current;
+    previousKeys.current = openKeys;
+    for (const key of previous) {
+      if (openKeys.includes(key)) continue;
+      const pane = sessionPane(useUi.getState().layout, key);
+      if (pane) closeAndFocus(pane.id);
+    }
+  }, [openKeys]);
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <PaneNodeView
+        node={layout}
+        focusedPaneId={focusedPaneId}
+        onActivate={activatePane}
+        onSplit={splitFocusedPane}
+        onClose={closeAndFocus}
+      />
+    </div>
+  );
+}
+
+function activatePane(paneId: string) {
+  useUi.getState().focusPane(paneId);
+  useStore.setState({
+    activeKey: findPane(useUi.getState().layout, paneId)?.sessionKey ?? null,
+  });
+}
+
+function splitFocusedPane(direction: SplitDirection) {
+  const paneId = useUi.getState().splitFocused(direction);
+  if (paneId) useStore.setState({ activeKey: null });
+}
+
+function closeAndFocus(paneId: string) {
+  useUi.getState().closePane(paneId);
+  const state = useUi.getState();
+  useStore.setState({
+    activeKey: findPane(state.layout, state.focusedPaneId)?.sessionKey ?? null,
+  });
+}
+
+function PaneNodeView({
+  node,
+  focusedPaneId,
+  onActivate,
+  onSplit,
+  onClose,
+}: {
+  node: PaneNode;
+  focusedPaneId: string;
+  onActivate: (paneId: string) => void;
+  onSplit: (direction: SplitDirection) => void;
+  onClose: (paneId: string) => void;
+}) {
+  if (node.type === "split") {
+    return (
+      <div
+        className={`flex min-h-0 min-w-0 flex-1 ${
+          node.direction === "vertical" ? "flex-row" : "flex-col"
+        }`}
+        data-split={node.direction}
+      >
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <PaneNodeView
+            node={node.first}
+            focusedPaneId={focusedPaneId}
+            onActivate={onActivate}
+            onSplit={onSplit}
+            onClose={onClose}
+          />
+        </div>
+        <div
+          className={`shrink-0 border-line ${
+            node.direction === "vertical" ? "border-l" : "border-t"
+          }`}
+          aria-hidden
+        />
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <PaneNodeView
+            node={node.second}
+            focusedPaneId={focusedPaneId}
+            onActivate={onActivate}
+            onSplit={onSplit}
+            onClose={onClose}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <SessionLeaf
+      paneId={node.id}
+      sessionKey={node.sessionKey}
+      focused={node.id === focusedPaneId}
+      multiple={paneLeaves(useUi.getState().layout).length > 1}
+      onActivate={() => onActivate(node.id)}
+      onSplit={onSplit}
+      onClose={() => onClose(node.id)}
+    />
+  );
+}
+
+function SessionLeaf({
+  paneId,
+  sessionKey,
+  focused,
+  multiple,
+  onActivate,
+  onSplit,
+  onClose,
+}: {
+  paneId: string;
+  sessionKey: string | null;
+  focused: boolean;
+  multiple: boolean;
+  onActivate: () => void;
+  onSplit: (direction: SplitDirection) => void;
+  onClose: () => void;
+}) {
+  const drag = useSyncExternalStore(subscribeSessionDrag, sessionDragSnapshot, sessionDragSnapshot);
+  const zone = drag.paneId === paneId ? drag.zone : null;
+  const session = useStore((s) => s.sessions.find((item) => item.key === sessionKey));
+
+  return (
+    <section
+      aria-label={session ? `Session pane: ${session.title}` : "Empty session pane"}
+      data-pane={paneId}
+      data-focused={focused || undefined}
+      className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
+      onPointerDownCapture={onActivate}
+      onFocusCapture={onActivate}
+    >
+      {/* A crash stays in this pane; picking another session clears it. */}
+      <ErrorBoundary
+        label="session pane"
+        resetKey={sessionKey}
+        fallback={({ error, reset }) => (
+          <CrashNotice title="This pane hit an error" error={error}>
+            <Button variant="secondary" size="sm" onClick={reset}>
+              Try again
+            </Button>
+            {multiple && (
+              <Button variant="ghost" size="sm" onClick={onClose}>
+                Close pane
+              </Button>
+            )}
+          </CrashNotice>
+        )}
+      >
+        {sessionKey ? (
+          <ChatPane
+            sessionKey={sessionKey}
+            focused={focused}
+            onSplit={onSplit}
+            onClose={onClose}
+            canClose={multiple}
+          />
+        ) : (
+          <EmptyPane
+            paneId={paneId}
+            onActivate={onActivate}
+            canClose={multiple}
+            onClose={onClose}
+          />
+        )}
+      </ErrorBoundary>
+      {zone && <DropIndicator zone={zone} empty={!sessionKey} />}
+    </section>
+  );
+}
+
+function EmptyPane({
+  paneId,
+  onActivate,
+  canClose,
+  onClose,
+}: {
+  paneId: string;
+  onActivate: () => void;
+  canClose: boolean;
+  onClose: () => void;
+}) {
+  const show = useUi((s) => s.open);
+
+  return (
+    <main className="relative flex flex-1 flex-col">
+      {canClose && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="x"
+          iconOnly
+          className="absolute top-2 right-2"
+          aria-label="Close empty pane"
+          title="Close pane"
+          onClick={onClose}
+        />
+      )}
+      <button
+        type="button"
+        aria-label="Choose a session for this pane"
+        className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center hover:bg-surface"
+        onClick={() => {
+          onActivate();
+          show({ type: "paneSession", paneId });
+        }}
+      >
+        <LoopMark size={64} />
+        <div>
+          <h1 className="text-title">No session selected</h1>
+          <p className="mt-1 text-ink-muted">Click to choose a session for this pane.</p>
+        </div>
+      </button>
+    </main>
+  );
+}
+
+function DropIndicator({ zone, empty }: { zone: DropZone; empty: boolean }) {
+  const position =
+    zone === "left"
+      ? "inset-y-3 left-3 right-1/2"
+      : zone === "right"
+        ? "inset-y-3 left-1/2 right-3"
+        : zone === "top"
+          ? "inset-x-3 top-3 bottom-1/2"
+          : zone === "bottom"
+            ? "inset-x-3 top-1/2 bottom-3"
+            : "inset-3";
+  const label = empty
+    ? "Drop session here"
+    : zone === "center"
+      ? "Drop session in this pane"
+      : `Drop to split ${zone}`;
+  return (
+    <div
+      className={`pointer-events-none absolute ${position} z-30 flex items-center justify-center rounded-md border border-focus bg-selection/80 p-3 text-body-strong text-ink`}
+    >
+      <Icon name={zone === "center" ? "session" : "plus"} size={16} />
+      <span className="ml-2">{label}</span>
+    </div>
+  );
+}

@@ -24,9 +24,17 @@ export interface ToolCall {
   status: ToolStatus;
   /** Null until there is something to show; edits carry their changes from the start. */
   output: ToolOutput | null;
+  /** Images the tool returned, such as a screenshot, in order. */
+  images: ToolImage[];
   /** Unix ms, when the harness reports them. */
   startedAt: number | null;
   endedAt: number | null;
+}
+
+/** An image a tool returned; `data` is base64-encoded. */
+export interface ToolImage {
+  mimeType: string;
+  data: string;
 }
 
 /** `pending`: written by the model but not started yet. */
@@ -56,6 +64,25 @@ export interface Message {
   error: string | null;
   /** The user stopped the agent while this message was being written. */
   stopped: boolean;
+  /** What the model call behind an assistant message used and cost; null otherwise. */
+  usage: Usage | null;
+}
+
+export type StopReason = "finished" | "toolUse" | "maxTokens" | "error" | "aborted";
+
+/** One model call: which model answered, what it used and cost, why and when it ended. */
+export interface Usage {
+  model: string | null;
+  provider: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** US dollars, as the harness priced it; null when it has no price. */
+  cost: number | null;
+  stopReason: StopReason | null;
+  /** Unix milliseconds. */
+  endedAt: number | null;
 }
 
 export type NoticeLevel = "info" | "warning" | "error";
@@ -224,9 +251,96 @@ export interface Lane {
   worktrees: LaneWorktree[];
 }
 
+export interface WorktreeUsage {
+  worktrees: number;
+  bytes: number;
+}
+
+export type ArchivePreservation = "clean" | "checkpoint";
+
+export interface IdleLane {
+  lane: Lane;
+  /** Unix ms: latest session activity, or lane creation when it has none. */
+  lastActivity: number;
+  /** Null when at least one of its worktrees could not be measured. */
+  bytes: number | null;
+  preservation: ArchivePreservation;
+}
+
+/** An on-demand, read-only scan; normal session listing does not measure disks. */
+export interface LaneCleanup {
+  project: WorktreeUsage;
+  total: WorktreeUsage;
+  idleDays: number;
+  candidates: IdleLane[];
+  errors: string[];
+}
+
 export type ArchiveStrategy = "commit" | "stash" | "checkpoint";
-export type ArchiveLaneOutcome = { type: "archived" } | { type: "dirty"; lane: Lane };
+export interface UnreachableCommit {
+  hash: string;
+  subject: string;
+}
+export interface DetachedHead {
+  commit: string;
+  dirty: boolean;
+  unreachableCommits: UnreachableCommit[];
+}
+export type DetachedHeadOutcome<T extends string> = {
+  type: T;
+  lane: Lane;
+  detachedHead: DetachedHead;
+};
+export type ArchiveLaneOutcome =
+  | { type: "archived" }
+  | { type: "dirty"; lane: Lane }
+  | DetachedHeadOutcome<"detachedHead">;
+export type DeleteLaneOutcome = { type: "deleted" } | DetachedHeadOutcome<"detachedHead">;
 export type AdoptionOutcome = { type: "adopted"; key: string } | { type: "chooseLane" };
+
+/** Two full Git tree/commit ids; the same range is used to fetch lazy hunks. */
+export interface TreeRange {
+  from: string;
+  to: string;
+}
+
+export interface ChangeTotals {
+  files: number;
+  added: number;
+  removed: number;
+}
+
+export interface FileChange {
+  path: string;
+  oldPath: string | null;
+  status: "added" | "modified" | "deleted" | "renamed" | "typeChanged";
+  added: number;
+  removed: number;
+  binary: boolean;
+  tooLarge: boolean;
+  blob: { before: string | null; after: string | null };
+}
+
+export interface Changes extends TreeRange {
+  files: FileChange[];
+  totals: ChangeTotals;
+}
+
+export interface DiffLine {
+  kind: "context" | "add" | "remove";
+  text: string;
+  oldLine: number | null;
+  newLine: number | null;
+}
+
+export interface Hunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  header: string;
+  lines: DiffLine[];
+}
 
 /** What an active lane's worktree holds (`LaneWork` in src-tauri/src/lanes.rs). */
 export interface LaneWork {
@@ -270,6 +384,10 @@ export interface OpenedSession {
   /** Opening an adopted conversation by its harness key answers with its Panoptes key. */
   key: string;
   history: Message[];
+  /** The session's status now, so a reloaded window starts right. */
+  status: SessionStatus;
+  /** Events to apply over the history: the run's start while it runs, then waiting questions and approvals. */
+  replay: HarnessEvent[];
 }
 
 export interface HarnessInfo {
@@ -304,6 +422,14 @@ export interface ImageAttachment {
   data: string;
 }
 
+/** A command executable through the session's normal prompt path. */
+export interface CommandInfo {
+  /** Name without the leading slash. */
+  name: string;
+  description: string | null;
+  kind: "extension" | "prompt" | "skill" | "other";
+}
+
 export interface ModelInfo {
   /** Opaque handle for setModel. */
   id: string;
@@ -326,6 +452,27 @@ export interface SessionSettings {
   /** Levels the current model supports, lowest first. */
   thinkingLevels: string[];
   context: ContextUsage | null;
+}
+
+/** Panoptes-owned setup for new sessions; empty fields use harness defaults. */
+export interface AgentProfile {
+  id: number;
+  name: string;
+  modelId: string | null;
+  thinkingLevel: string | null;
+  /** Appended to the harness's system prompt at session creation. */
+  instructions: string | null;
+}
+
+export type ProfileInput = Omit<AgentProfile, "id">;
+
+export interface Preferences {
+  profiles: AgentProfile[];
+  /** Model ids in favorite order. */
+  favoriteModels: string[];
+  hiddenModels: string[];
+  /** Inactive worktree lanes offered by cleanup after this many days. */
+  cleanupIdleDays: number;
 }
 
 /** A file dropped onto the composer: images inline, anything else by path. */

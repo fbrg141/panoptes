@@ -80,9 +80,21 @@ pub struct ToolCall {
     /// `None` until there is something to show. Edits carry their changes
     /// from the start, since the input already says what they will be.
     pub output: Option<ToolOutput>,
+    /// Images the tool returned, such as a screenshot or an image file it
+    /// read, in the order it returned them.
+    pub images: Vec<ToolImage>,
     /// Unix milliseconds, when the harness reports them.
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
+}
+
+/// An image a tool returned.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolImage {
+    pub mime_type: String,
+    /// The image bytes, base64-encoded.
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -152,6 +164,48 @@ pub struct Message {
     pub error: Option<String>,
     /// The user stopped the agent while this message was being written.
     pub stopped: bool,
+    /// What the model call that wrote an assistant message used and cost,
+    /// when the harness reports it. `None` for every other message.
+    /// Boxed, as most messages have none.
+    pub usage: Option<Box<Usage>>,
+}
+
+/// One model call: which model answered, what it used and cost, why it
+/// stopped and when it finished. Every field is optional because harnesses
+/// and providers report different subsets.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    /// The model's id as the provider names it, e.g. `"claude-sonnet-4-5"`.
+    pub model: Option<String>,
+    /// Who served the model, e.g. `"anthropic"`.
+    pub provider: Option<String>,
+    /// Prompt tokens not read from or written to a cache.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// In US dollars, as the harness priced it. `None` when it has no price.
+    pub cost: Option<f64>,
+    pub stop_reason: Option<StopReason>,
+    /// When the message was finished, Unix milliseconds.
+    pub ended_at: Option<i64>,
+}
+
+/// Why a model call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StopReason {
+    /// The model finished its answer.
+    Finished,
+    /// The model asked for tools and the agent carries on.
+    ToolUse,
+    /// The model hit its output token limit.
+    MaxTokens,
+    /// The request failed; [`Message::error`] says why.
+    Error,
+    /// The user stopped it.
+    Aborted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -332,7 +386,10 @@ pub struct HarnessError {
 pub enum HarnessErrorKind {
     /// The harness answered and refused the command.
     Rejected,
-    /// The harness process is gone, so nothing can answer.
+    /// The session has no running process and the command was not sent.
+    /// Reopening it and retrying cannot duplicate the command.
+    NotRunning,
+    /// The harness process ended after a command may have been sent.
     Exited,
     /// The harness did not answer in time.
     TimedOut,
@@ -348,6 +405,10 @@ impl HarnessError {
 
     pub fn rejected(message: impl Into<String>) -> Self {
         Self::new(HarnessErrorKind::Rejected, message)
+    }
+
+    pub fn not_running(message: impl Into<String>) -> Self {
+        Self::new(HarnessErrorKind::NotRunning, message)
     }
 
     pub fn exited(message: impl Into<String>) -> Self {
@@ -385,6 +446,9 @@ pub struct StartSession {
     /// Gives the agent only tools that cannot change files (reading,
     /// searching, listing). Used for archived lanes and safe history fallback.
     pub read_only: bool,
+    /// Extra instructions for the session, appended to the harness's own
+    /// system prompt both when it starts and when its conversation resumes.
+    pub instructions: Option<String>,
 }
 
 impl StartSession {
@@ -393,6 +457,7 @@ impl StartSession {
             cwd: cwd.into(),
             resume: None,
             read_only: false,
+            instructions: None,
         }
     }
 }
@@ -443,6 +508,25 @@ pub struct ModelInfo {
     pub context_window: Option<u64>,
     /// Accepts images in prompts.
     pub images: bool,
+}
+
+/// A command the harness can execute through a normal prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandInfo {
+    /// Prompt name without the leading slash.
+    pub name: String,
+    pub description: Option<String>,
+    pub kind: CommandKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandKind {
+    Extension,
+    Prompt,
+    Skill,
+    Other,
 }
 
 /// How full the model's context window is.
@@ -536,6 +620,12 @@ pub trait AgentSession: Send + Sync {
 
     /// Models the session can switch to.
     async fn models(&self) -> anyhow::Result<Vec<ModelInfo>> {
+        Ok(Vec::new())
+    }
+
+    /// Commands discoverable in this session. Built-in UI-only commands are
+    /// deliberately absent; they do not necessarily work over RPC.
+    async fn commands(&self) -> anyhow::Result<Vec<CommandInfo>> {
         Ok(Vec::new())
     }
 
