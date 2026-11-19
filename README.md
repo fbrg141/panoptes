@@ -171,9 +171,11 @@ pnpm check
 pnpm tauri build
 ```
 
-The ad hoc signed .dmg lands in `target/release/bundle/dmg/`. Before
-publishing it, open a downloaded copy once to check the Open Anyway flow,
-then attach it to a GitHub release tagged `v<version>`.
+The ad hoc signed .dmg lands in `target/release/bundle/dmg/` at the
+repository root, the Cargo workspace's target folder, not in
+`src-tauri/target/`. Before publishing it, open a downloaded copy once to
+check the Open Anyway flow, then attach it to a GitHub release tagged
+`v<version>`.
 
 ### Layout
 
