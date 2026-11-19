@@ -10,6 +10,7 @@ import { SessionWorkspace } from "./components/SessionWorkspace";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Sidebar } from "./components/Sidebar";
+import { StartupGate } from "./components/StartupGate";
 import { pickProjectFolder } from "./pickProject";
 import { shortcutFor } from "./shortcuts";
 import { useStore } from "./store";
@@ -18,6 +19,8 @@ import { nextZoom, zoomCommand } from "./zoom";
 
 export default function App() {
   const init = useStore((s) => s.init);
+  const startupStatus = useStore((s) => s.startupStatus);
+  const startupError = useStore((s) => s.startupError);
   const info = useStore((s) => s.info);
   const error = useStore((s) => s.error);
   const dismissError = useStore((s) => s.dismissError);
@@ -82,58 +85,60 @@ export default function App() {
     (pi && !pi.supported ? `Pi ${pi.version} is not a supported version. Expect problems.` : null);
 
   return (
-    <div className="flex h-full flex-col bg-bg text-ink">
-      {warning && (
-        <div className="flex items-center gap-2 border-b border-line bg-waiting-soft px-4 py-1 text-waiting">
-          <Icon name="circle-alert" size={14} />
-          <span>{warning}</span>
-        </div>
-      )}
-      {error && (
-        <div
-          role="alert"
-          className="flex items-center gap-2 border-b border-line bg-error-soft px-4 py-1 text-error"
-        >
-          <Icon name="circle-alert" size={14} />
-          <span className="flex-1">{error}</span>
-          <Button variant="ghost" size="sm" onClick={dismissError}>
-            Dismiss
-          </Button>
-        </div>
-      )}
-      <div className="flex min-h-0 flex-1">
-        <ErrorBoundary
-          label="sidebar"
-          fallback={({ error, reset }) => (
-            <aside className="flex w-80 shrink-0 border-r border-line bg-surface">
-              <CrashNotice title="The sidebar hit an error" error={error}>
-                <Button variant="secondary" size="sm" onClick={reset}>
-                  Try again
-                </Button>
-              </CrashNotice>
-            </aside>
-          )}
-        >
-          <Sidebar />
-        </ErrorBoundary>
-        <SessionWorkspace />
-      </div>
-      {/* A crashed dialog closes on its own; the window behind it keeps working. */}
-      <ErrorBoundary
-        label="dialog"
-        resetKey={overlay}
-        fallback={({ error }) => <OverlayCrash error={error} />}
-      >
-        {overlay?.type === "search" && <SearchPalette />}
-        {overlay?.type === "shortcuts" && <ShortcutsDialog />}
-        {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
-        {overlay?.type === "settings" && <SettingsDialog />}
-        {overlay?.type === "cleanup" && <CleanupDialog projectId={overlay.projectId} />}
-        {overlay?.type === "newLane" && (
-          <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
+    <StartupGate status={startupStatus} error={startupError} onRetry={() => void init()}>
+      <div className="flex h-full flex-col bg-bg text-ink">
+        {warning && (
+          <div className="flex items-center gap-2 border-b border-line bg-waiting-soft px-4 py-1 text-waiting">
+            <Icon name="circle-alert" size={14} />
+            <span>{warning}</span>
+          </div>
         )}
-      </ErrorBoundary>
-    </div>
+        {error && (
+          <div
+            role="alert"
+            className="flex items-center gap-2 border-b border-line bg-error-soft px-4 py-1 text-error"
+          >
+            <Icon name="circle-alert" size={14} />
+            <span className="flex-1">{error}</span>
+            <Button variant="ghost" size="sm" onClick={dismissError}>
+              Dismiss
+            </Button>
+          </div>
+        )}
+        <div className="flex min-h-0 flex-1">
+          <ErrorBoundary
+            label="sidebar"
+            fallback={({ error, reset }) => (
+              <aside className="flex w-80 shrink-0 border-r border-line bg-surface">
+                <CrashNotice title="The sidebar hit an error" error={error}>
+                  <Button variant="secondary" size="sm" onClick={reset}>
+                    Try again
+                  </Button>
+                </CrashNotice>
+              </aside>
+            )}
+          >
+            <Sidebar />
+          </ErrorBoundary>
+          <SessionWorkspace />
+        </div>
+        {/* A crashed dialog closes on its own; the window behind it keeps working. */}
+        <ErrorBoundary
+          label="dialog"
+          resetKey={overlay}
+          fallback={({ error }) => <OverlayCrash error={error} />}
+        >
+          {overlay?.type === "search" && <SearchPalette />}
+          {overlay?.type === "shortcuts" && <ShortcutsDialog />}
+          {overlay?.type === "paneSession" && <SessionPicker paneId={overlay.paneId} />}
+          {overlay?.type === "settings" && <SettingsDialog />}
+          {overlay?.type === "cleanup" && <CleanupDialog projectId={overlay.projectId} />}
+          {overlay?.type === "newLane" && (
+            <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
+          )}
+        </ErrorBoundary>
+      </div>
+    </StartupGate>
   );
 }
 

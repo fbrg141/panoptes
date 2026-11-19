@@ -44,7 +44,11 @@ export interface ArchiveLanesResult {
   failed: { laneId: number; message: string }[];
 }
 
+export type StartupStatus = "loading" | "ready" | "error";
+
 export interface State {
+  startupStatus: StartupStatus;
+  startupError: string | null;
   info: AppInfo | null;
   sessions: Session[];
   /** Registered projects, as the backend lists them. */
@@ -153,7 +157,9 @@ const canRetryPrompt = (error: unknown) => errorKind(error) === "notOpen";
 
 /** Builds the store around an API, so tests can pass a fake one. */
 export function createAppStore(backend: typeof api) {
-  let listening = false;
+  let initialized = false;
+  let initializing: Promise<void> | null = null;
+  let unlisten: (() => void) | null = null;
 
   return create<State>((set, get) => {
     const fail = (error: unknown) => set({ error: describeError(error) });
@@ -272,7 +278,14 @@ export function createAppStore(backend: typeof api) {
       if (event.type === "exited" || event.type === "titleChanged") void get().refresh();
     };
 
+    const loadListing = async () => {
+      const { sessions, projects, lanes, navigation, errors } = await backend.listSessions();
+      set({ sessions, projects, lanes, navigation, listErrors: errors });
+    };
+
     return {
+      startupStatus: "loading",
+      startupError: null,
       info: null,
       sessions: [],
       projects: [],
@@ -297,30 +310,37 @@ export function createAppStore(backend: typeof api) {
       listErrors: [],
       error: null,
 
-      init: async () => {
-        // React's StrictMode runs effects twice; a second listener would
-        // apply every event twice.
-        if (listening) return;
-        listening = true;
-        try {
-          await backend.onSessionEvent(onEvent);
-          set({ info: await backend.appInfo() });
-        } catch (e) {
-          fail(e);
-          return;
-        }
-        await get().refresh();
-        try {
-          set({ preferences: await backend.preferences() });
-        } catch (e) {
-          fail(e);
-        }
+      init: () => {
+        if (initialized) return Promise.resolve();
+        // StrictMode can request a second start while the first is pending.
+        if (initializing) return initializing;
+        set({ startupStatus: "loading", startupError: null });
+        initializing = (async () => {
+          try {
+            // Keep a listener that was installed before a later step failed;
+            // retrying must not apply every event twice.
+            if (!unlisten) unlisten = await backend.onSessionEvent(onEvent);
+            set({ info: await backend.appInfo() });
+            await loadListing();
+            try {
+              set({ preferences: await backend.preferences() });
+            } catch (e) {
+              fail(e);
+            }
+            initialized = true;
+            set({ startupStatus: "ready" });
+          } catch (e) {
+            set({ startupStatus: "error", startupError: describeError(e) });
+          } finally {
+            initializing = null;
+          }
+        })();
+        return initializing;
       },
 
       refresh: async () => {
         try {
-          const { sessions, projects, lanes, navigation, errors } = await backend.listSessions();
-          set({ sessions, projects, lanes, navigation, listErrors: errors });
+          await loadListing();
         } catch (e) {
           fail(e);
         }
