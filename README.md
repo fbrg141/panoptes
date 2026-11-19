@@ -67,11 +67,35 @@ time. ([Why it's built this way](docs/decisions.md#observe-pi-do-not-orchestrate
   </tr>
 </table>
 
-## Quick start
+## Install
 
-You need macOS 13 or later, [Pi](https://github.com/earendil-works/pi) 1.x
-(`pi --version`), and to build it: Rust (via [rustup](https://rustup.rs)),
-Node 22+, pnpm and the Xcode Command Line Tools.
+You need macOS 13 or later on an Apple Silicon Mac, and
+[Pi](https://github.com/earendil-works/pi) 1.x installed and logged in
+(`pi --version`).
+
+### Download
+
+1. Download `Panoptes_<version>_aarch64.dmg` from the
+   [latest release](https://github.com/fbrg141/panoptes/releases/latest).
+2. Open the .dmg and drag Panoptes to Applications.
+3. Open Panoptes. The app is signed ad hoc, not notarized by Apple, so the
+   first time macOS says it can't check it for malware. Click Done, then go
+   to System Settings → Privacy & Security, scroll to Security and click
+   **Open Anyway** next to Panoptes. You only do this once per version.
+
+If you'd rather skip that dialog, clear the download flag in Terminal
+instead:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Panoptes.app
+```
+
+To update, download the new release and replace the app in Applications.
+
+### Build from source
+
+To build it you also need Rust (via [rustup](https://rustup.rs)), Node 22+,
+pnpm and the Xcode Command Line Tools. This works on Intel Macs too.
 
 ```bash
 git clone https://github.com/fbrg141/panoptes.git
@@ -80,17 +104,17 @@ pnpm install
 pnpm app:install
 ```
 
-`pnpm app:install` builds a release, signs it ad hoc (no Apple developer
-account needed for a build you made yourself), installs it to
-`/Applications/Panoptes.app` and opens it. Run it again after `git pull` to
-update; it quits a running Panoptes first.
+`pnpm app:install` builds a release, signs it ad hoc, installs it to
+`/Applications/Panoptes.app` and opens it. A build you made yourself never
+gets the download flag, so macOS doesn't ask. Run it again after `git pull`
+to update; it quits a running Panoptes first.
+
+### Finding Pi
 
 Set `PANOPTES_PI` to use a specific `pi` binary. Apps opened from Finder
 don't get your shell's `PATH`, so at startup Panoptes reads it from your
 login shell; that is how it finds `pi`, `node` and whatever a project's
 setup runs.
-
-There is no prebuilt download yet.
 
 ## Status
 
@@ -136,6 +160,20 @@ There is no CI. A pre-push hook (installed by `pnpm install`) runs
 `pnpm check`. That suite only talks to a scripted stand-in for Pi, so run
 `pnpm smoke` after updating Pi or changing the adapter: it needs an
 installed, logged-in Pi and makes one small model call.
+
+### Releasing
+
+Bump the version in `package.json`, `src-tauri/tauri.conf.json` and the
+workspace `Cargo.toml`, then on an Apple Silicon Mac run:
+
+```bash
+pnpm check
+pnpm tauri build
+```
+
+The ad hoc signed .dmg lands in `target/release/bundle/dmg/`. Before
+publishing it, open a downloaded copy once to check the Open Anyway flow,
+then attach it to a GitHub release tagged `v<version>`.
 
 ### Layout
 
