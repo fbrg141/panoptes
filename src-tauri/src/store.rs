@@ -75,6 +75,10 @@ const MIGRATIONS: &[Migration] = &[
         apply: v7_lane_cleanup_preferences,
         committed: |_| {},
     },
+    Migration {
+        apply: v8_permission_warning_preference,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -225,6 +229,17 @@ fn v7_lane_cleanup_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()>
         INSERT INTO lane_cleanup_preferences (singleton, idle_days)
         VALUES (1, {DEFAULT_CLEANUP_IDLE_DAYS});"
     ))?;
+    Ok(())
+}
+
+fn v8_permission_warning_preference(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE ui_preferences (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            permission_warning_dismissed INTEGER NOT NULL DEFAULT 0 CHECK (permission_warning_dismissed IN (0, 1))
+        ) STRICT;
+        INSERT INTO ui_preferences (singleton) VALUES (1);",
+    )?;
     Ok(())
 }
 
@@ -397,6 +412,8 @@ pub struct Preferences {
     pub hidden_models: Vec<String>,
     /// Inactive worktree lanes offered by cleanup after this many days.
     pub cleanup_idle_days: u32,
+    /// Machine-local dismissal of the unguarded-tools warning.
+    pub permission_warning_dismissed: bool,
 }
 
 pub struct Store {
@@ -481,11 +498,17 @@ impl Store {
             [],
             |row| row.get(0),
         )?;
+        let permission_warning_dismissed = self.conn.query_row(
+            "SELECT permission_warning_dismissed FROM ui_preferences WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
         Ok(Preferences {
             profiles,
             favorite_models,
             hidden_models,
             cleanup_idle_days,
+            permission_warning_dismissed,
         })
     }
 
@@ -565,6 +588,14 @@ impl Store {
                 [model_id],
             )?;
         }
+        Ok(())
+    }
+
+    pub fn dismiss_permission_warning(&self) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE ui_preferences SET permission_warning_dismissed = 1 WHERE singleton = 1",
+            [],
+        )?;
         Ok(())
     }
 
@@ -1723,6 +1754,8 @@ mod tests {
     fn profiles_and_model_preferences_survive_reopening() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
+        assert!(!store.preferences().unwrap().permission_warning_dismissed);
+        store.dismiss_permission_warning().unwrap();
         let input = ProfileInput {
             name: "  Careful  ".into(),
             model_id: Some(" anthropic/claude-sonnet ".into()),
@@ -1763,6 +1796,7 @@ mod tests {
         drop(store);
         let store = Store::open(dir.path()).unwrap();
         assert_eq!(store.preferences().unwrap().cleanup_idle_days, 9);
+        assert!(store.preferences().unwrap().permission_warning_dismissed);
 
         store
             .save_profile(

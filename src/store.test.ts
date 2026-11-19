@@ -65,7 +65,13 @@ const lane: Lane = {
   ],
 };
 
-const opened: OpenedSession = { key: "pi:s1", history: [], status: "idle", replay: [] };
+const opened: OpenedSession = {
+  key: "pi:s1",
+  history: [],
+  unguardedTools: false,
+  status: "idle",
+  replay: [],
+};
 
 /** A session recorded in `lane`, as the backend lists it. */
 const laneSession: Session = {
@@ -92,6 +98,7 @@ const preferences: Preferences = {
   favoriteModels: [],
   hiddenModels: [],
   cleanupIdleDays: 4,
+  permissionWarningDismissed: false,
 };
 
 function fakeBackend() {
@@ -119,6 +126,10 @@ function fakeBackend() {
     settings: vi.fn(async () => settings),
     listModels: vi.fn(async () => (settings.model ? [settings.model] : [])),
     preferences: vi.fn(async () => preferences),
+    dismissPermissionWarning: vi.fn(async () => ({
+      ...preferences,
+      permissionWarningDismissed: true,
+    })),
     saveProfile: vi.fn(async (_id: number | null, input: ProfileInput) => ({
       ...preferences,
       profiles: [{ id: 1, ...input }],
@@ -243,6 +254,12 @@ describe("store", () => {
     expect(store.getState().openErrors["pi:s1"]).toBeUndefined();
   });
 
+  it("keeps the tool-guard capability reported when a session opens", async () => {
+    fake.backend.openSession.mockResolvedValueOnce({ ...opened, unguardedTools: true });
+    await store.getState().open(session);
+    expect(store.getState().unguardedTools["pi:s1"]).toBe(true);
+  });
+
   it("addresses commands to an explicit pane's session, not the focused key", async () => {
     await store.getState().open(session);
     store.setState({ activeKey: "pi:another-pane" });
@@ -312,6 +329,9 @@ describe("store", () => {
     expect(await store.getState().setCleanupIdleDays(7)).toBe(true);
     expect(fake.backend.setCleanupIdleDays).toHaveBeenCalledWith(7);
     expect(store.getState().preferences.cleanupIdleDays).toBe(7);
+    await store.getState().dismissPermissionWarning();
+    expect(fake.backend.dismissPermissionWarning).toHaveBeenCalledTimes(1);
+    expect(store.getState().preferences.permissionWarningDismissed).toBe(true);
     await store.getState().deleteProfile(1);
     expect(fake.backend.deleteProfile).toHaveBeenCalledWith(1);
   });
@@ -608,6 +628,7 @@ describe("store", () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:7",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });
@@ -776,6 +797,7 @@ describe("store", () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:7",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });
@@ -799,6 +821,7 @@ describe("store", () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:9",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });
@@ -825,6 +848,7 @@ describe("store", () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:9",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });
@@ -838,6 +862,7 @@ describe("store", () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:9",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });
@@ -851,6 +876,7 @@ describe("store", () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:9",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });
@@ -884,6 +910,7 @@ describe("store", () => {
     fake.backend.openSession.mockResolvedValueOnce({
       key: "panoptes:7",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });
@@ -902,6 +929,7 @@ describe("store", () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:7",
       history: [],
+      unguardedTools: false,
       status: "idle",
       replay: [],
     });

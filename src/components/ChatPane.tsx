@@ -1,4 +1,5 @@
 import { Button, Icon, Input, LoopMark, StatusPill } from "@panoptes/design-system";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SplitDirection } from "../panes";
 import { beginSessionDrag } from "../sessionDrag";
@@ -16,6 +17,7 @@ import { TurnView } from "./Turn";
 const PAGE = 50;
 /** Within this many px of the end, the transcript counts as at the bottom. */
 const PINNED = 24;
+const PERMISSION_INSTALL_URL = "https://www.npmjs.com/package/pi-permission-system#installation";
 
 export function ChatPane({
   sessionKey,
@@ -32,6 +34,9 @@ export function ChatPane({
 }) {
   const conversation = useStore((s) => s.conversations[sessionKey]);
   const openError = useStore((s) => s.openErrors[sessionKey]);
+  const unguardedTools = useStore((s) => s.unguardedTools[sessionKey] ?? false);
+  const warningDismissed = useStore((s) => s.preferences.permissionWarningDismissed);
+  const dismissPermissionWarning = useStore((s) => s.dismissPermissionWarning);
   const open = useStore((s) => s.open);
   const status = useStore((s) => s.statuses[sessionKey]) ?? "idle";
   const sending = useStore((s) => s.sending[sessionKey] ?? false);
@@ -160,6 +165,35 @@ export function ChatPane({
           </div>
         )}
       </header>
+      {unguardedTools && !warningDismissed && (
+        <div
+          className="flex items-center gap-2 border-b border-line bg-waiting-soft px-4 py-2 text-waiting"
+          role="alert"
+        >
+          <Icon name="circle-alert" size={16} className="shrink-0" />
+          <p className="flex-1">
+            No permission extension installed: bash, edit and write run without asking.{" "}
+            <a
+              href={PERMISSION_INSTALL_URL}
+              className="underline"
+              onClick={(event) => {
+                event.preventDefault();
+                void openUrl(PERMISSION_INSTALL_URL);
+              }}
+            >
+              <code>pi install npm:pi-permission-system</code>
+            </a>
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="x"
+            iconOnly
+            aria-label="Dismiss permission warning"
+            onClick={() => void dismissPermissionWarning()}
+          />
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           ref={scroller}

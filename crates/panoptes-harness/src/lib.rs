@@ -597,6 +597,10 @@ pub trait Harness: Send + Sync {
 pub trait AgentSession: Send + Sync {
     fn harness_ref(&self) -> HarnessRef;
 
+    /// Whether this writable session can edit files or execute commands
+    /// without an extension or built-in guard asking for approval.
+    fn unguarded_tools(&self) -> bool;
+
     /// The active conversation, oldest first, with stable message ids.
     async fn history(&self) -> anyhow::Result<Vec<Message>>;
 

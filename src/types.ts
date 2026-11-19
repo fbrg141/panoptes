@@ -384,6 +384,8 @@ export interface OpenedSession {
   /** Opening an adopted conversation by its harness key answers with its Panoptes key. */
   key: string;
   history: Message[];
+  /** Writable tools that run without asking for approval. */
+  unguardedTools: boolean;
   /** The session's status now, so a reloaded window starts right. */
   status: SessionStatus;
   /** Events to apply over the history: the run's start while it runs, then waiting questions and approvals. */
@@ -473,6 +475,8 @@ export interface Preferences {
   hiddenModels: string[];
   /** Inactive worktree lanes offered by cleanup after this many days. */
   cleanupIdleDays: number;
+  /** Machine-local dismissal of the unguarded-tools warning. */
+  permissionWarningDismissed: boolean;
 }
 
 /** A file dropped onto the composer: images inline, anything else by path. */

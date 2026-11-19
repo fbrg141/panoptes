@@ -394,6 +394,8 @@ pub struct OpenedSession {
     /// Panoptes key.
     pub key: String,
     pub history: Vec<Message>,
+    /// Writable tools that run without asking for approval.
+    pub unguarded_tools: bool,
     /// The session's status now, so a reloaded window does not show a
     /// Running or Waiting session as idle until its next change.
     pub status: SessionStatus,
@@ -975,6 +977,7 @@ impl Service {
                     Ok(OpenedSession {
                         key: key.clone(),
                         history,
+                        unguarded_tools: session.unguarded_tools(),
                         status,
                         replay,
                     })
@@ -1266,6 +1269,7 @@ impl Service {
                 return Err(error);
             }
         };
+        let unguarded_tools = session.unguarded_tools();
         let (now, replay) = {
             let mut open = self.open.lock().await;
             let died = early_exit.lock().unwrap().take();
@@ -1307,6 +1311,7 @@ impl Service {
         Ok(OpenedSession {
             key: key.to_string(),
             history,
+            unguarded_tools,
             status: now,
             replay,
         })
@@ -1347,6 +1352,13 @@ impl Service {
         self.with_store(|store| store.preferences())
             .await
             .map_err(err)
+    }
+
+    pub async fn dismiss_permission_warning(&self) -> ServiceResult<Preferences> {
+        self.with_store(|store| store.dismiss_permission_warning())
+            .await
+            .map_err(err)?;
+        self.preferences().await
     }
 
     pub async fn save_profile(
@@ -2191,6 +2203,10 @@ mod tests {
                 cwd: self.cwd.clone(),
             }
         }
+        fn unguarded_tools(&self) -> bool {
+            false
+        }
+
         async fn history(&self) -> anyhow::Result<Vec<Message>> {
             Ok(Vec::new())
         }

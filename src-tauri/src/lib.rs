@@ -234,6 +234,15 @@ async fn preferences(state: State<'_, AppState>) -> ServiceResult<Preferences> {
 }
 
 #[tauri::command]
+async fn dismiss_permission_warning(state: State<'_, AppState>) -> ServiceResult<Preferences> {
+    logged(
+        &state,
+        "dismiss_permission_warning",
+        state.service.dismiss_permission_warning().await,
+    )
+}
+
+#[tauri::command]
 async fn save_profile(
     state: State<'_, AppState>,
     id: Option<i64>,
@@ -664,6 +673,7 @@ pub fn run() {
             list_models,
             list_commands,
             preferences,
+            dismiss_permission_warning,
             save_profile,
             delete_profile,
             set_model_favorite,
