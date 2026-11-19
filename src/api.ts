@@ -66,6 +66,7 @@ export const api = {
   listModels: (key: string) => invoke<ModelInfo[]>("list_models", { key }),
   listCommands: (key: string) => invoke<CommandInfo[]>("list_commands", { key }),
   preferences: () => invoke<Preferences>("preferences"),
+  dismissPermissionWarning: () => invoke<Preferences>("dismiss_permission_warning"),
   saveProfile: (id: number | null, input: ProfileInput) =>
     invoke<Preferences>("save_profile", { id, input }),
   deleteProfile: (id: number) => invoke<Preferences>("delete_profile", { id }),

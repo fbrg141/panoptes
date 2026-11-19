@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { emptyConversation } from "../conversation";
 import { useStore } from "../store";
 import type { Session } from "../types";
 import { ChatPane } from "./ChatPane";
@@ -33,6 +34,7 @@ const session: Session = {
 let container: HTMLDivElement;
 let root: Root;
 const open = vi.fn(async () => {});
+const dismissPermissionWarning = vi.fn(async () => {});
 
 beforeEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,10 +44,20 @@ beforeEach(async () => {
     unobserve() {}
   } as unknown as typeof ResizeObserver;
   open.mockClear();
+  dismissPermissionWarning.mockClear();
   useStore.setState({
     sessions: [session],
     conversations: {},
     openErrors: {},
+    unguardedTools: {},
+    preferences: {
+      profiles: [],
+      favoriteModels: [],
+      hiddenModels: [],
+      cleanupIdleDays: 4,
+      permissionWarningDismissed: false,
+    },
+    dismissPermissionWarning,
     statuses: {},
     sending: {},
     activeKey: session.key,
@@ -78,4 +90,34 @@ it("shows a failed open instead of loading forever and can retry it", async () =
     retry?.click();
   });
   expect(open).toHaveBeenCalledWith(session);
+});
+
+it("warns only for unguarded tools and remembers dismissal", async () => {
+  await act(async () => {
+    useStore.setState({ conversations: { [session.key]: emptyConversation() } });
+  });
+  expect(container.textContent).not.toContain("No permission extension installed");
+
+  await act(async () => {
+    useStore.setState({ unguardedTools: { [session.key]: true } });
+  });
+  expect(container.textContent).toContain(
+    "No permission extension installed: bash, edit and write run without asking.",
+  );
+  const install = container.querySelector<HTMLAnchorElement>("a[href*='pi-permission-system']");
+  expect(install?.textContent).toBe("pi install npm:pi-permission-system");
+
+  await act(async () => {
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Dismiss permission warning"]')
+      ?.click();
+  });
+  expect(dismissPermissionWarning).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    useStore.setState((state) => ({
+      preferences: { ...state.preferences, permissionWarningDismissed: true },
+    }));
+  });
+  expect(container.textContent).not.toContain("No permission extension installed");
 });

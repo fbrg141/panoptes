@@ -54,6 +54,8 @@ export interface State {
   /** Backend-owned session membership for each lane. */
   navigation: LaneNavigation[];
   conversations: Record<string, Conversation>;
+  /** Whether each open session's writable tools have no approval guard. */
+  unguardedTools: Record<string, boolean>;
   /** A failed first open, shown in its pane instead of loading forever. */
   openErrors: Record<string, string>;
   /** Each open session's status, as the backend reports it. */
@@ -89,6 +91,7 @@ export interface State {
   /** Keeps a composer draft under its session, or drops it once it is empty. */
   saveDraft: (key: string, draft: Draft) => void;
   loadModels: (sessionKey?: string) => Promise<boolean>;
+  dismissPermissionWarning: () => Promise<void>;
   saveProfile: (id: number | null, input: ProfileInput) => Promise<boolean>;
   deleteProfile: (id: number) => Promise<void>;
   setModelFavorite: (modelId: string, favorite: boolean) => Promise<void>;
@@ -189,7 +192,10 @@ export function createAppStore(backend: typeof api) {
       epochs.get(key) === epoch && !(c.busy && c.messages.length > 0);
 
     const adopt = (opened: OpenedSession, epoch = bump(opened.key)) => {
-      set({ activeKey: opened.key });
+      set((s) => ({
+        activeKey: opened.key,
+        unguardedTools: { ...s.unguardedTools, [opened.key]: opened.unguardedTools },
+      }));
       // Keep anything the session already said (questions, notices) and
       // take the history as the authoritative message list.
       patch(opened.key, (c) =>
@@ -214,6 +220,7 @@ export function createAppStore(backend: typeof api) {
     const forget = (key: string) =>
       set((s) => {
         const { [key]: _closed, ...conversations } = s.conversations;
+        const { [key]: _unguarded, ...unguardedTools } = s.unguardedTools;
         const { [key]: _openError, ...openErrors } = s.openErrors;
         const { [key]: _status, ...statuses } = s.statuses;
         const { [key]: _settings, ...settings } = s.settings;
@@ -222,6 +229,7 @@ export function createAppStore(backend: typeof api) {
         epochs.delete(key);
         return {
           conversations,
+          unguardedTools,
           openErrors,
           statuses,
           settings,
@@ -271,12 +279,19 @@ export function createAppStore(backend: typeof api) {
       lanes: [],
       navigation: [],
       conversations: {},
+      unguardedTools: {},
       openErrors: {},
       statuses: {},
       sending: {},
       settings: {},
       models: {},
-      preferences: { profiles: [], favoriteModels: [], hiddenModels: [], cleanupIdleDays: 4 },
+      preferences: {
+        profiles: [],
+        favoriteModels: [],
+        hiddenModels: [],
+        cleanupIdleDays: 4,
+        permissionWarningDismissed: false,
+      },
       drafts: {},
       activeKey: null,
       listErrors: [],
@@ -465,6 +480,14 @@ export function createAppStore(backend: typeof api) {
         } catch (e) {
           fail(e);
           return false;
+        }
+      },
+
+      dismissPermissionWarning: async () => {
+        try {
+          set({ preferences: await backend.dismissPermissionWarning() });
+        } catch (e) {
+          fail(e);
         }
       },
 

@@ -157,6 +157,7 @@ let preferences: Preferences = {
   favoriteModels: ["anthropic/claude-sonnet-4-5"],
   hiddenModels: [],
   cleanupIdleDays: 4,
+  permissionWarningDismissed: false,
 };
 let nextProfileId = 2;
 
@@ -797,11 +798,23 @@ export function installMockBackend() {
             });
           }
           open.add(a.key);
-          return { key: a.key, history, status: "idle" as const, replay: [] };
+          return {
+            key: a.key,
+            history,
+            unguardedTools: false,
+            status: "idle" as const,
+            replay: [],
+          };
         case "new_session": {
           const recorded = recordSession((args as { laneId: number }).laneId);
           open.add(recorded.key);
-          return { key: recorded.key, history: [], status: "idle", replay: [] };
+          return {
+            key: recorded.key,
+            history: [],
+            unguardedTools: false,
+            status: "idle",
+            replay: [],
+          };
         }
         case "adopt_session": {
           const request = args as unknown as { key: string; laneId: number | null };
@@ -915,6 +928,9 @@ export function installMockBackend() {
           };
           return preferences;
         }
+        case "dismiss_permission_warning":
+          preferences = { ...preferences, permissionWarningDismissed: true };
+          return preferences;
         case "set_cleanup_idle_days": {
           const days = (args as { days: number }).days;
           if (!Number.isInteger(days) || days < 1 || days > 365) {

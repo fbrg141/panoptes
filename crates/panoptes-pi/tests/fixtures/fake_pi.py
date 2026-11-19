@@ -18,6 +18,8 @@ for the adapter's tests. Prompts select behaviour:
            open, writes the child's process id to stderr, and exits with 7
   "tools"  replies with the tools it was started with ("all" by default)
   "instructions" replies with the additional system prompt it was started with
+  instructions "with-permission-extension" simulates the permission extension's
+           startup status
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -60,6 +62,12 @@ def respond(command, data=None, success=True, error=None):
     if error:
         record["error"] = error
     send(record)
+
+
+# The real permission extension publishes this status during session start.
+if instructions == "with-permission-extension":
+    send({"type": "extension_ui_request", "id": "permission", "method": "setStatus",
+          "statusKey": "pi-permission-system", "statusText": "enabled"})
 
 
 def append(message):
