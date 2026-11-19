@@ -181,6 +181,63 @@ describe("describeError", () => {
   });
 });
 
+describe("initial load", () => {
+  it("stays loading until the listing arrives, then becomes ready", async () => {
+    const fake = fakeBackend();
+    const store = createAppStore(fake.backend as unknown as typeof api);
+    let finish: (listing: Listing) => void = () => {
+      throw new Error("The listing was not requested");
+    };
+    const pending = new Promise<Listing>((resolve) => (finish = resolve));
+    fake.backend.listSessions.mockReturnValueOnce(pending);
+
+    const first = store.getState().init();
+    const second = store.getState().init();
+    expect(store.getState().startupStatus).toBe("loading");
+    expect(fake.backend.onSessionEvent).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(fake.backend.listSessions).toHaveBeenCalled());
+
+    finish({ sessions: [session], projects: [], lanes: [], navigation: [], errors: [] });
+    await Promise.all([first, second]);
+    expect(store.getState().startupStatus).toBe("ready");
+    expect(store.getState().sessions).toEqual([session]);
+
+    await store.getState().init();
+    expect(fake.backend.onSessionEvent).toHaveBeenCalledTimes(1);
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("can retry after listener setup fails", async () => {
+    const fake = fakeBackend();
+    const store = createAppStore(fake.backend as unknown as typeof api);
+    fake.backend.onSessionEvent.mockRejectedValueOnce(new Error("Listener failed"));
+
+    await store.getState().init();
+    expect(store.getState().startupStatus).toBe("error");
+    expect(store.getState().startupError).toBe("Listener failed");
+
+    await store.getState().init();
+    expect(store.getState().startupStatus).toBe("ready");
+    expect(store.getState().startupError).toBeNull();
+    expect(fake.backend.onSessionEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a failed listing without adding another listener", async () => {
+    const fake = fakeBackend();
+    const store = createAppStore(fake.backend as unknown as typeof api);
+    fake.backend.listSessions.mockRejectedValueOnce(new Error("Listing failed"));
+
+    await store.getState().init();
+    expect(store.getState().startupStatus).toBe("error");
+    expect(store.getState().startupError).toBe("Listing failed");
+
+    await store.getState().init();
+    expect(store.getState().startupStatus).toBe("ready");
+    expect(fake.backend.onSessionEvent).toHaveBeenCalledTimes(1);
+    expect(fake.backend.listSessions).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("store", () => {
   let fake: ReturnType<typeof fakeBackend>;
   let store: ReturnType<typeof createAppStore>;
