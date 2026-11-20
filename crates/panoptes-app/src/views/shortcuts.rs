@@ -1,6 +1,5 @@
-//! The window's keyboard shortcuts and the ⌘/ cheatsheet that lists them,
-//! laid out in two columns with a filter. Port of `ShortcutsDialog.tsx` and
-//! the key handler in `App.tsx`; the list is `model::shortcuts`.
+//! The window's keyboard shortcuts and the ⌘/ cheatsheet that lists them, laid
+//! out in two columns with a filter.
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;

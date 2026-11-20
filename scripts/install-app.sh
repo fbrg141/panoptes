@@ -5,8 +5,8 @@
 # a build made and run on this Mac: it never gets a quarantine flag, so
 # Gatekeeper does not ask. Run it again after each merge to update.
 #
-#   pnpm app:install            # build and install, then open the app
-#   pnpm app:install --no-open  # build and install only
+#   sh scripts/install-app.sh            # build and install, then open the app
+#   sh scripts/install-app.sh --no-open  # build and install only
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -28,11 +28,46 @@ unset SDKROOT
 PATH="$HOME/.cargo/bin:$PATH"
 
 app="Panoptes.app"
-built="target/release/bundle/macos/$app"
+built="target/release/$app"
 installed="/Applications/$app"
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 
-pnpm install --frozen-lockfile
-pnpm tauri build --bundles app
+cargo build --release -p panoptes-app
+
+rm -rf "$built"
+mkdir -p "$built/Contents/MacOS" "$built/Contents/Resources"
+cp target/release/panoptes "$built/Contents/MacOS/panoptes"
+cp crates/panoptes-app/bundle/icon.icns "$built/Contents/Resources/icon.icns"
+cat >"$built/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Panoptes</string>
+	<key>CFBundleDisplayName</key>
+	<string>Panoptes</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.panoptes.app</string>
+	<key>CFBundleExecutable</key>
+	<string>panoptes</string>
+	<key>CFBundleIconFile</key>
+	<string>icon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$version</string>
+	<key>CFBundleVersion</key>
+	<string>$version</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
+PLIST
 
 codesign --force --deep --sign - "$built"
 codesign --verify --deep --strict "$built"

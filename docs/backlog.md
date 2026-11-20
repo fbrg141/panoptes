@@ -9,10 +9,11 @@ misleads, or is hit every day.*
 *Refreshed on 2026-11-15.* Twenty of the 21 fixes cut on 2026-11-12 are
 closed, and so is the rename regression (#263) added since. One is left:
 
-- Add CI that runs `pnpm check` on PRs and main (#3). The workflow is ready
-  in #245; its first run is blocked by a GitHub billing lock on the account.
-  Until it runs, `pnpm check` locally (and the pre-push hook) is the check
-  every merge must pass.
+- Add CI that runs `scripts/check.sh` on PRs and main (#3). The workflow in
+  #245 predates the move to GPUI and needs that command; its first run is
+  blocked by a GitHub billing lock on the account. Until it runs,
+  `scripts/check.sh` locally (and the pre-push hook) is the check every merge
+  must pass.
 
 Closed: #77, #83, #84, #87, #98, #101, #105, #123, #124, #129, #131, #136,
 #151, #160, #172, #173, #174, #175, #176, #197, #263.
@@ -80,7 +81,7 @@ bites, or pick from here after the bet review.
 - Two modal systems that look and behave differently (#171)
 - The terminal block shows a false working directory (#177)
 - The header truncates the title before the path (#178)
-- React effects re-subscribe every render or cache failures (#183)
+- React effects re-subscribe every render or cache failures (#183; gone with React)
 - The same actions are worded differently across the UI (#184)
 - Approval and question cards take no focus and are not announced (#185)
 - Small hit targets and hover-only controls (#186)

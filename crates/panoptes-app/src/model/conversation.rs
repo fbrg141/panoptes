@@ -1,5 +1,4 @@
-//! Pure reducer: harness events folded into conversation state. Port of
-//! `src/conversation.ts`; the clock is passed in so it is easy to test.
+//! Pure reducer: harness events folded into conversation state.
 
 use std::collections::HashMap;
 

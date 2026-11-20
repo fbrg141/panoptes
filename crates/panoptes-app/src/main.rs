@@ -1,8 +1,4 @@
-//! Panoptes in GPUI (#222): the window, its backend and the theme.
-
-// The ports of the components and store land before every view that uses
-// them; this goes once the Tauri app's last screen is ported.
-#![allow(dead_code)]
+//! Panoptes: the window, its backend and the theme, in GPUI.
 
 mod assets;
 mod backend;

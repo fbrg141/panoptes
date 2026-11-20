@@ -1,5 +1,4 @@
-//! One prompt and the agent's reply: its work as quiet rows, then its
-//! answer. Port of `Turn.tsx`.
+//! One prompt and the agent's reply: its work as quiet rows, then its answer.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -847,44 +846,32 @@ fn diff_view(
                 .child(div().text_color(p.error).child(format!("−{removed}"))),
         )
         .children(lines[range].iter().map(|line| {
-            match line.kind {
-                LineKind::Hunk => div()
-                    .px(px(12.))
-                    .py(px(2.))
-                    .bg(p.surface)
-                    .t_code_sm()
-                    .text_color(p.ink_muted)
-                    .child(line.text.clone())
-                    .into_any_element(),
-                kind => {
-                    let (bg, sign) = match kind {
-                        LineKind::Add => (Some(p.diff_add), "+"),
-                        LineKind::Remove => (Some(p.diff_remove), "−"),
-                        _ => (None, " "),
-                    };
+            let (bg, sign) = match line.kind {
+                LineKind::Add => (Some(p.diff_add), "+"),
+                LineKind::Remove => (Some(p.diff_remove), "−"),
+                _ => (None, " "),
+            };
+            div()
+                .flex()
+                .t_code()
+                .text_color(p.ink)
+                .when_some(bg, |el, bg| el.bg(bg))
+                .child(
                     div()
-                        .flex()
-                        .t_code()
-                        .text_color(p.ink)
-                        .when_some(bg, |el, bg| el.bg(bg))
-                        .child(
-                            div()
-                                .w(px(16.))
-                                .flex_none()
-                                .text_center()
-                                .text_color(if bg.is_some() { p.ink } else { p.ink_muted })
-                                .child(sign),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .pr(px(12.))
-                                .child(line.text.clone()),
-                        )
-                        .into_any_element()
-                }
-            }
+                        .w(px(16.))
+                        .flex_none()
+                        .text_center()
+                        .text_color(if bg.is_some() { p.ink } else { p.ink_muted })
+                        .child(sign),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pr(px(12.))
+                        .child(line.text.clone()),
+                )
+                .into_any_element()
         }))
         .into_any_element()
 }

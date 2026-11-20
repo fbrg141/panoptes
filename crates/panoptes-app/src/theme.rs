@@ -1,13 +1,13 @@
 //! The design system's tokens, read from `packages/design-system/tokens/tokens.json`
 //! (the one place they live), as GPUI colours. The palette follows the
-//! system's light or dark appearance, as the Tauri app did.
+//! system's light or dark appearance.
 
 use crate::zoom::px;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 use serde_json::Value;
 
-const TOKENS: &str = include_str!("../../../packages/design-system/tokens/tokens.json");
+const TOKENS: &str = include_str!("../assets/tokens.json");
 
 pub const FONT_SANS: &str = "IBM Plex Sans";
 pub const FONT_MONO: &str = "IBM Plex Mono";
@@ -17,9 +17,15 @@ pub const FONT_DISPLAY: &str = "Gloock";
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub dark: bool,
+    // The brand and red tokens are kept with the rest of the set, unused by
+    // the app's screens today.
+    #[allow(dead_code)]
     pub brand_pupil: Hsla,
+    #[allow(dead_code)]
     pub brand_bone: Hsla,
+    #[allow(dead_code)]
     pub brand_cobalt: Hsla,
+    #[allow(dead_code)]
     pub brand_red: Hsla,
     pub bg: Hsla,
     pub surface: Hsla,
@@ -33,7 +39,9 @@ pub struct Palette {
     pub primary: Hsla,
     pub primary_hover: Hsla,
     pub on_primary: Hsla,
+    #[allow(dead_code)]
     pub red: Hsla,
+    #[allow(dead_code)]
     pub on_red: Hsla,
     pub focus: Hsla,
     pub link: Hsla,

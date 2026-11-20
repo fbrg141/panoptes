@@ -1,6 +1,6 @@
 //! The design system's command palette: a search field over grouped rows,
-//! arrows to move, Enter to open. The resume, session and search palettes
-//! are all this one control. Port of `CommandPalette` in the design system.
+//! arrows to move, Enter to open. The resume, session and search palettes are
+//! all this one control.
 
 use gpui_kit::component::input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::prelude::*;
@@ -12,12 +12,8 @@ pub use crate::model::palette::{PaletteGroup, PaletteItem};
 use crate::theme::{FONT_MONO, Palette, PaletteExt as _};
 use crate::zoom::px;
 
-const ASK: &str = "__ask";
-
 pub enum PaletteEvent {
     Selected(String),
-    Ask(String),
-    QueryChanged(String),
 }
 
 impl EventEmitter<PaletteEvent> for CommandPalette {}
@@ -27,7 +23,6 @@ pub struct CommandPalette {
     groups: Vec<PaletteGroup>,
     picked: usize,
     scroll: ScrollHandle,
-    asks: bool,
 }
 
 impl CommandPalette {
@@ -39,11 +34,9 @@ impl CommandPalette {
     ) -> Self {
         let placeholder = placeholder.into();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
-        cx.subscribe(&search, |this, search, event, cx| {
+        cx.subscribe(&search, |this, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 this.picked = 0;
-                let query = search.read(cx).value().to_string();
-                cx.emit(PaletteEvent::QueryChanged(query));
                 cx.notify();
             }
         })
@@ -54,14 +47,7 @@ impl CommandPalette {
             groups,
             picked: 0,
             scroll: ScrollHandle::new(),
-            asks: false,
         }
-    }
-
-    /// Offer "Ask the agent" with the query when one is typed.
-    pub fn asks(mut self) -> Self {
-        self.asks = true;
-        self
     }
 
     pub fn set_groups(&mut self, groups: Vec<PaletteGroup>, cx: &mut Context<Self>) {
@@ -75,32 +61,13 @@ impl CommandPalette {
         self.search.read(cx).value().to_string()
     }
 
-    /// What is shown: the filtered groups, then the ask row in its own group.
+    /// What is shown: the groups filtered by the query.
     fn visible(&self, cx: &App) -> Vec<PaletteGroup> {
-        let query = self.query(cx);
-        let mut groups = filter_palette(&self.groups, &query);
-        if self.asks && !query.trim().is_empty() {
-            groups.push(PaletteGroup {
-                label: "Agent".into(),
-                items: vec![PaletteItem {
-                    id: ASK.into(),
-                    label: "Ask the agent".into(),
-                    hint: Some(format!("\u{201c}{}\u{201d}", query.trim())),
-                    icon: Some("agent"),
-                    kbd: Vec::new(),
-                }],
-            });
-        }
-        groups
+        filter_palette(&self.groups, &self.query(cx))
     }
 
     fn pick(&mut self, id: String, cx: &mut Context<Self>) {
-        if id == ASK {
-            let query = self.query(cx).trim().to_string();
-            cx.emit(PaletteEvent::Ask(query));
-        } else {
-            cx.emit(PaletteEvent::Selected(id));
-        }
+        cx.emit(PaletteEvent::Selected(id));
     }
 
     fn step(&mut self, by: isize, rows: usize, cx: &mut Context<Self>) {

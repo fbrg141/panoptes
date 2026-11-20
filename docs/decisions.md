@@ -13,16 +13,21 @@ webview and no IPC layer, accepting a full UI rewrite. The plan and its risks
 are on [#222](https://github.com/fbrg141/panoptes/issues/222).
 
 - The backend lives in `crates/panoptes-core` and has no UI dependency. The
-  Tauri app and the GPUI app (`crates/panoptes-app`) both run on it until the
-  GPUI app reaches parity, then Tauri, React and the JS toolchain are removed.
+  Tauri app and the GPUI app (`crates/panoptes-app`) both ran on it until the
+  GPUI app reached parity; then Tauri, React and the JS toolchain were
+  removed.
 - GPUI comes through `gpui-kit` (GPUI, `gpui-base` and `gpui-component`),
   pinned to an exact version, since it is pre-1.0 and breaks often.
 - The standing rules below still apply: decisions live in Rust outside the
   views, and design tokens stay data that Rust reads.
+- The design system's export is vendored into the app: `tokens.json` and the
+  fonts under `crates/panoptes-app/assets`, icons and logos in
+  `src/design_assets.rs`. The React components went with React; their GPUI
+  versions are in `ds.rs`.
 
 ## Tauri v2, not Electron or a pure Rust UI
 
-*Decided 2026-11-04.*
+*Decided 2026-11-04. Superseded by the move to GPUI above.*
 
 - **Tauri v2** gives a small native app (about 10 MB, against 150 MB or more
   for Electron with its bundled Chromium) and low memory use. That matters
@@ -41,7 +46,8 @@ markdown and diff views, and agents write it more reliably.
 
 ## Stay hybrid for now, and keep a GPUI rewrite possible
 
-*Decided 2026-11-07.*
+*Decided 2026-11-07. Superseded by the move to GPUI above; its standing rules
+still apply.*
 
 Panoptes stays on Tauri, React and a Rust core. A later rewrite of the UI
 onto GPUI (Zed's Rust UI framework) is kept genuinely possible, but is not
@@ -69,9 +75,9 @@ planned.
   everything from `HarnessEvent`s and the service's typed commands, and from
   nothing else.
 - **Design tokens are data, not CSS.** They live in one place Rust can read
-  (`packages/design-system/tokens/tokens.json`). CSS variables follow from
-  that file and are never the only place a value exists.
-- **TypeScript keeps no model of its own of a session.** It holds what the
+  (`crates/panoptes-app/assets/tokens.json`), and the theme is built from
+  that file, never from values written into a view.
+- **The UI keeps no model of its own of a session.** It holds what the
   core sent and the view state on top (scroll, focus, open panels), and
   nothing it would have to keep in step with the core.
 
@@ -342,7 +348,8 @@ showing it, is left to the bet review (2026-11-12).
 
 ## The design system lives in the repo as a package
 
-*Decided 2026-11-05.*
+*Decided 2026-11-05. Superseded by the move to GPUI: the package is gone and
+its export is vendored into `crates/panoptes-app`.*
 
 `packages/design-system` (`@panoptes/design-system`, a pnpm workspace
 package) holds the tokens, fonts, logos, app icons and components, exported
@@ -385,8 +392,9 @@ since they do not run over RPC.
 ## Open gaps
 
 - No automated test drives the real app window; the UI is tested through its
-  store and reducer, and the backend through the service and a fake Pi.
-- The real Pi is only exercised by `pnpm smoke`, by hand. It is not part of
-  `pnpm check` because it needs a logged-in Pi and makes a model call.
+  store and `model/`, and the backend through the service and a fake Pi.
+- The real Pi is only exercised by `scripts/smoke.sh`, by hand. It is not
+  part of `scripts/check.sh` because it needs a logged-in Pi and makes a
+  model call.
 - Pi is not bundled yet. The app uses the installed `pi` and looks for a
   bundled one first, so shipping one later means adding files, not code.

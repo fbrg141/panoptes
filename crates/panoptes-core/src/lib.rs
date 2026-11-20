@@ -1,7 +1,7 @@
 //! The Panoptes backend, with no UI dependency: [`service::Service`] over
 //! open sessions and the store, plus lanes, changes, cleanup and the event
-//! log. A UI shell (Tauri today, GPUI next) loads the harnesses, builds a
-//! `Service` and calls it directly.
+//! log. The app (`panoptes-app`) loads the harnesses, builds a `Service` and
+//! calls it directly.
 
 pub mod changes;
 pub mod cleanup;

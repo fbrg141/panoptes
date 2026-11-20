@@ -1,5 +1,4 @@
-//! Panoptes-only session presets, model-picker presentation and lane
-//! cleanup. Port of `SettingsDialog.tsx`.
+//! Panoptes-only session presets, model-picker presentation and lane cleanup.
 
 use std::collections::BTreeSet;
 

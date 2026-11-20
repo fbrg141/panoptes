@@ -1,5 +1,5 @@
 //! Pure transcript logic: messages grouped into turns, tool rows and
-//! folded-work summaries. Port of `src/turns.ts`.
+//! folded-work summaries.
 
 use panoptes_harness::{
     Approval, Block, FileEdit, Message, Role, ToolCall, ToolImage, ToolKind, ToolOutput, ToolStatus,
@@ -53,18 +53,6 @@ pub enum Step {
 }
 
 impl Step {
-    pub fn key(&self) -> &str {
-        match self {
-            Step::Text { key, .. }
-            | Step::Thinking { key, .. }
-            | Step::Group { key, .. }
-            | Step::Note { key, .. }
-            | Step::Image { key, .. }
-            | Step::Error { key, .. } => key,
-            Step::Tool(step) => &step.key,
-        }
-    }
-
     fn is_answer(&self) -> bool {
         matches!(self, Step::Text { .. } | Step::Error { .. })
     }
@@ -413,24 +401,6 @@ pub fn format_duration(ms: i64) -> String {
         return format!("{seconds}s");
     }
     format!("{}m {}s", seconds / 60, seconds % 60)
-}
-
-/// A message as plain text: its text blocks, then one line per tool call.
-pub fn plain_text(message: &Message) -> String {
-    message
-        .blocks
-        .iter()
-        .filter_map(|b| match b {
-            Block::Text { text } if !text.trim().is_empty() => Some(text.clone()),
-            Block::ToolCall(call) => Some(match &call.subject {
-                Some(subject) => format!("{} {subject}", call.name),
-                None => call.name.clone(),
-            }),
-            _ => None,
-        })
-        .chain(message.error.clone())
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
-//! The composer's text logic: @-mentions, file matching and labels. Pure, so
-//! it is tested without a window. Port of `src/composer.ts`. Offsets are byte
-//! offsets into the text, as the GPUI text field uses.
+//! The composer's text logic: @-mentions, file matching and labels. Pure, so it
+//! is tested without a window. Offsets are byte offsets into the text, as the
+//! GPUI text field uses.
 
 use std::collections::{BTreeSet, HashSet};
 

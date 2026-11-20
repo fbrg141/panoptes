@@ -1,6 +1,5 @@
 //! The project + flow: one prompt creates a lane and its first session. The
-//! prompt names the lane and becomes its first message. Port of
-//! `NewLaneDialog.tsx`.
+//! prompt names the lane and becomes its first message.
 
 use std::rc::Rc;
 

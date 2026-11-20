@@ -1,6 +1,5 @@
-//! The searchable picker behind the composer's model menu and the new lane
-//! and settings forms' menus, with the model, thinking and profile lists it
-//! shows. Port of `src/picker.ts` and `src/newSession.ts`.
+//! The searchable picker behind the composer's model menu and the new lane and
+//! settings forms' menus, with the model, thinking and profile lists it shows.
 
 use std::collections::{HashMap, HashSet};
 

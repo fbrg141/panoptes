@@ -1,6 +1,5 @@
-//! Pure sidebar logic: status words, row details, a lane's main session,
-//! empty lanes and the row menus. Ports of `sessionRow.ts`, `laneCard.ts`,
-//! `laneRow.ts` and `sidebarMenu.ts`.
+//! Pure sidebar logic: status words, row details, a lane's main session, empty
+//! lanes and the row menus.
 
 use panoptes_core::lanes::LaneWork;
 use panoptes_core::service::{LaneNavigation, Session};

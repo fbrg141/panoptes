@@ -1,5 +1,4 @@
-//! The window: banners, the sidebar and the tiled session panes. Port of
-//! `App.tsx` and `SessionWorkspace.tsx`.
+//! The window: banners, the sidebar and the tiled session panes.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

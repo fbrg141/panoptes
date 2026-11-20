@@ -1,5 +1,5 @@
 //! The window's tiling layout: a tree of splits whose leaves each show one
-//! session or none. Port of `src/panes.ts`.
+//! session or none.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

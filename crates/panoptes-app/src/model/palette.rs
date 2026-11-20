@@ -1,6 +1,5 @@
-//! Rows for the command palettes: the search palette, the pane session
-//! picker, and what a picked row stands for. Port of `palette.ts` and
-//! `sessionPickerGroups` in `SessionPicker.tsx`.
+//! Rows for the command palettes: the search palette, the pane session picker,
+//! and what a picked row stands for.
 
 use panoptes_core::service::Session;
 use panoptes_core::store::{Lane, LaneState, Project};
