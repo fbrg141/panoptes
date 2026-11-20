@@ -93,7 +93,10 @@ impl Backend {
 
     /// Runs a service call on the backend runtime. The returned future can
     /// be awaited on any executor, GPUI's included.
-    pub fn call<F, Fut, T>(&self, call: F) -> impl Future<Output = anyhow::Result<T>> + 'static
+    pub fn call<F, Fut, T>(
+        &self,
+        call: F,
+    ) -> impl Future<Output = anyhow::Result<T>> + use<F, Fut, T>
     where
         F: FnOnce(Arc<Service>) -> Fut,
         Fut: Future<Output = T> + Send + 'static,
@@ -117,7 +120,7 @@ impl Backend {
         &self,
         command: &'static str,
         call: F,
-    ) -> impl Future<Output = Result<T, ServiceError>> + 'static
+    ) -> impl Future<Output = Result<T, ServiceError>> + use<F, Fut, T>
     where
         F: FnOnce(Arc<Service>) -> Fut,
         Fut: Future<Output = Result<T, ServiceError>> + Send + 'static,

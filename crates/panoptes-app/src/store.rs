@@ -17,8 +17,8 @@ use panoptes_core::service::{
 };
 use panoptes_core::store::{Lane, Preferences, ProfileInput, Project};
 use panoptes_harness::{
-    Answer, HarnessEvent, ImageAttachment, ModelInfo, PromptMode, PromptOutcome, SessionSettings,
-    SessionStatus,
+    Answer, CommandInfo, HarnessEvent, ImageAttachment, ModelInfo, PromptMode, PromptOutcome,
+    SessionSettings, SessionStatus,
 };
 
 use crate::backend::Backend;
@@ -26,7 +26,7 @@ use crate::model::conversation::Conversation;
 use crate::model::format::now_ms;
 
 /// A composer draft kept for a session the user switched away from.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Draft {
     pub text: String,
     pub attachments: Vec<Attachment>,
@@ -747,6 +747,70 @@ impl AppStore {
             })
             .unwrap_or(false)
         })
+    }
+
+    /// The harness commands a session offers, for the composer's `/` list.
+    pub fn list_commands(
+        &self,
+        key: String,
+    ) -> impl Future<Output = Option<Vec<CommandInfo>>> + use<> {
+        let commands = self.backend.run(
+            "list_commands",
+            move |s| async move { s.commands(&key).await },
+        );
+        async move { commands.await.ok() }
+    }
+
+    /// The workspace's files, for the composer's `@` list.
+    pub fn list_files(&self, cwd: String) -> impl Future<Output = Vec<String>> + use<> {
+        let files = self.backend.call(move |_| async move {
+            tokio::task::spawn_blocking(move || {
+                panoptes_core::files::list(
+                    std::path::Path::new(&cwd),
+                    panoptes_core::files::MAX_FILES,
+                )
+            })
+            .await
+            .unwrap_or_default()
+        });
+        async move { files.await.unwrap_or_default() }
+    }
+
+    /// Reads files picked or dropped on the composer; a failure shows in the
+    /// error banner.
+    pub fn read_attachments(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Vec<Attachment>>> {
+        let read = self.backend.call(move |_| async move {
+            tokio::task::spawn_blocking(move || {
+                paths
+                    .iter()
+                    .map(|path| panoptes_core::files::attachment(path))
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|read| read)
+        });
+        self.spawn(
+            cx,
+            async move { read.await.and_then(|read| read) },
+            |this, read, cx| match read {
+                Ok(read) => read,
+                Err(error) => {
+                    this.fail(ServiceError::other(format!("{error:#}")), cx);
+                    Vec::new()
+                }
+            },
+        )
+    }
+
+    /// Shows a failure in the window's error banner.
+    pub fn show_error(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.state.error = Some(message.into());
+        cx.notify();
     }
 
     pub fn load_models(&mut self, key: String, cx: &mut Context<Self>) -> Task<Option<bool>> {

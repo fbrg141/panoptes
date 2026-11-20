@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_harness::{Approval, NoticeLevel, SessionStatus};
@@ -14,6 +13,7 @@ use crate::model::turns::{build_turns, loose_approvals};
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::Ui;
+use crate::views::composer::{Composer, ComposerEvent};
 use crate::views::turn::{Ctx, OnCopy, OnToggle, OnUnclamp, ViewState, turn_view};
 
 /// Turns rendered at first; earlier ones load on request.
@@ -25,7 +25,7 @@ pub struct ChatPane {
     pub key: String,
     store: Entity<AppStore>,
     ui: Entity<Ui>,
-    composer: Entity<TextareaState>,
+    composer: Entity<Composer>,
     scroll: ScrollHandle,
     view: ViewState,
     shown: usize,
@@ -49,19 +49,10 @@ impl ChatPane {
         })
         .detach();
         cx.observe(&ui, |_, _, cx| cx.notify()).detach();
-        let composer = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder("Message the agent, @ for files, / for commands")
-                .auto_grow(1, 12)
-        });
-        cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
-            if let InputEvent::PressEnter {
-                shift: false,
-                secondary,
-            } = event
-            {
-                this.send(*secondary, window, cx);
-            }
+        let composer =
+            cx.new(|cx| Composer::new(key.clone(), store.clone(), ui.clone(), window, cx));
+        cx.subscribe(&composer, |this, _, event, cx| match event {
+            ComposerEvent::Sent => this.scroll_to_end(cx),
         })
         .detach();
         let scroll = ScrollHandle::new();
@@ -90,32 +81,6 @@ impl ChatPane {
         self.scroll.scroll_to_bottom();
         self.pinned = true;
         cx.notify();
-    }
-
-    fn send(&mut self, queue: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        let key = self.key.clone();
-        let sent = self
-            .store
-            .update(cx, |store, cx| store.send(key, text, Vec::new(), queue, cx));
-        let composer = self.composer.clone();
-        let draft = composer.read(cx).value().to_string();
-        composer.update(cx, |c, cx| c.set_value("", window, cx));
-        self.scroll_to_end(cx);
-        cx.spawn_in(window, async move |_, cx| {
-            // A prompt the harness did not take goes back into the composer.
-            if !sent.await {
-                let _ = composer.update_in(cx, |c, window, cx| {
-                    if c.value().is_empty() {
-                        c.set_value(draft, window, cx);
-                    }
-                });
-            }
-        })
-        .detach();
     }
 
     fn render_header(
@@ -207,70 +172,6 @@ impl ChatPane {
                     }),
             )
     }
-
-    fn render_composer(
-        &self,
-        busy: bool,
-        sending: bool,
-        p: &Palette,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let empty = self.composer.read(cx).value().trim().is_empty();
-        let this = cx.entity().downgrade();
-        let store = self.store.clone();
-        let key = self.key.clone();
-        div()
-            .relative()
-            .mx_auto()
-            .flex()
-            .flex_col()
-            .w_full()
-            .max_w(px(768.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(p.line)
-            .bg(p.surface_raised)
-            .child(
-                div()
-                    .px(px(4.))
-                    .pt(px(4.))
-                    .child(Textarea::new(&self.composer).appearance(false)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .px(px(8.))
-                    .pb(px(8.))
-                    .child(
-                        Button::new("attach")
-                            .ghost()
-                            .small()
-                            .icon("plus")
-                            .tooltip("Attach files"),
-                    )
-                    .child(div().flex_1())
-                    .child(if busy {
-                        Button::new("stop")
-                            .icon("square")
-                            .tooltip("Stop (Esc)")
-                            .on_click(move |_, _, cx| {
-                                let key = key.clone();
-                                store.update(cx, |store, cx| store.abort(key, cx));
-                            })
-                    } else {
-                        Button::new("send")
-                            .primary()
-                            .icon("arrow-up")
-                            .disabled(empty || sending)
-                            .tooltip("Send (Enter)")
-                            .on_click(move |_, window, cx| {
-                                let _ = this.update(cx, |this, cx| this.send(false, window, cx));
-                            })
-                    }),
-            )
-    }
 }
 
 impl Render for ChatPane {
@@ -292,10 +193,8 @@ impl Render for ChatPane {
             .unwrap_or(false);
         let warning = unguarded && !state.preferences.permission_warning_dismissed;
         let status = state.status(&self.key);
-        let sending = state.sending.contains(&self.key);
         let session = state.session(&self.key).cloned();
         let turns = conversation.map(build_turns).unwrap_or_default();
-        let busy = conversation.is_some_and(|c| c.busy);
         let notices = conversation.map(|c| c.notices.clone()).unwrap_or_default();
         let exited = conversation.and_then(|c| c.exited.clone());
         let questions = conversation
@@ -562,7 +461,7 @@ impl Render for ChatPane {
                         .child("Running"),
                 )
             })
-            .child(self.render_composer(busy, sending, &p, cx));
+            .child(self.composer.clone());
 
         div()
             .flex()
