@@ -997,7 +997,6 @@ impl AppStore {
         .detach();
     }
 
-    /// Registers the git repository `folder` is in.
     /// Asks for a folder and registers it as a project.
     pub fn pick_project(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -1017,6 +1016,7 @@ impl AppStore {
         .detach();
     }
 
+    /// Registers the git repository `folder` is in.
     pub fn add_project(&mut self, folder: String, cx: &mut Context<Self>) {
         let work = self.backend.run("add_project", move |s| async move {
             s.add_project(folder).await
@@ -1127,7 +1127,6 @@ impl AppStore {
         })
     }
 
-    /// Archives independently, preserving any dirty lane as a checkpoint.
     /// Worktree usage and safe idle lanes for one project, measured now.
     pub fn lane_cleanup(
         &self,
@@ -1139,6 +1138,7 @@ impl AppStore {
         async move { work.await.map_err(|e| e.message) }
     }
 
+    /// Archives independently, preserving any dirty lane as a checkpoint.
     pub fn archive_lanes(
         &mut self,
         ids: Vec<i64>,
