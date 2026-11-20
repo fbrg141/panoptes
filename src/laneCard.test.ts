@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { laneMainSession, laneResumeSessions } from "./laneCard";
+import { laneMainSession, laneResumeSessions, laneSessionToStop } from "./laneCard";
 import type { Session } from "./types";
 
 const session = (key: string, over: Partial<Session> = {}): Session => ({
@@ -49,5 +49,16 @@ describe("laneMainSession", () => {
     const archived = session("panoptes:4", { createdAt: 4, archived: true });
     const child = session("panoptes:5", { createdAt: 5, parentLocator: "/a" });
     expect(laneResumeSessions([older, child, current, newest, archived])).toEqual([newest, older]);
+  });
+});
+
+describe("laneSessionToStop", () => {
+  it("names the live session an earlier record would replace", () => {
+    const live = session("panoptes:1", { id: 1, laneId: 3, open: true });
+    const earlier = session("panoptes:2", { id: 2, laneId: 3, open: false });
+    const elsewhere = session("panoptes:4", { id: 4, laneId: 5, open: false });
+    expect(laneSessionToStop(earlier, [live, earlier, elsewhere])).toBe(live);
+    expect(laneSessionToStop(live, [live, earlier])).toBeUndefined();
+    expect(laneSessionToStop(elsewhere, [live, elsewhere])).toBeUndefined();
   });
 });

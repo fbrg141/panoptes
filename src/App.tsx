@@ -143,7 +143,9 @@ export default function App() {
           {overlay?.type === "newLane" && (
             <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
           )}
-          {overlay?.type === "resumeSession" && <ResumeSessionDialog laneId={overlay.laneId} />}
+          {overlay?.type === "resumeSession" && (
+            <ResumeSessionDialog laneId={overlay.laneId} sessionId={overlay.sessionId} />
+          )}
         </ErrorBoundary>
       </div>
     </StartupGate>

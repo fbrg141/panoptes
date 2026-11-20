@@ -15,6 +15,18 @@ export function laneMainSession(sessions: Session[]): Session | undefined {
   }, undefined);
 }
 
+/**
+ * The lane's live session that opening `session` would stop. Opening an
+ * earlier record resumes it, which ends the current process, so the UI asks
+ * first instead of doing it on a click.
+ */
+export function laneSessionToStop(session: Session, sessions: Session[]): Session | undefined {
+  if (session.id === null || session.laneId === null || session.open) return undefined;
+  return sessions.find(
+    (item) => item.laneId === session.laneId && item.open && item.key !== session.key,
+  );
+}
+
 /** Earlier root conversations available to /resume, newest created first. */
 export function laneResumeSessions(sessions: Session[]): Session[] {
   const current = laneMainSession(sessions);

@@ -26,7 +26,7 @@ export type Overlay =
   | { type: "settings" }
   | { type: "cleanup"; projectId: number }
   | { type: "newLane"; projectId: number; prompt?: string }
-  | { type: "resumeSession"; laneId: number };
+  | { type: "resumeSession"; laneId: number; sessionId?: number };
 
 const initialPane = singlePane();
 

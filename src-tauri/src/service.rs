@@ -1052,9 +1052,12 @@ impl Service {
         })
     }
 
-    /// Checks that changing a lane's current conversation cannot strand a
-    /// running agent, an unanswered approval, or work queued for that agent.
-    async fn prepare_lane_change(&self, lane_id: i64) -> ServiceResult<Option<String>> {
+    /// Stops the lane's current process, if any, so another conversation can
+    /// take the lane. It refuses while that agent runs, asks, or holds queued
+    /// prompts. The idle check and removal from `open` happen under one lock,
+    /// so a prompt arriving meanwhile finds no session instead of being lost
+    /// to the shutdown. Returns the key that was stopped.
+    async fn stop_for_lane_change(&self, lane_id: i64) -> ServiceResult<Option<String>> {
         if self
             .starting
             .lock()
@@ -1067,34 +1070,71 @@ impl Service {
                 "Wait for the current session to finish starting before changing sessions",
             ));
         }
-        let open = self.open.lock().await;
-        if busy_writer(&open, &self.lane_writers, lane_id).is_some() {
-            return Err(ServiceError::new(
-                ErrorKind::Rejected,
-                "Another session is still changing this lane. Change sessions once it is Done",
-            ));
-        }
-        let current = open
+        let current = self
+            .open
+            .lock()
+            .await
             .iter()
             .find(|(_, session)| session.lane == Some(lane_id))
-            .map(|(key, session)| (key.clone(), session.status.clone()));
-        if let Some((_, status)) = &current {
-            let status = status.lock().unwrap();
-            if status.running || status.queued || !status.questions.is_empty() {
+            .map(|(key, _)| key.clone());
+        let _guard = match &current {
+            Some(key) => Some(self.lifecycle(key).await),
+            None => None,
+        };
+        let removed = {
+            let mut open = self.open.lock().await;
+            if busy_writer(&open, &self.lane_writers, lane_id).is_some() {
                 return Err(ServiceError::new(
                     ErrorKind::Rejected,
-                    "Stop the agent, answer its questions and clear queued messages before changing sessions",
+                    "Another session is still changing this lane. Change sessions once it is Done",
                 ));
             }
-        }
-        Ok(current.map(|(key, _)| key))
+            let now = open
+                .iter()
+                .find(|(_, session)| session.lane == Some(lane_id))
+                .map(|(key, _)| key.clone());
+            if now != current {
+                return Err(ServiceError::new(
+                    ErrorKind::Rejected,
+                    "This lane's session changed meanwhile. Try again",
+                ));
+            }
+            match now {
+                Some(key) => {
+                    {
+                        let status = open[&key].status.lock().unwrap();
+                        if status.running || status.queued || !status.questions.is_empty() {
+                            return Err(ServiceError::new(
+                                ErrorKind::Rejected,
+                                "Stop the agent, answer its questions and clear queued messages before changing sessions",
+                            ));
+                        }
+                    }
+                    open.remove(&key).map(|session| (key, session))
+                }
+                None => None,
+            }
+        };
+        Ok(match removed {
+            Some((key, session)) => {
+                self.log.record("sessionClosed", json!({"key": key}));
+                session.session.shutdown().await;
+                Some(key)
+            }
+            None => None,
+        })
     }
 
     /// Stops the lane's current process and starts a fresh conversation record
     /// in the same worktree, retaining its harness and saved instructions.
     pub async fn replace_lane_session(&self, lane_id: i64) -> ServiceResult<OpenedSession> {
-        let current = self.prepare_lane_change(lane_id).await?;
-        let current_id = current.as_deref().and_then(panoptes_id);
+        let current_id = self
+            .open
+            .lock()
+            .await
+            .iter()
+            .find(|(_, session)| session.lane == Some(lane_id))
+            .and_then(|(key, _)| panoptes_id(key));
         let (harness, instructions) = self
             .with_store(move |store| {
                 let latest = match current_id {
@@ -1111,9 +1151,7 @@ impl Service {
             })
             .await
             .map_err(err)?;
-        if let Some(current) = current {
-            self.close(&current).await;
-        }
+        self.stop_for_lane_change(lane_id).await?;
         self.create_with(lane_id, &harness, instructions).await
     }
 
@@ -1130,15 +1168,17 @@ impl Service {
                 if record.lane_id != lane_id {
                     anyhow::bail!("That session does not belong to this lane");
                 }
+                if record.archived {
+                    anyhow::bail!("That session is archived; restore it before resuming");
+                }
                 Ok(record.harness)
             })
             .await
             .map_err(err)?;
         let key = panoptes_key(session_id);
-        if let Some(current) = self.prepare_lane_change(lane_id).await?
-            && current != key
-        {
-            self.close(&current).await;
+        let already_open = self.open.lock().await.contains_key(&key);
+        if !already_open {
+            self.stop_for_lane_change(lane_id).await?;
         }
         self.open(&harness, &key, String::new(), String::new())
             .await
@@ -2880,6 +2920,24 @@ mod tests {
         assert_ne!(resumed.key, second.key);
         let requests = f.harness.requests.lock().unwrap().clone();
         assert_eq!(requests.last().unwrap().resume.as_deref(), Some("new-1"));
+        assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_archived_lane_session_cannot_be_resumed() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let first = f.service.create(lane.id, "fake").await.unwrap();
+        f.service.replace_lane_session(lane.id).await.unwrap();
+        f.service.set_archived(&first.key, true).await.unwrap();
+
+        let error = f
+            .service
+            .resume_lane_session(lane.id, panoptes_id(&first.key).unwrap())
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("archived"));
+        assert_eq!(f.harness.starts.load(Ordering::SeqCst), 2);
         assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
     }
 

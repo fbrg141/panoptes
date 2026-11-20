@@ -686,16 +686,14 @@ describe("store", () => {
     expect(store.getState().activeKey).toBe("panoptes:8");
   });
 
-  it("uses lane resume when an earlier session is selected", async () => {
+  it("never resumes over a lane's live session on open", async () => {
     const current = { ...laneSession, open: true };
     const earlier = { ...laneSession, key: "panoptes:8", id: 8, open: false };
     store.setState({ sessions: [current, earlier] });
-    fake.backend.resumeLaneSession.mockResolvedValueOnce({ ...opened, key: earlier.key });
 
     await store.getState().open(earlier);
-    expect(fake.backend.resumeLaneSession).toHaveBeenCalledWith(lane.id, 8);
-    expect(fake.backend.openSession).not.toHaveBeenCalled();
-    expect(store.getState().activeKey).toBe(earlier.key);
+    expect(fake.backend.resumeLaneSession).not.toHaveBeenCalled();
+    expect(fake.backend.newLaneSession).not.toHaveBeenCalled();
   });
 
   it("creates a durable lane and lists it without a session", async () => {

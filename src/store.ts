@@ -351,17 +351,6 @@ export function createAppStore(backend: typeof api) {
       },
 
       open: async (session) => {
-        const current = get().sessions.find(
-          (item) =>
-            item.laneId !== null &&
-            item.laneId === session.laneId &&
-            item.open &&
-            item.key !== session.key,
-        );
-        if (session.id !== null && session.laneId !== null && current) {
-          await get().resumeLaneSession(session.laneId, session.id);
-          return;
-        }
         set((s) => {
           const { [session.key]: _openError, ...openErrors } = s.openErrors;
           return { activeKey: session.key, openErrors };

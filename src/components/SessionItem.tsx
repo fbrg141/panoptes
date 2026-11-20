@@ -1,12 +1,12 @@
 import { Button, Icon, LoopMark, type MenuItem } from "@panoptes/design-system";
 import { type KeyboardEvent, type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 import { relativeTime } from "../grouping";
+import { requestOpen } from "../openSession";
 import { beginSessionDrag } from "../sessionDrag";
 import { isLive, primaryAction, sessionDetail, sessionRowLabel, statusWord } from "../sessionRow";
 import { sessionMenuItems } from "../sidebarMenu";
 import { useStore } from "../store";
 import type { Session, SessionStatus } from "../types";
-import { useUi } from "../ui";
 import { ContextMenu } from "./ContextMenu";
 import { RowMenu } from "./RowMenu";
 
@@ -135,7 +135,6 @@ export function SessionItem({
 }) {
   const active = useStore((s) => s.activeKey === session.key);
   const status = useStore((s) => s.statuses[session.key] ?? "idle");
-  const open = useStore((s) => s.open);
   const close = useStore((s) => s.close);
   const setArchived = useStore((s) => s.setArchived);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -245,10 +244,7 @@ export function SessionItem({
             onPointerEnter={measure}
             onPointerDown={(event) => beginSessionDrag(event, session.key)}
             onFocus={measure}
-            onClick={() => {
-              useUi.getState().showSession(session.key);
-              void open(session);
-            }}
+            onClick={() => void requestOpen(session)}
             onKeyDown={onRowKey}
             onContextMenu={(event) => {
               // The menu key already opened the anchored menu; skip the pointer one.
