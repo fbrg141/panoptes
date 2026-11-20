@@ -18,6 +18,7 @@ use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::Ui;
 use crate::views::picker::{Picker, PickerEvent, PickerState};
+use crate::zoom::px;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {

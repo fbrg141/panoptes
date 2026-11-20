@@ -15,6 +15,7 @@ use gpui_kit::*;
 use crate::ds::{CONTROL, CONTROL_LG, CONTROL_SM, KbdTone, RADIUS_SM, Type as _, icon, kbd, panel};
 use crate::model::picker::{PickerGroup, filter_picker, initial_pick, pickable};
 use crate::theme::Palette;
+use crate::zoom::px;
 
 /// What the picker keeps between frames: whether it is open, the search
 /// typed and the highlighted row.

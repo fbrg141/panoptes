@@ -8,6 +8,7 @@ use gpui_kit::*;
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark};
 use crate::store::{AppStore, Startup};
 use crate::theme::Palette;
+use crate::zoom::px;
 
 /// Brief loads stay quiet for this long.
 pub const LOADER_DELAY_MS: u64 = 150;

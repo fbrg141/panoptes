@@ -10,6 +10,7 @@ use crate::ds::{CONTROL, CONTROL_LG, KbdTone, RADIUS_MD, RADIUS_SM, Type as _, i
 use crate::model::palette::filter_palette;
 pub use crate::model::palette::{PaletteGroup, PaletteItem};
 use crate::theme::{FONT_MONO, Palette, PaletteExt as _};
+use crate::zoom::px;
 
 const ASK: &str = "__ask";
 

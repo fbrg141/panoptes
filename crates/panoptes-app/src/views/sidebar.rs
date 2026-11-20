@@ -20,6 +20,7 @@ use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{Overlay, Ui};
 use crate::views::menu::{OpenMenu, popup_menu};
+use crate::zoom::px;
 
 /// What the sidebar asks of the window: flows that open dialogs it does not own.
 #[derive(Debug, Clone)]

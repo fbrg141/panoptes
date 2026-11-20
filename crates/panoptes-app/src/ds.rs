@@ -11,6 +11,7 @@ use panoptes_harness::SessionStatus;
 
 use crate::assets::loop_geometry;
 use crate::theme::{FONT_DISPLAY, FONT_MONO, FONT_SANS, Palette, PaletteExt as _};
+use crate::zoom::px;
 
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 pub type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;

@@ -8,6 +8,7 @@ use gpui_kit::*;
 use crate::ds::{menu_item, menu_separator, panel};
 use crate::model::sidebar::MenuEntry;
 use crate::theme::Palette;
+use crate::zoom::px;
 
 /// An open menu: who it belongs to, what it offers and where.
 pub struct OpenMenu<Owner> {

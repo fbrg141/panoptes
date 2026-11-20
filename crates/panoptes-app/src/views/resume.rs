@@ -12,6 +12,7 @@ use crate::store::AppStore;
 use crate::theme::PaletteExt as _;
 use crate::ui::Ui;
 use crate::views::palette::{CommandPalette, PaletteEvent, PaletteGroup, PaletteItem};
+use crate::zoom::px;
 
 pub struct ResumeSession {
     lane_id: i64,

@@ -19,6 +19,7 @@ use crate::ui::Ui;
 use crate::views::cards::{QuestionField, approval_card, question_card};
 use crate::views::composer::{Composer, ComposerEvent};
 use crate::views::turn::{Ctx, OnCopy, OnToggle, OnUnclamp, ViewState, turn_view};
+use crate::zoom::px;
 
 /// Turns rendered at first; earlier ones load on request.
 const PAGE: usize = 50;
@@ -87,7 +88,7 @@ impl ChatPane {
         }
     }
 
-    fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
+    pub fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
         self.scroll.scroll_to_bottom();
         self.pinned = true;
         cx.notify();

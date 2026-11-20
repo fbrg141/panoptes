@@ -10,6 +10,7 @@ use crate::ds::{self, CONTROL, KbdTone, RADIUS_SM, Type as _, icon, kbd};
 use crate::model::shortcuts::{filter_shortcuts, shortcut_groups};
 use crate::theme::PaletteExt as _;
 use crate::ui::Ui;
+use crate::zoom::px;
 
 actions!(
     panoptes,
@@ -21,6 +22,10 @@ actions!(
         ShowShortcuts,
         SplitVertical,
         SplitHorizontal,
+        JumpToLatest,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
     ]
 );
 
@@ -41,6 +46,15 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-d", SplitVertical, at),
         KeyBinding::new("cmd-shift-d", SplitHorizontal, at),
         KeyBinding::new("ctrl-shift-d", SplitHorizontal, at),
+        // A text field's own ⌘↓ (to the end of its text) wins over this.
+        KeyBinding::new("cmd-down", JumpToLatest, at),
+        // ⌘= is what macOS reports for the plus key, shifted or not.
+        KeyBinding::new("cmd-=", ZoomIn, None),
+        KeyBinding::new("cmd-+", ZoomIn, None),
+        KeyBinding::new("cmd-shift-=", ZoomIn, None),
+        KeyBinding::new("cmd--", ZoomOut, None),
+        KeyBinding::new("cmd-_", ZoomOut, None),
+        KeyBinding::new("cmd-0", ZoomReset, None),
     ]);
 }
 

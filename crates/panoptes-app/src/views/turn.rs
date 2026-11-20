@@ -23,6 +23,7 @@ use crate::model::turns::{
 };
 use crate::model::usage::turn_usage_parts;
 use crate::theme::{FONT_MONO, Palette};
+use crate::zoom::px;
 
 /// Lines of output shown before "Show all".
 const CLAMP: usize = 12;

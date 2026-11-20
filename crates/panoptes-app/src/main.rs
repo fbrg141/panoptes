@@ -13,6 +13,7 @@ mod theme;
 mod ui;
 mod views;
 mod workspace;
+mod zoom;
 
 use gpui_kit::*;
 

@@ -24,11 +24,12 @@ use crate::views::new_lane::NewLane;
 use crate::views::resume::ResumeSession;
 use crate::views::settings::Settings;
 use crate::views::shortcuts::{
-    self as keys, AddProject, NewLane as NewLaneAction, NewLaneSession, Search, Shortcuts,
-    ShowShortcuts, SplitHorizontal, SplitVertical,
+    self as keys, AddProject, JumpToLatest, NewLane as NewLaneAction, NewLaneSession, Search,
+    Shortcuts, ShowShortcuts, SplitHorizontal, SplitVertical, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 use crate::views::startup;
+use crate::zoom::{ZoomCommand, next_zoom, px, set_zoom, zoom};
 
 pub struct Workspace {
     store: Entity<AppStore>,
@@ -492,6 +493,19 @@ impl Render for Workspace {
                     lane_store.update(cx, |store, cx| store.new_lane_session(lane_id, cx).detach());
                 }
             })
+            .on_action(cx.listener(|this, _: &JumpToLatest, _, cx| {
+                let ui = this.ui.read(cx);
+                let key = ui
+                    .layout
+                    .find(&ui.focused_pane)
+                    .and_then(|leaf| leaf.session_key.clone());
+                if let Some(pane) = key.and_then(|key| this.panes.get(&key)) {
+                    pane.update(cx, |pane, cx| pane.scroll_to_end(cx));
+                }
+            }))
+            .on_action(|_: &ZoomIn, window, cx| zoom_by(ZoomCommand::In, window, cx))
+            .on_action(|_: &ZoomOut, window, cx| zoom_by(ZoomCommand::Out, window, cx))
+            .on_action(|_: &ZoomReset, window, cx| zoom_by(ZoomCommand::Reset, window, cx))
             .on_action(move |_: &AddProject, _, cx| {
                 if project_ui.read(cx).overlay.is_none() {
                     project_store.update(cx, |store, cx| store.pick_project(cx))
@@ -610,4 +624,15 @@ fn drop_indicator(zone: DropZone, empty: bool, p: &Palette) -> Div {
             16.,
         ))
         .child(label)
+}
+
+/// Zooms the whole window: every length is drawn again at the new scale.
+fn zoom_by(command: ZoomCommand, window: &mut Window, cx: &mut App) {
+    let next = next_zoom(zoom(), command);
+    if next != zoom() {
+        set_zoom(next);
+        let dark = cx.palette().dark;
+        crate::theme::apply(dark, cx);
+        window.refresh();
+    }
 }

@@ -11,6 +11,7 @@ use crate::ds::{Button, RADIUS_MD, RADIUS_SM, Type as _, input_frame, status_pil
 use crate::model::format::now_ms;
 use crate::store::AppStore;
 use crate::theme::Palette;
+use crate::zoom::px;
 
 /// Whether a card's offer has run out.
 pub fn expired(expires_at: Option<i64>) -> bool {

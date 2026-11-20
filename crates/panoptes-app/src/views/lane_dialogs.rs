@@ -12,6 +12,7 @@ use panoptes_core::store::{Lane, LaneState, Project};
 use crate::ds::{Button, Type as _, dialog, v_flex_gap};
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
+use crate::zoom::px;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Removal {
