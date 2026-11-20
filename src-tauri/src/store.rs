@@ -926,7 +926,7 @@ impl Store {
     }
 
     /// Gives a session its Panoptes id before any harness process exists.
-    /// Only an active lane with no session takes one.
+    /// Records accumulate; the service permits only one live process per lane.
     #[cfg(test)]
     pub fn add_session(&self, lane_id: i64, harness: &str) -> anyhow::Result<SessionRecord> {
         self.add_session_configured(lane_id, harness, None)
@@ -942,7 +942,6 @@ impl Store {
         if self.lane(lane_id)?.state != LaneState::Active {
             bail!("That lane is archived; restore it to start a session");
         }
-        self.ensure_lane_has_no_session(lane_id)?;
         let instructions = instructions.map(str::trim).filter(|text| !text.is_empty());
         tx.execute(
             "INSERT INTO sessions (lane_id, harness, instructions, created_at)
@@ -968,7 +967,6 @@ impl Store {
         if self.lane(lane_id)?.state != LaneState::Active {
             bail!("That lane is archived; restore it before adopting a session");
         }
-        self.ensure_lane_has_no_session(lane_id)?;
         if self.session_for(harness, harness_id)?.is_some() {
             bail!("That conversation already belongs to a lane");
         }
@@ -988,18 +986,6 @@ impl Store {
         tx.execute("DELETE FROM pins WHERE session_key = ?1", [&legacy_key])?;
         tx.commit()?;
         self.session(id)
-    }
-
-    fn ensure_lane_has_no_session(&self, lane_id: i64) -> anyhow::Result<()> {
-        let occupied: bool = self.conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sessions WHERE lane_id = ?1)",
-            [lane_id],
-            |row| row.get(0),
-        )?;
-        if occupied {
-            bail!("That lane already has a session");
-        }
-        Ok(())
     }
 
     /// Records which harness conversation a session wraps, once the harness

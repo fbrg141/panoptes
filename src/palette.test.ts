@@ -85,6 +85,19 @@ describe("paletteGroups", () => {
     expect(archived.items[0].hint).toBe("Archived · Web app · Fix login");
   });
 
+  it("offers new and resume only for the active lane on screen", () => {
+    const owned = { ...session, laneId: 4 };
+    const groups = paletteGroups([owned], [project], [lane], owned.key);
+    expect(groups[3].items.map((item) => item.id)).toEqual([
+      "action:newLaneSession",
+      "action:resumeSession",
+      "action:newSession",
+      "action:newProject",
+      "action:shortcuts",
+      "action:showLogs",
+    ]);
+  });
+
   it("marks the session on screen as current", () => {
     const [sessions] = paletteGroups([session], [project], [lane], "pi:s1");
     expect(sessions.items[0].hint).toBe("Current · Web app");
@@ -120,6 +133,12 @@ describe("paletteTarget", () => {
     });
     expect(paletteTarget("action:newSession", [session], [project], [lane])).toEqual({
       kind: "newSession",
+    });
+    expect(paletteTarget("action:newLaneSession", [session], [project], [lane])).toEqual({
+      kind: "newLaneSession",
+    });
+    expect(paletteTarget("action:resumeSession", [session], [project], [lane])).toEqual({
+      kind: "resumeSession",
     });
     expect(paletteTarget("action:newProject", [session], [project], [lane])).toEqual({
       kind: "newProject",

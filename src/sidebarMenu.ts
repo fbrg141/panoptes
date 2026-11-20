@@ -19,6 +19,13 @@ export const projectMenuItems = (laneCount = 0): MenuItem[] => [
 ];
 
 export const laneMenuItems = (lane: Pick<Lane, "state">): MenuItem[] => [
+  ...(lane.state === "active"
+    ? [
+        { id: "new-session", label: "New session (/new)", icon: "plus" },
+        { id: "resume-session", label: "Resume session (/resume)…", icon: "history" },
+        { separator: true } as MenuItem,
+      ]
+    : []),
   lane.state === "active"
     ? { id: "archive-lane", label: "Archive lane", icon: "x" }
     : { id: "restore-lane", label: "Restore lane", icon: "rotate-ccw" },

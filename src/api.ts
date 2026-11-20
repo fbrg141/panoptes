@@ -44,6 +44,9 @@ export const api = {
     }),
   newSession: (laneId: number, harness: string, instructions?: string) =>
     invoke<OpenedSession>("new_session", { laneId, harness, instructions }),
+  newLaneSession: (laneId: number) => invoke<OpenedSession>("replace_lane_session", { laneId }),
+  resumeLaneSession: (laneId: number, sessionId: number) =>
+    invoke<OpenedSession>("resume_lane_session", { laneId, sessionId }),
   adoptSession: (
     s: Pick<Session, "harness" | "key" | "harnessRef" | "cwd">,
     laneId: number | null,

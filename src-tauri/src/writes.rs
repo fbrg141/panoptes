@@ -1,4 +1,4 @@
-//! Which lanes a session changes besides its own. A lane has one session,
+//! Which lanes a session changes besides its own. A lane has one live session,
 //! but nothing stops that session's agent from editing another lane's
 //! worktree. This is read from recorded facts, never guessed from a folder:
 //! a finished edit tool call that names a file in the worktree.

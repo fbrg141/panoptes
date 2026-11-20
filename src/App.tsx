@@ -4,6 +4,7 @@ import { api } from "./api";
 import { CleanupDialog } from "./components/CleanupDialog";
 import { CrashNotice, ErrorBoundary } from "./components/ErrorBoundary";
 import { NewLaneDialog } from "./components/NewLaneDialog";
+import { ResumeSessionDialog } from "./components/ResumeSessionDialog";
 import { SearchPalette } from "./components/SearchPalette";
 import { SessionPicker } from "./components/SessionPicker";
 import { SessionWorkspace } from "./components/SessionWorkspace";
@@ -58,6 +59,12 @@ export default function App() {
       e.preventDefault();
       if (id === "newProject") {
         void pickProjectFolder();
+        return;
+      }
+      if (id === "newLaneSession") {
+        const state = useStore.getState();
+        const laneId = state.sessions.find((session) => session.key === state.activeKey)?.laneId;
+        if (laneId !== null && laneId !== undefined) void state.newLaneSession(laneId);
         return;
       }
       if (id === "splitVertical" || id === "splitHorizontal") {
@@ -135,6 +142,9 @@ export default function App() {
           {overlay?.type === "cleanup" && <CleanupDialog projectId={overlay.projectId} />}
           {overlay?.type === "newLane" && (
             <NewLaneDialog projectId={overlay.projectId} prompt={overlay.prompt} />
+          )}
+          {overlay?.type === "resumeSession" && (
+            <ResumeSessionDialog laneId={overlay.laneId} sessionId={overlay.sessionId} />
           )}
         </ErrorBoundary>
       </div>

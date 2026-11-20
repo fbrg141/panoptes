@@ -134,6 +134,31 @@ async fn new_session(
 }
 
 #[tauri::command]
+async fn replace_lane_session(
+    state: State<'_, AppState>,
+    lane_id: i64,
+) -> ServiceResult<OpenedSession> {
+    logged(
+        &state,
+        "replace_lane_session",
+        state.service.replace_lane_session(lane_id).await,
+    )
+}
+
+#[tauri::command]
+async fn resume_lane_session(
+    state: State<'_, AppState>,
+    lane_id: i64,
+    session_id: i64,
+) -> ServiceResult<OpenedSession> {
+    logged(
+        &state,
+        "resume_lane_session",
+        state.service.resume_lane_session(lane_id, session_id).await,
+    )
+}
+
+#[tauri::command]
 async fn adopt_session(
     state: State<'_, AppState>,
     harness: String,
@@ -663,6 +688,8 @@ pub fn run() {
             list_sessions,
             open_session,
             new_session,
+            replace_lane_session,
+            resume_lane_session,
             adopt_session,
             archive_session,
             rename_session,

@@ -816,6 +816,44 @@ export function installMockBackend() {
             replay: [],
           };
         }
+        case "replace_lane_session": {
+          const laneId = (args as { laneId: number }).laneId;
+          for (const session of sessions.filter(
+            (session) => session.laneId === laneId && session.open,
+          )) {
+            open.delete(session.key);
+          }
+          const recorded = recordSession(laneId);
+          open.add(recorded.key);
+          return {
+            key: recorded.key,
+            history: [],
+            unguardedTools: false,
+            status: "idle",
+            replay: [],
+          };
+        }
+        case "resume_lane_session": {
+          const request = args as { laneId: number; sessionId: number };
+          const selected = sessions.find(
+            (session) => session.id === request.sessionId && session.laneId === request.laneId,
+          );
+          if (!selected)
+            throw { kind: "other", message: "That session does not belong to this lane" };
+          for (const session of sessions.filter(
+            (session) => session.laneId === request.laneId && session.key !== selected.key,
+          )) {
+            open.delete(session.key);
+          }
+          open.add(selected.key);
+          return {
+            key: selected.key,
+            history,
+            unguardedTools: false,
+            status: "idle",
+            replay: [],
+          };
+        }
         case "adopt_session": {
           const request = args as unknown as { key: string; laneId: number | null };
           const existing = sessions.find((s) => s.key === request.key);

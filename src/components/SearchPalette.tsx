@@ -1,5 +1,6 @@
 import { CommandPalette } from "@panoptes/design-system";
 import { useEffect, useMemo, useRef } from "react";
+import { requestOpen } from "../openSession";
 import { paletteGroups, paletteTarget } from "../palette";
 import { pickProjectFolder } from "../pickProject";
 import { useStore } from "../store";
@@ -15,8 +16,8 @@ export function SearchPalette() {
   const projects = useStore((s) => s.projects);
   const lanes = useStore((s) => s.lanes);
   const activeKey = useStore((s) => s.activeKey);
-  const open = useStore((s) => s.open);
   const create = useStore((s) => s.create);
+  const newLaneSession = useStore((s) => s.newLaneSession);
   const showLogs = useStore((s) => s.showLogs);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
@@ -46,14 +47,12 @@ export function SearchPalette() {
     if (!target) return;
     switch (target.kind) {
       case "session":
-        useUi.getState().showSession(target.session.key);
-        await open(target.session);
+        await requestOpen(target.session);
         break;
       case "lane": {
         const session = sessions.find((item) => item.laneId === target.lane.id);
         if (session) {
-          useUi.getState().showSession(session.key);
-          await open(session);
+          await requestOpen(session);
         } else await create(target.lane.id);
         break;
       }
@@ -63,6 +62,16 @@ export function SearchPalette() {
       case "newSession":
         show({ type: "newLane", projectId: projects[0]?.id ?? 0 });
         break;
+      case "newLaneSession": {
+        const laneId = sessions.find((session) => session.key === activeKey)?.laneId;
+        if (laneId !== null && laneId !== undefined) await newLaneSession(laneId);
+        break;
+      }
+      case "resumeSession": {
+        const laneId = sessions.find((session) => session.key === activeKey)?.laneId;
+        if (laneId !== null && laneId !== undefined) show({ type: "resumeSession", laneId });
+        break;
+      }
       case "newProject":
         await pickProjectFolder();
         break;

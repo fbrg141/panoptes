@@ -1,5 +1,6 @@
 import { CommandPalette } from "@panoptes/design-system";
 import { useMemo } from "react";
+import { requestOpen } from "../openSession";
 import { recentSessions } from "../palette";
 import { useStore } from "../store";
 import type { Project, Session } from "../types";
@@ -36,7 +37,6 @@ export function sessionPickerGroups(sessions: Session[], projects: Project[]) {
 export function SessionPicker({ paneId }: { paneId: string }) {
   const sessions = useStore((s) => s.sessions);
   const projects = useStore((s) => s.projects);
-  const open = useStore((s) => s.open);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
   const groups = useMemo(() => sessionPickerGroups(sessions, projects), [sessions, projects]);
@@ -51,8 +51,7 @@ export function SessionPicker({ paneId }: { paneId: string }) {
     const key = id.slice("session:".length);
     const session = sessions.find((item) => item.key === key);
     if (!session) return;
-    useUi.getState().showSession(key, paneId);
-    await open(session);
+    await requestOpen(session, paneId);
   };
 
   return (
