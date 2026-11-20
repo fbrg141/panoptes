@@ -13,14 +13,14 @@ use panoptes_harness::SessionStatus;
 use crate::ds::{Button, LoopState, Tab, Type as _, icon, loop_mark, status_word, tabs};
 use crate::model::format::{now_ms, relative_time};
 use crate::model::sidebar::{
-    EmptyLane, MenuEntry, empty_lane, is_live, lane_main_session, lane_menu_items,
-    lane_session_to_stop, primary_action, project_menu_items, session_detail, session_menu_items,
-    work_label,
+    EmptyLane, MenuEntry, empty_lane, is_live, lane_main_session, lane_menu_items, primary_action,
+    project_menu_items, session_detail, session_menu_items, work_label,
 };
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{Overlay, Ui};
 use crate::views::menu::{OpenMenu, popup_menu};
+use crate::zoom::px;
 
 /// What the sidebar asks of the window: flows that open dialogs it does not own.
 #[derive(Debug, Clone)]
@@ -132,28 +132,8 @@ impl Sidebar {
         }
     }
 
-    /// Shows a session and opens it, unless that would stop the lane's live
-    /// session: then it asks first, through the resume confirmation.
     fn request_open(&mut self, session: &Session, cx: &mut Context<Self>) {
-        let store = self.store.read(cx);
-        if let (Some(lane_id), Some(id)) = (session.lane_id, session.id)
-            && lane_session_to_stop(session, &store.state.sessions).is_some()
-        {
-            self.ui.update(cx, |ui, cx| {
-                ui.open(
-                    Overlay::ResumeSession {
-                        lane_id,
-                        session_id: Some(id),
-                    },
-                    cx,
-                )
-            });
-            return;
-        }
-        self.ui
-            .update(cx, |ui, cx| ui.show_session(&session.key, None, cx));
-        self.store
-            .update(cx, |store, cx| store.open(session, cx).detach());
+        crate::ui::request_open(&self.store, &self.ui, session, None, cx);
     }
 
     fn work(&mut self, lane_id: i64, cx: &mut Context<Self>) {
@@ -852,6 +832,10 @@ impl Sidebar {
 
         let hit = div()
             .id(SharedString::from(format!("hit-{key}")))
+            .on_drag(
+                crate::ui::DraggedSession { key: key.clone() },
+                |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+            )
             .flex()
             .items_center()
             .gap(px(8.))

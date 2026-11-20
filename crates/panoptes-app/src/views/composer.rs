@@ -29,6 +29,7 @@ use crate::store::{AppStore, Draft};
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{Overlay, Ui};
 use crate::views::picker::{Picker, PickerEvent, PickerState};
+use crate::zoom::px;
 
 /// Mentions offered at once; typing narrows them.
 const MENTION_ROWS: usize = 8;

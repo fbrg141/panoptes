@@ -14,6 +14,7 @@ use crate::model::format::{format_bytes, idle_label, now_ms, usage_label};
 use crate::store::AppStore;
 use crate::theme::PaletteExt as _;
 use crate::ui::Ui;
+use crate::zoom::px;
 
 struct Outcome {
     archived: usize,

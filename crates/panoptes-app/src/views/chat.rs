@@ -19,6 +19,7 @@ use crate::ui::Ui;
 use crate::views::cards::{QuestionField, approval_card, question_card};
 use crate::views::composer::{Composer, ComposerEvent};
 use crate::views::turn::{Ctx, OnCopy, OnToggle, OnUnclamp, ViewState, turn_view};
+use crate::zoom::px;
 
 /// Turns rendered at first; earlier ones load on request.
 const PAGE: usize = 50;
@@ -87,7 +88,7 @@ impl ChatPane {
         }
     }
 
-    fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
+    pub fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
         self.scroll.scroll_to_bottom();
         self.pinned = true;
         cx.notify();
@@ -107,12 +108,11 @@ impl ChatPane {
             .map(|s| s.title.clone())
             .unwrap_or_else(|| "Session".into());
         let ui = self.ui.clone();
+        let split_store = self.store.clone();
         let split = move |direction: SplitDirection| {
-            let ui = ui.clone();
+            let (store, ui) = (split_store.clone(), ui.clone());
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                ui.update(cx, |ui, cx| {
-                    ui.split_focused(direction, cx);
-                })
+                crate::ui::split_focused_pane(&store, &ui, direction, cx)
             }
         };
         let pane_id = self
@@ -122,6 +122,13 @@ impl ChatPane {
             .session_pane(&self.key)
             .map(|p| p.id.clone());
         div()
+            .id("pane-header")
+            .on_drag(
+                crate::ui::DraggedSession {
+                    key: self.key.clone(),
+                },
+                |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+            )
             .flex()
             .flex_none()
             .items_center()

@@ -3,7 +3,11 @@
 
 use gpui_kit::*;
 
+use panoptes_core::service::Session;
+
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, single_pane};
+use crate::model::sidebar::lane_session_to_stop;
+use crate::store::AppStore;
 
 /// The one overlay the window shows at a time. A second one replaces the
 /// first instead of stacking.
@@ -117,5 +121,63 @@ impl Ui {
         self.layout = placed.layout;
         self.focused_pane = placed.focused;
         cx.notify();
+    }
+}
+
+/// Shows a session and opens it, unless that would stop the lane's live
+/// session: then it asks first, through the resume confirmation. Port of
+/// `requestOpen` in `openSession.ts`.
+pub fn request_open(
+    store: &Entity<AppStore>,
+    ui: &Entity<Ui>,
+    session: &Session,
+    pane_id: Option<&str>,
+    cx: &mut App,
+) {
+    if let (Some(lane_id), Some(id)) = (session.lane_id, session.id)
+        && lane_session_to_stop(session, &store.read(cx).state.sessions).is_some()
+    {
+        ui.update(cx, |ui, cx| {
+            ui.open(
+                Overlay::ResumeSession {
+                    lane_id,
+                    session_id: Some(id),
+                },
+                cx,
+            )
+        });
+        return;
+    }
+    ui.update(cx, |ui, cx| ui.show_session(&session.key, pane_id, cx));
+    store.update(cx, |store, cx| store.open(session, cx).detach());
+}
+
+/// A session being dragged from the sidebar or a pane header onto a pane.
+/// The drag draws nothing under the pointer; the pane shows where it lands.
+#[derive(Clone)]
+pub struct DraggedSession {
+    pub key: String,
+}
+
+impl Render for DraggedSession {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+/// Splits the focused pane; the new empty pane takes focus, so no session
+/// is active until one is picked for it.
+pub fn split_focused_pane(
+    store: &Entity<AppStore>,
+    ui: &Entity<Ui>,
+    direction: SplitDirection,
+    cx: &mut App,
+) {
+    let split = ui.update(cx, |ui, cx| ui.split_focused(direction, cx));
+    if split.is_some() {
+        store.update(cx, |store, cx| {
+            store.state.active_key = None;
+            cx.notify();
+        });
     }
 }

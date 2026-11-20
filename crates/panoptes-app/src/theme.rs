@@ -2,6 +2,7 @@
 //! (the one place they live), as GPUI colours. The palette follows the
 //! system's light or dark appearance, as the Tauri app did.
 
+use crate::zoom::px;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 use serde_json::Value;

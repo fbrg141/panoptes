@@ -7,48 +7,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::ds::{CONTROL, CONTROL_LG, KbdTone, RADIUS_MD, RADIUS_SM, Type as _, icon, kbd};
+use crate::model::palette::filter_palette;
+pub use crate::model::palette::{PaletteGroup, PaletteItem};
 use crate::theme::{FONT_MONO, Palette, PaletteExt as _};
+use crate::zoom::px;
 
 const ASK: &str = "__ask";
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PaletteItem {
-    pub id: String,
-    pub label: String,
-    pub hint: Option<String>,
-    pub icon: Option<&'static str>,
-    pub kbd: Vec<&'static str>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PaletteGroup {
-    pub label: String,
-    pub items: Vec<PaletteItem>,
-}
-
-/// The groups with only the rows whose label or hint holds the query, and
-/// no empty groups.
-pub fn filter_palette(groups: &[PaletteGroup], query: &str) -> Vec<PaletteGroup> {
-    let needle = query.trim().to_lowercase();
-    groups
-        .iter()
-        .map(|group| PaletteGroup {
-            label: group.label.clone(),
-            items: group
-                .items
-                .iter()
-                .filter(|item| {
-                    needle.is_empty()
-                        || format!("{} {}", item.label, item.hint.as_deref().unwrap_or(""))
-                            .to_lowercase()
-                            .contains(&needle)
-                })
-                .cloned()
-                .collect(),
-        })
-        .filter(|group| !group.items.is_empty())
-        .collect()
-}
 
 pub enum PaletteEvent {
     Selected(String),
@@ -339,41 +303,5 @@ impl Render for CommandPalette {
                     .child(hint(&["↑", "↓"], "to move", &p))
                     .child(hint(&["↵"], "to open", &p)),
             )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn item(id: &str, label: &str, hint: Option<&str>) -> PaletteItem {
-        PaletteItem {
-            id: id.into(),
-            label: label.into(),
-            hint: hint.map(Into::into),
-            ..Default::default()
-        }
-    }
-
-    #[::core::prelude::v1::test]
-    fn filtering_matches_label_or_hint_and_drops_empty_groups() {
-        let groups = vec![
-            PaletteGroup {
-                label: "A".into(),
-                items: vec![
-                    item("1", "Fix login", None),
-                    item("2", "Docs", Some("12 messages")),
-                ],
-            },
-            PaletteGroup {
-                label: "B".into(),
-                items: vec![item("3", "Other", None)],
-            },
-        ];
-        let found = filter_palette(&groups, " LOGIN ");
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].items[0].id, "1");
-        assert_eq!(filter_palette(&groups, "messages")[0].items[0].id, "2");
-        assert_eq!(filter_palette(&groups, "").len(), 2);
     }
 }

@@ -18,6 +18,7 @@ use crate::store::{AppStore, SessionOptions};
 use crate::theme::PaletteExt as _;
 use crate::ui::Ui;
 use crate::views::picker::{Picker, PickerEvent, PickerState};
+use crate::zoom::px;
 
 pub struct NewLane {
     project_id: i64,

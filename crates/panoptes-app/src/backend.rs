@@ -24,6 +24,8 @@ pub struct Backend {
     service: Arc<Service>,
     /// Harnesses that could not be loaded, and why.
     pub harness_errors: Vec<String>,
+    /// Set when the Pi found is a version Panoptes does not support.
+    pub unsupported: Option<String>,
     /// Where the event log is written.
     pub logs_dir: PathBuf,
 }
@@ -48,9 +50,16 @@ impl Backend {
         let mut harnesses: Vec<Arc<dyn Harness>> = Vec::new();
         let mut harness_errors = Vec::new();
         let mut harness_info = Vec::new();
+        let mut unsupported = None;
         match panoptes_pi::locate(bundled_pi().as_deref()) {
             Ok(install) => {
                 harness_info.push(serde_json::json!({"id": "pi", "version": install.version}));
+                if !install.is_supported() {
+                    unsupported = Some(format!(
+                        "Pi {} is not a supported version. Expect problems.",
+                        install.version
+                    ));
+                }
                 harnesses.push(Arc::new(PiHarness::new(install)));
             }
             Err(error) => harness_errors.push(format!("{error:#}")),
@@ -85,6 +94,7 @@ impl Backend {
                 runtime,
                 service,
                 harness_errors,
+                unsupported,
                 logs_dir,
             }),
             events,

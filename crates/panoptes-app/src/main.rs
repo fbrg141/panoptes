@@ -13,6 +13,7 @@ mod theme;
 mod ui;
 mod views;
 mod workspace;
+mod zoom;
 
 use gpui_kit::*;
 
@@ -31,6 +32,7 @@ fn main() {
             gpui_kit::init(cx);
             theme::init(cx);
             views::composer::init(cx);
+            views::shortcuts::init(cx);
             let started = match started {
                 Ok(started) => started,
                 Err(error) => {
