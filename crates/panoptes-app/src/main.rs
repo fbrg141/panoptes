@@ -31,6 +31,7 @@ fn main() {
             gpui_kit::init(cx);
             theme::init(cx);
             views::composer::init(cx);
+            views::shortcuts::init(cx);
             let started = match started {
                 Ok(started) => started,
                 Err(error) => {

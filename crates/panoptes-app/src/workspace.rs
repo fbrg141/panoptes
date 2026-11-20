@@ -11,15 +11,20 @@ use tokio::sync::mpsc;
 
 use crate::backend::Backend;
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark};
-use crate::model::panes::PaneNode;
+use crate::model::panes::{PaneNode, SplitDirection};
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{Overlay, Ui};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
+use crate::views::jump::{Jump, JumpKind};
 use crate::views::lane_dialogs::LaneDialogs;
 use crate::views::new_lane::NewLane;
 use crate::views::resume::ResumeSession;
+use crate::views::shortcuts::{
+    self as keys, AddProject, NewLane as NewLaneAction, NewLaneSession, Search, Shortcuts,
+    ShowShortcuts, SplitHorizontal, SplitVertical,
+};
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 
 pub struct Workspace {
@@ -29,6 +34,8 @@ pub struct Workspace {
     dialogs: Entity<LaneDialogs>,
     /// The overlay shown, and the view drawing it.
     overlay: Option<(Overlay, AnyView)>,
+    /// Holds the keyboard when no text field does, so window shortcuts work.
+    focus: FocusHandle,
     panes: HashMap<String, Entity<ChatPane>>,
     /// Open conversations when last seen, to close the panes of ones that went.
     open_keys: HashSet<String>,
@@ -72,12 +79,15 @@ impl Workspace {
         })
         .detach();
 
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
         Self {
             store,
             ui,
             sidebar,
             dialogs,
             overlay: None,
+            focus,
             panes: HashMap::new(),
             open_keys: HashSet::new(),
             active_key: None,
@@ -110,6 +120,14 @@ impl Workspace {
                     let id = *project_id;
                     cx.new(|cx| Cleanup::new(id, store, ui, window, cx)).into()
                 }
+                Overlay::Search => cx
+                    .new(|cx| Jump::new(JumpKind::Search, store, ui, window, cx))
+                    .into(),
+                Overlay::PaneSession { pane_id } => {
+                    let kind = JumpKind::PaneSession(pane_id.clone());
+                    cx.new(|cx| Jump::new(kind, store, ui, window, cx)).into()
+                }
+                Overlay::Shortcuts => cx.new(|cx| Shortcuts::new(ui, window, cx)).into(),
                 _ => return None,
             };
             Some((overlay, view))
@@ -126,8 +144,9 @@ impl Workspace {
             .layout
             .find(&ui.focused_pane)
             .and_then(|leaf| leaf.session_key.clone());
-        if let Some(pane) = key.and_then(|key| self.panes.get(&key)) {
-            pane.update(cx, |pane, cx| pane.focus(window, cx));
+        match key.and_then(|key| self.panes.get(&key)) {
+            Some(pane) => pane.update(cx, |pane, cx| pane.focus(window, cx)),
+            None => window.focus(&self.focus, cx),
         }
     }
 
@@ -333,11 +352,58 @@ impl Render for Workspace {
             .harness_errors
             .first()
             .cloned();
+        let first_project = state.projects.first().map_or(0, |p| p.id);
+        let active_lane = state
+            .sessions
+            .iter()
+            .find(|s| Some(&s.key) == state.active_key.as_ref())
+            .and_then(|s| s.lane_id);
         let layout = self.ui.read(cx).layout.clone();
         let multiple = layout.leaves().len() > 1;
         let panes = self.render_node(&layout, multiple, &p, window, cx);
         let store = self.store.clone();
+        fn open<A: Action>(
+            ui: &Entity<Ui>,
+            overlay: Overlay,
+        ) -> impl Fn(&A, &mut Window, &mut App) + use<A> {
+            let ui = ui.clone();
+            move |_, _, cx| ui.update(cx, |ui, cx| ui.open(overlay.clone(), cx))
+        }
+        fn split<A: Action>(
+            ui: &Entity<Ui>,
+            direction: SplitDirection,
+        ) -> impl Fn(&A, &mut Window, &mut App) + use<A> {
+            let ui = ui.clone();
+            move |_, _, cx| {
+                ui.update(cx, |ui, cx| {
+                    ui.split_focused(direction, cx);
+                })
+            }
+        }
+        let ui = &self.ui;
+        let (lane_store, project_store) = (self.store.clone(), self.store.clone());
         div()
+            .key_context(keys::CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(open::<Search>(ui, Overlay::Search))
+            .on_action(open::<ShowShortcuts>(ui, Overlay::Shortcuts))
+            .on_action(open::<NewLaneAction>(
+                ui,
+                Overlay::NewLane {
+                    project_id: first_project,
+                    prompt: None,
+                },
+            ))
+            .on_action(move |_: &NewLaneSession, _, cx| {
+                if let Some(lane_id) = active_lane {
+                    lane_store.update(cx, |store, cx| store.new_lane_session(lane_id, cx).detach());
+                }
+            })
+            .on_action(move |_: &AddProject, _, cx| {
+                project_store.update(cx, |store, cx| store.pick_project(cx))
+            })
+            .on_action(split::<SplitVertical>(ui, SplitDirection::Vertical))
+            .on_action(split::<SplitHorizontal>(ui, SplitDirection::Horizontal))
             .relative()
             .flex()
             .flex_col()
