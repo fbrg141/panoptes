@@ -728,7 +728,7 @@ thread_local! {
 }
 
 /// An image from the conversation, decoded once.
-fn decoded(mime_type: &str, data: &str) -> Option<Arc<Image>> {
+pub(crate) fn decoded(mime_type: &str, data: &str) -> Option<Arc<Image>> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     data.hash(&mut hasher);
     let key = hasher.finish();

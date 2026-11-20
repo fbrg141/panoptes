@@ -31,7 +31,7 @@ pub fn list(root: &Path, limit: usize) -> Vec<String> {
 }
 
 /// A file dropped onto the composer.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
     pub name: String,

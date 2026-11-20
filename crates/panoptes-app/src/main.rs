@@ -30,6 +30,7 @@ fn main() {
         .run(move |cx| {
             gpui_kit::init(cx);
             theme::init(cx);
+            views::composer::init(cx);
             let started = match started {
                 Ok(started) => started,
                 Err(error) => {
