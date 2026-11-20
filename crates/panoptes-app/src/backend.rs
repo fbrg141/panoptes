@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use panoptes_core::eventlog::EventLog;
-use panoptes_core::service::{Service, SessionEvent};
+use panoptes_core::service::{Service, ServiceError, SessionEvent};
 use panoptes_core::store::Store;
 use panoptes_harness::Harness;
 use panoptes_pi::PiHarness;
@@ -24,6 +24,8 @@ pub struct Backend {
     service: Arc<Service>,
     /// Harnesses that could not be loaded, and why.
     pub harness_errors: Vec<String>,
+    /// Where the event log is written.
+    pub logs_dir: PathBuf,
 }
 
 pub struct Started {
@@ -66,7 +68,8 @@ impl Backend {
                 }),
             )
         };
-        let log = EventLog::open(&paths.data_dir.join("logs"));
+        let logs_dir = paths.data_dir.join("logs");
+        let log = EventLog::open(&logs_dir);
         log.record(
             "appStarted",
             serde_json::json!({
@@ -82,6 +85,7 @@ impl Backend {
                 runtime,
                 service,
                 harness_errors,
+                logs_dir,
             }),
             events,
         })
@@ -104,6 +108,32 @@ impl Backend {
             answered
                 .await
                 .context("The backend stopped before answering")
+        }
+    }
+
+    /// Runs a fallible service call, recording its error in the event log
+    /// under `command` as the Tauri commands did.
+    pub fn run<F, Fut, T>(
+        &self,
+        command: &'static str,
+        call: F,
+    ) -> impl Future<Output = Result<T, ServiceError>> + 'static
+    where
+        F: FnOnce(Arc<Service>) -> Fut,
+        Fut: Future<Output = Result<T, ServiceError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let service = self.service.clone();
+        let answer = self.call(call);
+        async move {
+            let result = match answer.await {
+                Ok(result) => result,
+                Err(error) => Err(ServiceError::other(format!("{error:#}"))),
+            };
+            if let Err(error) = &result {
+                service.record_error(command, error);
+            }
+            result
         }
     }
 

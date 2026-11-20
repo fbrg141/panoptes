@@ -31,7 +31,12 @@ fn main() {
             .map(|v| v.as_f64().unwrap())
             .collect();
         let pad = 6.0;
-        let view = [b[0] - pad, b[1] - pad, b[2] - b[0] + pad * 2.0, b[3] - b[1] + pad * 2.0];
+        let view = [
+            b[0] - pad,
+            b[1] - pad,
+            b[2] - b[0] + pad * 2.0,
+            b[3] - b[1] + pad * 2.0,
+        ];
         let vb = format!("{} {} {} {}", view[0], view[1], view[2], view[3]);
         let path = |d: &str| {
             format!(
@@ -55,7 +60,9 @@ fn main() {
 
 /// The icon table: `var ICONS = Object.assign({...}, {...});`.
 fn icons(js: &str) -> Vec<(String, Vec<Value>)> {
-    let start = js.find("var ICONS = Object.assign(").expect("ICONS in the bundle")
+    let start = js
+        .find("var ICONS = Object.assign(")
+        .expect("ICONS in the bundle")
         + "var ICONS = Object.assign(".len();
     let mut rest = &js[start..];
     let mut icons = Vec::new();

@@ -62,6 +62,9 @@ pub trait Type: Styled + Sized {
     fn t_code(self) -> Self {
         self.type_style(FONT_MONO, 12.5, 19., FontWeight::NORMAL)
     }
+    fn t_code_strong(self) -> Self {
+        self.type_style(FONT_MONO, 12.5, 19., FontWeight::MEDIUM)
+    }
     fn t_code_sm(self) -> Self {
         self.type_style(FONT_MONO, 11.5, 16., FontWeight::NORMAL)
     }
@@ -70,11 +73,95 @@ pub trait Type: Styled + Sized {
 impl<T: Styled> Type for T {}
 
 /// A Lucide icon at a 1.5px stroke, in the current text colour.
-pub fn icon(name: &str, size: f32) -> Svg {
-    svg()
-        .path(SharedString::from(format!("icons/{name}.svg")))
-        .size(px(size))
-        .flex_none()
+pub fn icon(name: &str, size: f32) -> Icon {
+    Icon(
+        svg()
+            .path(SharedString::from(format!("icons/{name}.svg")))
+            .size(px(size))
+            .flex_none(),
+    )
+}
+
+/// An SVG that takes the surrounding text colour unless given its own, as
+/// `currentColor` does on the web. GPUI's own `Svg` paints only in a colour
+/// set on itself.
+pub struct Icon(Svg);
+
+impl Icon {
+    /// Turned clockwise, as `rotate-90` turns `panel-left` into a top panel.
+    pub fn rotate(self, degrees: f32) -> Self {
+        Icon(
+            self.0
+                .with_transformation(Transformation::rotate(radians(degrees.to_radians()))),
+        )
+    }
+}
+
+impl Styled for Icon {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.0.style()
+    }
+}
+
+impl IntoElement for Icon {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Icon {
+    type RequestLayoutState = <Svg as Element>::RequestLayoutState;
+    type PrepaintState = <Svg as Element>::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        Element::id(&self.0)
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        Element::source_location(&self.0)
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.0.request_layout(id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.0
+            .prepaint(id, inspector_id, bounds, layout, window, cx)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.0.style().text.color.is_none() {
+            self.0.style().text.color = Some(window.text_style().color);
+        }
+        self.0
+            .paint(id, inspector_id, bounds, layout, prepaint, window, cx)
+    }
 }
 
 /// Caption text: 11px, tracked and upper-cased.
@@ -156,6 +243,8 @@ pub struct Button {
     tooltip: Option<SharedString>,
     on_click: Option<ClickHandler>,
     full_width: bool,
+    /// Drawn in place of an icon, such as Stop's filled square.
+    glyph: Option<AnyElement>,
 }
 
 impl Button {
@@ -172,7 +261,12 @@ impl Button {
             tooltip: None,
             on_click: None,
             full_width: false,
+            glyph: None,
         }
+    }
+    pub fn glyph(mut self, glyph: impl IntoElement) -> Self {
+        self.glyph = Some(glyph.into_any_element());
+        self
     }
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
@@ -235,7 +329,7 @@ impl Button {
 impl RenderOnce for Button {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = *cx.palette();
-        let icon_only = self.label.is_none() && self.icon.is_some();
+        let icon_only = self.label.is_none() && (self.icon.is_some() || self.glyph.is_some());
         let (height, pad, gap, font) = match self.size {
             Size::Sm => (CONTROL_SM, 8., 4., 12.),
             Size::Md => (CONTROL, 12., 8., 13.),
@@ -309,9 +403,11 @@ impl RenderOnce for Button {
             el = el.w_full();
         }
         if !self.disabled {
-            el = el
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover_bg).text_color(hover_ink).border_color(hover_border));
+            el = el.cursor_pointer().hover(move |s| {
+                s.bg(hover_bg)
+                    .text_color(hover_ink)
+                    .border_color(hover_border)
+            });
             if let Some(handler) = self.on_click {
                 el = el.on_click(move |event, window, cx| handler(event, window, cx));
             }
@@ -320,6 +416,7 @@ impl RenderOnce for Button {
             el = el.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
         }
         el.children(self.icon.map(|name| icon(name, 16.)))
+            .children(self.glyph)
             .children(self.label.map(|l| div().child(l)))
             .children(self.kbd.map(|keys| {
                 kbd(
@@ -405,7 +502,9 @@ pub fn status_word(status: SessionStatus) -> Option<&'static str> {
 pub fn status_glyph(status: SessionStatus, p: &Palette) -> AnyElement {
     let color = status_color(status, p);
     match status {
-        SessionStatus::Failed => icon("circle-alert", 14.).text_color(color).into_any_element(),
+        SessionStatus::Failed => icon("circle-alert", 14.)
+            .text_color(color)
+            .into_any_element(),
         SessionStatus::Done => icon("check", 14.).text_color(color).into_any_element(),
         SessionStatus::Running => pupil(9.).text_color(color).into_any_element(),
         SessionStatus::Waiting => div()
@@ -460,7 +559,12 @@ pub enum LoopState {
 
 /// The logo, one ink. `width` is the rendered width in px. Thinking moves
 /// the pupils left and right and blinks, as the `glance` motion does.
-pub fn loop_mark(id: impl Into<ElementId>, width: f32, state: LoopState, color: Hsla) -> AnyElement {
+pub fn loop_mark(
+    id: impl Into<ElementId>,
+    width: f32,
+    state: LoopState,
+    color: Hsla,
+) -> AnyElement {
     let (size, geometry) = loop_geometry(width);
     let height = (width as f64 * geometry.aspect).round() as f32;
     let body = svg()
@@ -591,10 +695,12 @@ pub fn tabs(
                 .on_click(move |_, window, cx| on_change(id, window, cx))
                 .children(tab.icon.map(|name| icon(name, 16.)))
                 .child(tab.label)
-                .children(
-                    tab.count
-                        .map(|n| div().t_code_sm().text_color(p.ink_muted).child(n.to_string())),
-                )
+                .children(tab.count.map(|n| {
+                    div()
+                        .t_code_sm()
+                        .text_color(p.ink_muted)
+                        .child(n.to_string())
+                }))
                 .when(on, |el| {
                     el.child(
                         div()
@@ -802,7 +908,9 @@ pub fn checkbox(
                 .border_color(border)
                 .rounded(px(RADIUS_XS))
                 .bg(bg)
-                .when(checked, |el| el.child(icon("check", 14.).text_color(p.on_focus))),
+                .when(checked, |el| {
+                    el.child(icon("check", 14.).text_color(p.on_focus))
+                }),
         )
         .child(
             v_flex_gap(0.)

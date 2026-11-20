@@ -166,21 +166,47 @@ impl PaletteExt for App {
 /// text views match.
 pub fn init(cx: &mut App) {
     let fonts: Vec<std::borrow::Cow<'static, [u8]>> = vec![
-        include_bytes!("../assets/fonts/ibm-plex-sans-latin-400-normal.ttf").as_slice().into(),
-        include_bytes!("../assets/fonts/ibm-plex-sans-latin-500-normal.ttf").as_slice().into(),
-        include_bytes!("../assets/fonts/ibm-plex-sans-latin-600-normal.ttf").as_slice().into(),
-        include_bytes!("../assets/fonts/ibm-plex-mono-latin-400-normal.ttf").as_slice().into(),
-        include_bytes!("../assets/fonts/ibm-plex-mono-latin-500-normal.ttf").as_slice().into(),
-        include_bytes!("../assets/fonts/gloock-latin-400-normal.ttf").as_slice().into(),
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-400-normal.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-500-normal.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../assets/fonts/ibm-plex-sans-latin-600-normal.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../assets/fonts/ibm-plex-mono-latin-400-normal.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../assets/fonts/ibm-plex-mono-latin-500-normal.ttf")
+            .as_slice()
+            .into(),
+        include_bytes!("../assets/fonts/gloock-latin-400-normal.ttf")
+            .as_slice()
+            .into(),
     ];
     if let Err(error) = cx.text_system().add_fonts(fonts) {
         eprintln!("Could not load the design system's fonts: {error:#}");
     }
-    let dark = !matches!(
-        cx.window_appearance(),
-        WindowAppearance::Light | WindowAppearance::VibrantLight
-    );
+    follow(cx.window_appearance(), cx);
+}
+
+/// Applies the palette for a system appearance. `PANOPTES_THEME=light` or
+/// `dark` overrides it, for screenshots on systems that report none.
+pub fn follow(appearance: WindowAppearance, cx: &mut App) {
+    let dark = match std::env::var("PANOPTES_THEME").as_deref() {
+        Ok("dark") => true,
+        Ok("light") => false,
+        _ => !matches!(
+            appearance,
+            WindowAppearance::Light | WindowAppearance::VibrantLight
+        ),
+    };
+    if cx.try_global::<Palette>().is_some_and(|p| p.dark == dark) {
+        return;
+    }
     apply(dark, cx);
+    cx.refresh_windows();
 }
 
 /// Switches the palette, and the component theme with it.

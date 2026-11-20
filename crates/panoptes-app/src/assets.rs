@@ -85,9 +85,25 @@ mod tests {
     #[::core::prelude::v1::test]
     fn serves_every_icon_the_app_uses() {
         for name in [
-            "agent", "search", "command", "settings", "folder", "git-branch", "history", "x",
-            "check", "circle-alert", "chevron-down", "chevron-right", "arrow-up", "copy",
-            "square", "ellipsis", "plus", "lock", "file-diff",
+            "agent",
+            "search",
+            "command",
+            "settings",
+            "folder",
+            "git-branch",
+            "history",
+            "x",
+            "check",
+            "circle-alert",
+            "chevron-down",
+            "chevron-right",
+            "arrow-up",
+            "copy",
+            "square",
+            "ellipsis",
+            "plus",
+            "lock",
+            "file-diff",
         ] {
             let svg = Assets.load(&format!("icons/{name}.svg")).unwrap();
             assert!(svg.is_some(), "missing icon {name}");

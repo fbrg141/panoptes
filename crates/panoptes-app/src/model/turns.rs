@@ -19,6 +19,7 @@ pub struct ToolStep {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     Text {
         key: String,
@@ -414,6 +415,24 @@ pub fn format_duration(ms: i64) -> String {
     format!("{}m {}s", seconds / 60, seconds % 60)
 }
 
+/// A message as plain text: its text blocks, then one line per tool call.
+pub fn plain_text(message: &Message) -> String {
+    message
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+            Block::ToolCall(call) => Some(match &call.subject {
+                Some(subject) => format!("{} {subject}", call.name),
+                None => call.name.clone(),
+            }),
+            _ => None,
+        })
+        .chain(message.error.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,22 +776,4 @@ mod tests {
             .collect();
         assert_eq!(formatted, ["0.4s", "8s", "1m 12s"]);
     }
-}
-
-/// A message as plain text: its text blocks, then one line per tool call.
-pub fn plain_text(message: &Message) -> String {
-    message
-        .blocks
-        .iter()
-        .filter_map(|b| match b {
-            Block::Text { text } if !text.trim().is_empty() => Some(text.clone()),
-            Block::ToolCall(call) => Some(match &call.subject {
-                Some(subject) => format!("{} {subject}", call.name),
-                None => call.name.clone(),
-            }),
-            _ => None,
-        })
-        .chain(message.error.clone())
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }

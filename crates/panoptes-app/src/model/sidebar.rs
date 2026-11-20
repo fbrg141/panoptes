@@ -97,7 +97,9 @@ pub fn lane_resume_sessions(sessions: &[Session]) -> Vec<Session> {
 pub enum EmptyLane {
     Startable,
     /// Another session that edited the lane is still Running or Waiting.
-    Busy { writer: String },
+    Busy {
+        writer: String,
+    },
 }
 
 pub fn empty_lane(lane: &Lane, navigation: Option<&LaneNavigation>) -> Option<EmptyLane> {
@@ -190,7 +192,11 @@ pub fn project_menu_items(lane_count: usize) -> Vec<MenuEntry> {
 pub fn lane_menu_items(lane: &Lane) -> Vec<MenuEntry> {
     let mut items = Vec::new();
     if lane.state == LaneState::Active {
-        items.push(MenuEntry::item("new-session", "New session (/new)", Some("plus")));
+        items.push(MenuEntry::item(
+            "new-session",
+            "New session (/new)",
+            Some("plus"),
+        ));
         items.push(MenuEntry::item(
             "resume-session",
             "Resume session (/resume)…",
@@ -199,7 +205,11 @@ pub fn lane_menu_items(lane: &Lane) -> Vec<MenuEntry> {
         items.push(MenuEntry::Separator);
         items.push(MenuEntry::item("archive-lane", "Archive lane", Some("x")));
     } else {
-        items.push(MenuEntry::item("restore-lane", "Restore lane", Some("rotate-ccw")));
+        items.push(MenuEntry::item(
+            "restore-lane",
+            "Restore lane",
+            Some("rotate-ccw"),
+        ));
     }
     items.push(MenuEntry::Separator);
     items.push(MenuEntry::Item {
@@ -213,7 +223,11 @@ pub fn lane_menu_items(lane: &Lane) -> Vec<MenuEntry> {
 }
 
 /// A session row's menu: adopt, stop, archive.
-pub fn session_menu_items(session: &Session, adoptable: bool, lane_actions: bool) -> Vec<MenuEntry> {
+pub fn session_menu_items(
+    session: &Session,
+    adoptable: bool,
+    lane_actions: bool,
+) -> Vec<MenuEntry> {
     let mut items = Vec::new();
     if adoptable {
         items.push(MenuEntry::item("adopt", "Adopt into lane", None));
@@ -224,7 +238,11 @@ pub fn session_menu_items(session: &Session, adoptable: bool, lane_actions: bool
     if lane_actions && session.lane_id.is_some() {
         items.push(MenuEntry::item(
             "archive",
-            if session.archived { "Unarchive" } else { "Archive" },
+            if session.archived {
+                "Unarchive"
+            } else {
+                "Archive"
+            },
             None,
         ));
     }
@@ -276,7 +294,10 @@ pub(crate) mod tests {
         s.message_count = 3;
         assert_eq!(session_detail(&s, None), "3 messages");
         s.archived = true;
-        assert_eq!(session_detail(&s, Some("Proj / task")), "Archived · Proj / task");
+        assert_eq!(
+            session_detail(&s, Some("Proj / task")),
+            "Archived · Proj / task"
+        );
         assert!(is_live(SessionStatus::Failed));
         assert!(!is_live(SessionStatus::Done));
     }
@@ -308,13 +329,19 @@ pub(crate) mod tests {
         earlier.id = Some(2);
         earlier.lane_id = Some(7);
         let list = vec![live.clone(), earlier.clone()];
-        assert_eq!(lane_session_to_stop(&earlier, &list).unwrap().key, "panoptes:1");
+        assert_eq!(
+            lane_session_to_stop(&earlier, &list).unwrap().key,
+            "panoptes:1"
+        );
         assert!(lane_session_to_stop(&live, &list).is_none());
     }
 
     #[test]
     fn empty_lanes_start_or_wait_for_the_writer() {
-        assert_eq!(empty_lane(&lane(LaneState::Active), None), Some(EmptyLane::Startable));
+        assert_eq!(
+            empty_lane(&lane(LaneState::Active), None),
+            Some(EmptyLane::Startable)
+        );
         assert_eq!(empty_lane(&lane(LaneState::Archived), None), None);
         let nav = LaneNavigation {
             lane_id: 1,
@@ -341,7 +368,10 @@ pub(crate) mod tests {
             changed_files,
             commits_ahead,
         };
-        assert_eq!(work_label(Some(&work(0, Some(0)))).unwrap(), "No changes yet");
+        assert_eq!(
+            work_label(Some(&work(0, Some(0)))).unwrap(),
+            "No changes yet"
+        );
         assert_eq!(
             work_label(Some(&work(6, Some(2)))).unwrap(),
             "6 files changed · 2 commits ahead"
@@ -371,6 +401,9 @@ pub(crate) mod tests {
         let mut s = session("k");
         s.open = true;
         s.lane_id = Some(1);
-        assert_eq!(ids(session_menu_items(&s, true, true)), ["adopt", "stop", "archive"]);
+        assert_eq!(
+            ids(session_menu_items(&s, true, true)),
+            ["adopt", "stop", "archive"]
+        );
     }
 }

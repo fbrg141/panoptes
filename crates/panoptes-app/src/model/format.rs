@@ -1,6 +1,8 @@
 //! Small text formats shared by the views. Ports of `formatTokens`
 //! (`composer.ts`) and `relativeTime` (`grouping.ts`).
 
+use chrono::{Datelike as _, TimeZone as _};
+
 /// "950", "1.3k", "42k", "1.2M".
 pub fn format_tokens(n: u64) -> String {
     fn short(value: f64, unit: &str) -> String {
@@ -39,25 +41,21 @@ pub fn relative_time(ms: i64, now: i64) -> String {
     local_date(ms)
 }
 
-/// A short date, as `toLocaleDateString` gives it in an English locale.
+/// A short date in the local time zone, as `toLocaleDateString` gives it
+/// in an English locale.
 pub fn local_date(ms: i64) -> String {
-    let days = ms.div_euclid(86_400_000);
-    let (year, month, day) = civil_from_days(days);
-    format!("{month}/{day}/{year}")
+    match chrono::Local.timestamp_millis_opt(ms).single() {
+        Some(t) => format!("{}/{}/{}", t.month(), t.day(), t.year()),
+        None => String::new(),
+    }
 }
 
-/// Days since 1970-01-01 to (year, month, day), proleptic Gregorian.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
+/// "14:05": a time of day in the local time zone, for turn footers.
+pub fn local_time(ms: i64) -> String {
+    match chrono::Local.timestamp_millis_opt(ms).single() {
+        Some(t) => t.format("%H:%M").to_string(),
+        None => String::new(),
+    }
 }
 
 /// Unix milliseconds now.
@@ -91,6 +89,7 @@ mod tests {
         assert_eq!(relative_time(now - 10_000, now), "just now");
         assert_eq!(relative_time(now - 12 * 60_000, now), "12m ago");
         assert_eq!(relative_time(now - 3 * 86_400_000, now), "3d ago");
-        assert_eq!(local_date(0), "1/1/1970");
+        assert!(local_date(0).ends_with("/1970") || local_date(0).ends_with("/1969"));
+        assert_eq!(local_time(0).len(), 5);
     }
 }

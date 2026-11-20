@@ -3,6 +3,7 @@
 pub mod conversation;
 pub mod diff;
 pub mod format;
+pub mod panes;
+pub mod sidebar;
 pub mod turns;
 pub mod usage;
-pub mod sidebar;
