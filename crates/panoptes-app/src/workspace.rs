@@ -21,6 +21,7 @@ use crate::views::jump::{Jump, JumpKind};
 use crate::views::lane_dialogs::LaneDialogs;
 use crate::views::new_lane::NewLane;
 use crate::views::resume::ResumeSession;
+use crate::views::settings::Settings;
 use crate::views::shortcuts::{
     self as keys, AddProject, NewLane as NewLaneAction, NewLaneSession, Search, Shortcuts,
     ShowShortcuts, SplitHorizontal, SplitVertical,
@@ -128,7 +129,7 @@ impl Workspace {
                     cx.new(|cx| Jump::new(kind, store, ui, window, cx)).into()
                 }
                 Overlay::Shortcuts => cx.new(|cx| Shortcuts::new(ui, window, cx)).into(),
-                _ => return None,
+                Overlay::Settings => cx.new(|cx| Settings::new(store, ui, window, cx)).into(),
             };
             Some((overlay, view))
         });

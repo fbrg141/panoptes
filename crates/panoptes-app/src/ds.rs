@@ -946,6 +946,35 @@ pub fn input_frame(focused: bool, error: bool, p: &Palette) -> Div {
         .text_color(p.ink_muted)
 }
 
+/// A labelled single-line field with a hint or an error under it: the
+/// design system's `Input` with `label`, `hint` and `error`.
+pub fn text_field(
+    label: impl Into<SharedString>,
+    field: impl IntoElement,
+    focused: bool,
+    error: Option<SharedString>,
+    hint: Option<SharedString>,
+    p: &Palette,
+) -> Div {
+    let failed = error.is_some();
+    let message = error.clone().or(hint);
+    v_flex_gap(4.)
+        .min_w_0()
+        .child(field_label(label, p))
+        .child(
+            input_frame(focused, failed, p)
+                .h(px(CONTROL))
+                .child(div().flex_1().min_w_0().child(field)),
+        )
+        .children(message.map(|message| {
+            h_flex_gap(4.)
+                .t_small()
+                .text_color(if failed { p.error } else { p.ink_muted })
+                .when(failed, |el| el.child(icon("circle-alert", 14.)))
+                .child(message)
+        }))
+}
+
 // --- Overlay ---------------------------------------------------------------
 
 /// The window's modal layer: a scrim, and the content near the top like a
