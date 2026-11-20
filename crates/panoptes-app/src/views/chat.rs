@@ -1,18 +1,22 @@
 //! One pane's session: header, transcript, notices, the cards waiting for an
 //! answer, and the composer. Port of `ChatPane.tsx`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use gpui_kit::component::input::InputEvent;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use panoptes_harness::{Approval, NoticeLevel, SessionStatus};
+use panoptes_harness::{Answer, Approval, NoticeLevel, SessionStatus};
 
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark, status_pill};
+use crate::model::format::now_ms;
 use crate::model::panes::SplitDirection;
 use crate::model::turns::{build_turns, loose_approvals};
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::Ui;
+use crate::views::cards::{QuestionField, approval_card, question_card};
 use crate::views::composer::{Composer, ComposerEvent};
 use crate::views::turn::{Ctx, OnCopy, OnToggle, OnUnclamp, ViewState, turn_view};
 
@@ -33,6 +37,10 @@ pub struct ChatPane {
     pinned: bool,
     /// How many messages the transcript had when last drawn.
     seen: usize,
+    /// The text fields of questions waiting for an answer, by question id.
+    fields: HashMap<String, QuestionField>,
+    /// The expiry a redraw is already waiting for.
+    expiry_timer: Option<i64>,
 }
 
 impl ChatPane {
@@ -67,6 +75,8 @@ impl ChatPane {
             shown: PAGE,
             pinned: true,
             seen: 0,
+            fields: HashMap::new(),
+            expiry_timer: None,
         }
     }
 
@@ -175,7 +185,8 @@ impl ChatPane {
 }
 
 impl Render for ChatPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_fields(window, cx);
         let p = *cx.palette();
         let ui = self.ui.read(cx);
         let focused = ui
@@ -250,7 +261,8 @@ impl Render for ChatPane {
                 });
             })
         };
-        let approval = |a: &Approval| approval_placeholder(a, &p);
+        let (card_store, card_key) = (self.store.clone(), self.key.clone());
+        let approval = |a: &Approval| approval_card(a, false, &card_key, &card_store, &p);
         let ctx = Ctx {
             p: &p,
             view: &self.view,
@@ -422,16 +434,15 @@ impl Render for ChatPane {
             .pb(px(16.))
             .pt(px(8.))
             .children(questions.iter().map(|q| {
-                div()
-                    .mx_auto()
-                    .mb(px(12.))
-                    .w_full()
-                    .max_w(px(768.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(p.line)
-                    .p(px(12.))
-                    .child(q.title.clone())
+                question_card(
+                    q,
+                    self.fields.get(&q.id),
+                    &self.key,
+                    &self.store,
+                    &p,
+                    window,
+                    cx,
+                )
             }))
             .children(loose.iter().map(|a| {
                 div()
@@ -439,7 +450,7 @@ impl Render for ChatPane {
                     .mb(px(12.))
                     .w_full()
                     .max_w(px(768.))
-                    .child(approval_placeholder(a, &p))
+                    .child(approval_card(a, true, &self.key, &self.store, &p))
             }))
             .when(status == SessionStatus::Running, |el| {
                 el.child(
@@ -525,21 +536,61 @@ impl Render for ChatPane {
 }
 
 impl ChatPane {
+    /// Keeps a text field for each waiting question that asks for text, and
+    /// redraws when the soonest card expires.
+    fn sync_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conversation) = self.store.read(cx).state.conversations.get(&self.key) else {
+            self.fields.clear();
+            return;
+        };
+        let questions = conversation.questions.clone();
+        let expiries: Vec<i64> = questions
+            .iter()
+            .filter_map(|q| q.expires_at)
+            .chain(conversation.approvals.iter().filter_map(|a| a.expires_at))
+            .collect();
+        self.fields
+            .retain(|id, _| questions.iter().any(|q| &q.id == id));
+        for question in &questions {
+            if self.fields.contains_key(&question.id) {
+                continue;
+            }
+            let Some(field) = QuestionField::new(question, window, cx) else {
+                continue;
+            };
+            if let QuestionField::Line(state) = &field {
+                let (store, key, id) = (self.store.clone(), self.key.clone(), question.id.clone());
+                cx.subscribe(state, move |_, state, event, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        let value = state.read(cx).value().to_string();
+                        let (key, id) = (key.clone(), id.clone());
+                        store.update(cx, |store, cx| {
+                            store.answer(id, Answer::Value { value }, Some(key), cx)
+                        });
+                    }
+                })
+                .detach();
+            }
+            self.fields.insert(question.id.clone(), field);
+        }
+        let now = now_ms();
+        if let Some(next) = expiries.into_iter().filter(|at| *at > now).min()
+            && self.expiry_timer != Some(next)
+        {
+            self.expiry_timer = Some(next);
+            let wait = std::time::Duration::from_millis((next - now) as u64);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+    }
+
     fn follow_after_scroll(&mut self) {
         // Offsets are negative going down.
         let offset = self.scroll.offset();
         let max = self.scroll.max_offset();
         self.pinned = (max.y + offset.y).abs() < px(24.);
     }
-}
-
-/// Stands in for the approval card until it is ported.
-fn approval_placeholder(approval: &Approval, p: &Palette) -> AnyElement {
-    div()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(p.waiting)
-        .p(px(12.))
-        .child(approval.title.clone())
-        .into_any_element()
 }
