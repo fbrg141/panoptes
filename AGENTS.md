@@ -11,16 +11,18 @@ this way.
 |---|---|
 | `crates/panoptes-harness` | The neutral interface: `Harness` and `AgentSession` traits, `HarnessEvent`, `Message`, `Block`, `Question` |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `src-tauri/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
-| `src-tauri/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
-| `src-tauri/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
-| `src-tauri/src/changes.rs` | Read-only tree diffs: lane file lists, totals and lazily loaded hunks |
-| `src-tauri/src/cleanup.rs` | On-demand worktree disk usage and safe idle-lane suggestions |
-| `src-tauri/src/git.rs` | Bounded Git process execution, including descendants and large output |
-| `src-tauri/src/projects.rs` | Which git repository a folder belongs to (worktrees included), a new project's defaults, and the rules its settings follow |
-| `src-tauri/src/lib.rs` | Thin Tauri commands over the service, and nothing else |
-| `src-tauri/src/eventlog.rs` | The local event log for evaluating the app: one JSON line per event, never prompt or file contents |
-| `src-tauri/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
+| `crates/panoptes-core` | The backend with no UI dependency, shared by the Tauri app and the GPUI app to come ([#222](https://github.com/fbrg141/panoptes/issues/222)) |
+| `crates/panoptes-core` | The backend with no UI dependency, shared by the Tauri app and the GPUI app to come ([#222](https://github.com/fbrg141/panoptes/issues/222)) |
+| `crates/panoptes-core/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
+| `crates/panoptes-core/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
+| `crates/panoptes-core/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
+| `crates/panoptes-core/src/changes.rs` | Read-only tree diffs: lane file lists, totals and lazily loaded hunks |
+| `crates/panoptes-core/src/cleanup.rs` | On-demand worktree disk usage and safe idle-lane suggestions |
+| `crates/panoptes-core/src/git.rs` | Bounded Git process execution, including descendants and large output |
+| `crates/panoptes-core/src/projects.rs` | Which git repository a folder belongs to (worktrees included), a new project's defaults, and the rules its settings follow |
+| `src-tauri/src/lib.rs` | Thin Tauri commands over `panoptes-core`'s service, and nothing else |
+| `crates/panoptes-core/src/eventlog.rs` | The local event log for evaluating the app: one JSON line per event, never prompt or file contents |
+| `crates/panoptes-core/src/files.rs` | Workspace file listing for @-mentions, and reading dropped files |
 | `src/conversation.ts` | Pure reducer: harness events to conversation state |
 | `src/composer.ts` | Pure composer logic: mention parsing, fuzzy file matching, labels |
 | `src/turns.ts` | Pure transcript logic: messages to turns, tool rows and folded-work summaries (with `diff.ts` and `markdown.ts`) |
@@ -41,7 +43,7 @@ use that the observation log records ([backlog](docs/backlog.md#intake-until-the
 
 - **Harness details stay inside their adapter.** Nothing Pi-specific (its
   event names, entry format, CLI flags, file layout) may appear in
-  `panoptes-harness`, `src-tauri` or `src/`. If the UI needs something new,
+  `panoptes-harness`, `panoptes-core`, `src-tauri` or `src/`. If the UI needs something new,
   add a neutral type to `panoptes-harness` and map it in the adapter. A
   feature only one harness has travels as `HarnessEvent::Raw` until it earns
   a neutral type.

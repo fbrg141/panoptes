@@ -1,22 +1,11 @@
-//! Tauri shell: loads the harnesses and exposes [`service::Service`] to the
-//! UI as commands, with session events emitted as `session-event`.
-
-mod changes;
-mod cleanup;
-mod eventlog;
-mod files;
-mod git;
-mod lanes;
-mod projects;
-mod service;
-mod shell_path;
-mod store;
-mod writes;
+//! Tauri shell: loads the harnesses and exposes `panoptes_core`'s
+//! [`service::Service`] to the UI as commands, with session events emitted as `session-event`.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
+use panoptes_core::{changes, cleanup, eventlog, files, git, lanes, service, shell_path, store};
 use panoptes_harness::{
     Answer, CommandInfo, Harness, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
     SessionSettings,

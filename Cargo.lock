@@ -2492,19 +2492,31 @@ name = "panoptes"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "base64 0.23.1",
- "ignore",
- "libc",
+ "panoptes-core",
  "panoptes-harness",
  "panoptes-pi",
- "rusqlite",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tokio",
+]
+
+[[package]]
+name = "panoptes-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "ignore",
+ "libc",
+ "panoptes-harness",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

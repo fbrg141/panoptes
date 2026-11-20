@@ -1,0 +1,23 @@
+[package]
+name = "panoptes-core"
+description = "The Panoptes backend: the service over open sessions, the store, lanes, changes and cleanup, with no UI dependency"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+panoptes-harness.workspace = true
+ignore = "0.4"
+base64 = "0.23"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+libc = "0.2"
+
+[dev-dependencies]
+async-trait.workspace = true
+tempfile = "3"
