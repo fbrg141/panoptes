@@ -1,0 +1,646 @@
+//! One pane's session: header, transcript, notices, the cards waiting for an
+//! answer, and the composer. Port of `ChatPane.tsx`.
+
+use std::sync::Arc;
+
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::prelude::*;
+use gpui_kit::*;
+use panoptes_harness::{Approval, NoticeLevel, SessionStatus};
+
+use crate::ds::{Button, LoopState, Type as _, icon, loop_mark, status_pill};
+use crate::model::panes::SplitDirection;
+use crate::model::turns::{build_turns, loose_approvals};
+use crate::store::AppStore;
+use crate::theme::{Palette, PaletteExt as _};
+use crate::ui::Ui;
+use crate::views::turn::{Ctx, OnCopy, OnToggle, OnUnclamp, ViewState, turn_view};
+
+/// Turns rendered at first; earlier ones load on request.
+const PAGE: usize = 50;
+const PERMISSION_INSTALL_URL: &str =
+    "https://www.npmjs.com/package/pi-permission-system#installation";
+
+pub struct ChatPane {
+    pub key: String,
+    store: Entity<AppStore>,
+    ui: Entity<Ui>,
+    composer: Entity<TextareaState>,
+    scroll: ScrollHandle,
+    view: ViewState,
+    shown: usize,
+    /// Follow new output while at the bottom; stop once scrolled up.
+    pinned: bool,
+    /// How many messages the transcript had when last drawn.
+    seen: usize,
+}
+
+impl ChatPane {
+    pub fn new(
+        key: String,
+        store: Entity<AppStore>,
+        ui: Entity<Ui>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.observe(&store, |this, _, cx| {
+            this.follow();
+            cx.notify();
+        })
+        .detach();
+        cx.observe(&ui, |_, _, cx| cx.notify()).detach();
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Message the agent, @ for files, / for commands")
+                .auto_grow(1, 12)
+        });
+        cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
+            if let InputEvent::PressEnter {
+                shift: false,
+                secondary,
+            } = event
+            {
+                this.send(*secondary, window, cx);
+            }
+        })
+        .detach();
+        let scroll = ScrollHandle::new();
+        scroll.scroll_to_bottom();
+        Self {
+            key,
+            store,
+            ui,
+            composer,
+            scroll,
+            view: ViewState::default(),
+            shown: PAGE,
+            pinned: true,
+            seen: 0,
+        }
+    }
+
+    /// Keeps the end in view while pinned there.
+    fn follow(&mut self) {
+        if self.pinned {
+            self.scroll.scroll_to_bottom();
+        }
+    }
+
+    fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
+        self.scroll.scroll_to_bottom();
+        self.pinned = true;
+        cx.notify();
+    }
+
+    fn send(&mut self, queue: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let key = self.key.clone();
+        let sent = self
+            .store
+            .update(cx, |store, cx| store.send(key, text, Vec::new(), queue, cx));
+        let composer = self.composer.clone();
+        let draft = composer.read(cx).value().to_string();
+        composer.update(cx, |c, cx| c.set_value("", window, cx));
+        self.scroll_to_end(cx);
+        cx.spawn_in(window, async move |_, cx| {
+            // A prompt the harness did not take goes back into the composer.
+            if !sent.await {
+                let _ = composer.update_in(cx, |c, window, cx| {
+                    if c.value().is_empty() {
+                        c.set_value(draft, window, cx);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn render_header(
+        &self,
+        focused: bool,
+        can_close: bool,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let state = &self.store.read(cx).state;
+        let status = state.status(&self.key);
+        let session = state.session(&self.key);
+        let title = session
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "Session".into());
+        let ui = self.ui.clone();
+        let split = move |direction: SplitDirection| {
+            let ui = ui.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                ui.update(cx, |ui, cx| {
+                    ui.split_focused(direction, cx);
+                })
+            }
+        };
+        let pane_id = self
+            .ui
+            .read(cx)
+            .layout
+            .session_pane(&self.key)
+            .map(|p| p.id.clone());
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(8.))
+            .h(px(38.))
+            .px(px(12.))
+            .border_b_1()
+            .border_color(if focused { p.line_strong } else { p.line })
+            .when(status == SessionStatus::Running, |el| {
+                el.child(loop_mark("pane-running", 20., LoopState::Thinking, p.ink))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .t_body_strong()
+                    .child(title),
+            )
+            .when(status != SessionStatus::Idle, |el| {
+                el.child(status_pill(status, p))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .child(
+                        Button::new("split-vertical")
+                            .ghost()
+                            .small()
+                            .icon("panel-left")
+                            .tooltip("Split vertically (⌘D)")
+                            .on_click(split(SplitDirection::Vertical)),
+                    )
+                    .child(
+                        Button::new("split-horizontal")
+                            .ghost()
+                            .small()
+                            .glyph(icon("panel-left", 16.).rotate(90.))
+                            .tooltip("Split horizontally (⌘⇧D)")
+                            .on_click(split(SplitDirection::Horizontal)),
+                    )
+                    .when(can_close, |el| {
+                        let ui = self.ui.clone();
+                        el.child(
+                            Button::new("close-pane")
+                                .ghost()
+                                .small()
+                                .icon("x")
+                                .tooltip("Close pane")
+                                .on_click(move |_, _, cx| {
+                                    if let Some(pane_id) = &pane_id {
+                                        ui.update(cx, |ui, cx| ui.close_pane(pane_id, cx));
+                                    }
+                                }),
+                        )
+                    }),
+            )
+    }
+
+    fn render_composer(
+        &self,
+        busy: bool,
+        sending: bool,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let empty = self.composer.read(cx).value().trim().is_empty();
+        let this = cx.entity().downgrade();
+        let store = self.store.clone();
+        let key = self.key.clone();
+        div()
+            .relative()
+            .mx_auto()
+            .flex()
+            .flex_col()
+            .w_full()
+            .max_w(px(768.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(p.line)
+            .bg(p.surface_raised)
+            .child(
+                div()
+                    .px(px(4.))
+                    .pt(px(4.))
+                    .child(Textarea::new(&self.composer).appearance(false)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .px(px(8.))
+                    .pb(px(8.))
+                    .child(
+                        Button::new("attach")
+                            .ghost()
+                            .small()
+                            .icon("plus")
+                            .tooltip("Attach files"),
+                    )
+                    .child(div().flex_1())
+                    .child(if busy {
+                        Button::new("stop")
+                            .icon("square")
+                            .tooltip("Stop (Esc)")
+                            .on_click(move |_, _, cx| {
+                                let key = key.clone();
+                                store.update(cx, |store, cx| store.abort(key, cx));
+                            })
+                    } else {
+                        Button::new("send")
+                            .primary()
+                            .icon("arrow-up")
+                            .disabled(empty || sending)
+                            .tooltip("Send (Enter)")
+                            .on_click(move |_, window, cx| {
+                                let _ = this.update(cx, |this, cx| this.send(false, window, cx));
+                            })
+                    }),
+            )
+    }
+}
+
+impl Render for ChatPane {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *cx.palette();
+        let ui = self.ui.read(cx);
+        let focused = ui
+            .layout
+            .find(&ui.focused_pane)
+            .is_some_and(|pane| pane.session_key.as_deref() == Some(self.key.as_str()));
+        let can_close = ui.layout.leaves().len() > 1;
+        let state = &self.store.read(cx).state;
+        let conversation = state.conversations.get(&self.key);
+        let open_error = state.open_errors.get(&self.key).cloned();
+        let unguarded = state
+            .unguarded_tools
+            .get(&self.key)
+            .copied()
+            .unwrap_or(false);
+        let warning = unguarded && !state.preferences.permission_warning_dismissed;
+        let status = state.status(&self.key);
+        let sending = state.sending.contains(&self.key);
+        let session = state.session(&self.key).cloned();
+        let turns = conversation.map(build_turns).unwrap_or_default();
+        let busy = conversation.is_some_and(|c| c.busy);
+        let notices = conversation.map(|c| c.notices.clone()).unwrap_or_default();
+        let exited = conversation.and_then(|c| c.exited.clone());
+        let questions = conversation
+            .map(|c| c.questions.clone())
+            .unwrap_or_default();
+        let loose = conversation.map(loose_approvals).unwrap_or_default();
+        let has_conversation = conversation.is_some();
+        let args_text = conversation
+            .map(|c| c.args_text.clone())
+            .unwrap_or_default();
+        let messages = conversation.map_or(0, |c| c.messages.len());
+        let behind = !self.pinned && messages > self.seen;
+        if self.pinned {
+            self.seen = messages;
+        }
+
+        let this = cx.entity().downgrade();
+        let on_toggle: OnToggle = {
+            let this = this.clone();
+            Arc::new(move |id, open, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.view.toggled.insert(id, open);
+                    cx.notify();
+                });
+            })
+        };
+        let on_unclamp: OnUnclamp = {
+            let this = this.clone();
+            Arc::new(move |id, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.view.unclamped.insert(id);
+                    cx.notify();
+                });
+            })
+        };
+        let on_copy: OnCopy = {
+            let this = this.clone();
+            Arc::new(move |key, text, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                let _ = this.update(cx, |this, cx| {
+                    this.view.copied = Some(key);
+                    cx.notify();
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(1500))
+                            .await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.view.copied = None;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                });
+            })
+        };
+        let approval = |a: &Approval| approval_placeholder(a, &p);
+        let ctx = Ctx {
+            p: &p,
+            view: &self.view,
+            args_text: &args_text,
+            on_toggle,
+            on_unclamp,
+            on_copy,
+            approval: &approval,
+        };
+        let hidden = turns.len().saturating_sub(self.shown);
+
+        let mut transcript = div()
+            .mx_auto()
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .w_full()
+            .max_w(px(768.));
+        if !has_conversation {
+            transcript = transcript.child(match &open_error {
+                Some(error) => {
+                    let store = self.store.clone();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .text_color(p.error)
+                                .child(icon("circle-alert", 16.))
+                                .child(div().t_body_strong().child("Could not start the agent")),
+                        )
+                        .child(div().text_color(p.ink_muted).child(error.clone()))
+                        .child(
+                            Button::new("retry-open")
+                                .small()
+                                .icon("refresh-cw")
+                                .label("Try again")
+                                .disabled(session.is_none())
+                                .on_click(move |_, _, cx| {
+                                    if let Some(session) = &session {
+                                        store.update(cx, |store, cx| {
+                                            store.open(session, cx).detach()
+                                        });
+                                    }
+                                }),
+                        )
+                        .into_any_element()
+                }
+                None => div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .text_color(p.ink_muted)
+                    .child(loop_mark("starting", 20., LoopState::Thinking, p.ink_muted))
+                    .child("Starting the agent…")
+                    .into_any_element(),
+            });
+        }
+        if hidden > 0 {
+            let this = this.clone();
+            transcript = transcript.child(
+                div().flex().justify_center().child(
+                    Button::new("earlier")
+                        .ghost()
+                        .small()
+                        .label(format!(
+                            "Show {} earlier turns ({hidden} hidden)",
+                            PAGE.min(hidden)
+                        ))
+                        .on_click(move |_, _, cx| {
+                            let _ = this.update(cx, |this, cx| {
+                                this.shown += PAGE;
+                                cx.notify();
+                            });
+                        }),
+                ),
+            );
+        }
+        transcript = transcript.children(turns[hidden..].iter().map(|t| turn_view(t, &ctx)));
+
+        let scroller = div()
+            .id(SharedString::from(format!("transcript-{}", self.key)))
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .on_scroll(cx.listener(|this, _: &ScrollEvent, _, cx| {
+                this.follow_after_scroll();
+                cx.notify();
+            }))
+            .px(px(16.))
+            .py(px(24.))
+            .child(transcript);
+
+        let jump = behind.then(|| {
+            let this = this.clone();
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(8.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .rounded(px(4.))
+                        .bg(p.surface_raised)
+                        .shadow(p.shadow_pop())
+                        .child(
+                            Button::new("jump")
+                                .small()
+                                .icon("chevron-down")
+                                .label("Jump to latest")
+                                .kbd(vec!["⌘", "↓"])
+                                .on_click(move |_, _, cx| {
+                                    let _ = this.update(cx, |this, cx| this.scroll_to_end(cx));
+                                }),
+                        ),
+                )
+        });
+
+        let warning_bar = warning.then(|| {
+            let store = self.store.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .border_b_1()
+                .border_color(p.line)
+                .bg(p.waiting_soft)
+                .px(px(16.))
+                .py(px(8.))
+                .text_color(p.waiting)
+                .child(icon("circle-alert", 16.).flex_none())
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .child("No permission extension installed: bash, edit and write run without asking.")
+                        .child(
+                            div()
+                                .id("permission-link")
+                                .underline()
+                                .cursor_pointer()
+                                .t_code()
+                                .child("pi install npm:pi-permission-system")
+                                .on_click(|_, _, cx| cx.open_url(PERMISSION_INSTALL_URL)),
+                        ),
+                )
+                .child(
+                    Button::new("dismiss-permission")
+                        .ghost()
+                        .small()
+                        .icon("x")
+                        .on_click(move |_, _, cx| {
+                            store.update(cx, |store, cx| store.dismiss_permission_warning(cx))
+                        }),
+                )
+        });
+
+        let bottom = div()
+            .px(px(16.))
+            .pb(px(16.))
+            .pt(px(8.))
+            .children(questions.iter().map(|q| {
+                div()
+                    .mx_auto()
+                    .mb(px(12.))
+                    .w_full()
+                    .max_w(px(768.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(p.line)
+                    .p(px(12.))
+                    .child(q.title.clone())
+            }))
+            .children(loose.iter().map(|a| {
+                div()
+                    .mx_auto()
+                    .mb(px(12.))
+                    .w_full()
+                    .max_w(px(768.))
+                    .child(approval_placeholder(a, &p))
+            }))
+            .when(status == SessionStatus::Running, |el| {
+                el.child(
+                    div()
+                        .mx_auto()
+                        .flex()
+                        .w_full()
+                        .max_w(px(768.))
+                        .items_center()
+                        .gap(px(8.))
+                        .pb(px(4.))
+                        .text_color(p.running)
+                        .child(loop_mark(
+                            "composer-running",
+                            16.,
+                            LoopState::Thinking,
+                            p.running,
+                        ))
+                        .child("Running"),
+                )
+            })
+            .child(self.render_composer(busy, sending, &p, cx));
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .bg(p.bg)
+            .text_color(p.ink)
+            .t_body()
+            .child(self.render_header(focused, can_close, &p, cx))
+            .children(warning_bar)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(scroller)
+                    .children(jump),
+            )
+            .children(notices.iter().map(|notice| {
+                let (bg, ink) = match notice.level {
+                    NoticeLevel::Error => (Some(p.error_soft), p.error),
+                    NoticeLevel::Warning => (Some(p.waiting_soft), p.waiting),
+                    NoticeLevel::Info => (None, p.ink_muted),
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .border_t_1()
+                    .border_color(p.line)
+                    .px(px(16.))
+                    .py(px(4.))
+                    .when_some(bg, |el, bg| el.bg(bg))
+                    .text_color(ink)
+                    .when(notice.level != NoticeLevel::Info, |el| {
+                        el.child(icon("circle-alert", 14.))
+                    })
+                    .child(notice.text.clone())
+            }))
+            .children(exited.map(|_| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .border_t_1()
+                    .border_color(p.line)
+                    .bg(p.error_soft)
+                    .px(px(16.))
+                    .py(px(4.))
+                    .text_color(p.error)
+                    .child(icon("circle-alert", 14.))
+                    .child("The agent process stopped. Send a message to restart it.")
+            }))
+            .child(bottom)
+    }
+}
+
+impl ChatPane {
+    fn follow_after_scroll(&mut self) {
+        // Offsets are negative going down.
+        let offset = self.scroll.offset();
+        let max = self.scroll.max_offset();
+        self.pinned = (max.y + offset.y).abs() < px(24.);
+    }
+}
+
+/// Stands in for the approval card until it is ported.
+fn approval_placeholder(approval: &Approval, p: &Palette) -> AnyElement {
+    div()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(p.waiting)
+        .p(px(12.))
+        .child(approval.title.clone())
+        .into_any_element()
+}
