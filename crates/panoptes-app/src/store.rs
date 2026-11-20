@@ -1,4 +1,4 @@
-//! The app's state and every call to the backend: a port of `store.ts`.
+//! The app's state and every call to the backend.
 //!
 //! [`State`] is the plain data and the rules for changing it, testable
 //! without a window or a backend. [`AppStore`] is the GPUI entity that owns
@@ -26,7 +26,7 @@ use crate::backend::Backend;
 use crate::model::conversation::Conversation;
 use crate::model::format::now_ms;
 
-/// A composer draft kept for a session the user switched away from.
+/// What a composer holds: its text, attachments and picked mentions.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Draft {
     pub text: String,
@@ -89,7 +89,6 @@ pub struct State {
     /// Models each open session can switch to, once asked for.
     pub models: HashMap<String, Vec<ModelInfo>>,
     pub preferences: Preferences,
-    pub drafts: HashMap<String, Draft>,
     pub active_key: Option<String>,
     /// Problems listing sessions, one line per harness.
     pub list_errors: Vec<String>,
@@ -122,7 +121,6 @@ impl Default for State {
                 cleanup_idle_days: 4,
                 permission_warning_dismissed: false,
             },
-            drafts: HashMap::new(),
             active_key: None,
             list_errors: Vec::new(),
             error: None,
@@ -137,10 +135,6 @@ impl State {
             .get(key)
             .copied()
             .unwrap_or(SessionStatus::Idle)
-    }
-
-    pub fn navigation_of(&self, lane_id: i64) -> Option<&LaneNavigation> {
-        self.navigation.iter().find(|n| n.lane_id == lane_id)
     }
 
     pub fn session(&self, key: &str) -> Option<&Session> {
@@ -212,7 +206,6 @@ impl State {
         self.statuses.remove(key);
         self.settings.remove(key);
         self.models.remove(key);
-        self.drafts.remove(key);
         self.epochs.remove(key);
         if self.active_key.as_deref() == Some(key) {
             self.active_key = None;
@@ -256,15 +249,6 @@ impl State {
             (false, _) => PromptMode::Start,
             (true, true) => PromptMode::FollowUp,
             (true, false) => PromptMode::Steer,
-        }
-    }
-
-    /// Keeps a composer draft under its session, or drops it once it is empty.
-    pub fn save_draft(&mut self, key: &str, draft: Draft) {
-        if draft.text.trim().is_empty() && draft.attachments.is_empty() {
-            self.drafts.remove(key);
-        } else {
-            self.drafts.insert(key.to_string(), draft);
         }
     }
 
@@ -1329,16 +1313,9 @@ mod tests {
     fn forgetting_a_session_clears_what_was_kept() {
         let mut state = State::default();
         state.adopt_opened(opened("k", Vec::new()), None);
-        state.save_draft(
-            "k",
-            Draft {
-                text: "hi".into(),
-                ..Draft::default()
-            },
-        );
         state.forget("k");
         assert!(state.active_key.is_none());
-        assert!(state.conversations.is_empty() && state.drafts.is_empty());
+        assert!(state.conversations.is_empty());
     }
 
     #[::core::prelude::v1::test]

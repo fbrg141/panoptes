@@ -14,9 +14,8 @@ use panoptes_harness::Harness;
 use panoptes_pi::PiHarness;
 use tokio::sync::{mpsc, oneshot};
 
-/// The Tauri app's bundle identifier. Both apps share one store and one
-/// lanes folder until the GPUI app replaces the Tauri one, so they must not
-/// run at the same time.
+/// The app's bundle identifier, which names its data folder. It is the one
+/// the Tauri app used, so an update keeps the existing store and lanes.
 const IDENTIFIER: &str = "dev.panoptes.app";
 
 pub struct Backend {
@@ -125,7 +124,7 @@ impl Backend {
     }
 
     /// Runs a fallible service call, recording its error in the event log
-    /// under `command` as the Tauri commands did.
+    /// under `command`.
     pub fn run<F, Fut, T>(
         &self,
         command: &'static str,
@@ -170,7 +169,8 @@ impl Paths {
             .context("Could not find the home folder")?;
         let data_dir = app_data_dir(&home);
         let panoptes_home = home.join("Panoptes");
-        // Debug builds keep their own store and lanes, as in the Tauri app.
+        // Debug builds keep their own store and lanes, so a schema step can be
+        // reworked freely until it ships.
         Ok(if cfg!(debug_assertions) {
             Self {
                 data_dir: data_dir.join("dev"),
@@ -185,7 +185,7 @@ impl Paths {
     }
 }
 
-/// The same folder Tauri's `app_data_dir` gives for [`IDENTIFIER`].
+/// The app data folder for [`IDENTIFIER`], where the Tauri app kept it too.
 fn app_data_dir(home: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
         home.join("Library/Application Support").join(IDENTIFIER)
@@ -210,7 +210,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_data_folder_matches_the_tauri_app() {
+    fn the_data_folder_is_the_one_earlier_versions_used() {
         let dir = app_data_dir(Path::new("/Users/someone"));
         if cfg!(target_os = "macos") {
             assert_eq!(

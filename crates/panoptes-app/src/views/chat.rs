@@ -1,10 +1,10 @@
 //! One pane's session: header, transcript, notices, the cards waiting for an
-//! answer, and the composer. Port of `ChatPane.tsx`.
+//! answer, and the composer.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gpui_kit::component::input::InputEvent;
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_harness::{Answer, Approval, NoticeLevel, SessionStatus};
@@ -42,6 +42,8 @@ pub struct ChatPane {
     fields: HashMap<String, QuestionField>,
     /// The expiry a redraw is already waiting for.
     expiry_timer: Option<i64>,
+    /// The title field while the session is being renamed.
+    renaming: Option<Entity<InputState>>,
 }
 
 impl ChatPane {
@@ -78,6 +80,7 @@ impl ChatPane {
             seen: 0,
             fields: HashMap::new(),
             expiry_timer: None,
+            renaming: None,
         }
     }
 
@@ -94,6 +97,99 @@ impl ChatPane {
         cx.notify();
     }
 
+    /// Swaps the title for a field holding it.
+    fn start_rename(&mut self, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(title));
+        cx.subscribe(&input, |this, input, event, cx| {
+            let current = this.renaming.as_ref() == Some(&input);
+            if current && matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.commit_rename(cx);
+            }
+        })
+        .detach();
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.renaming = Some(input);
+        cx.notify();
+    }
+
+    /// Renames to what the field holds; an empty name falls back.
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.renaming.take() else {
+            return;
+        };
+        let title = input.read(cx).value().to_string();
+        let key = self.key.clone();
+        self.store
+            .update(cx, |store, cx| store.rename(key, &title, cx));
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming.take().is_some() {
+            self.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The session's name: click it to rename. Only a session a lane has
+    /// adopted has a record to rename.
+    fn render_title(
+        &self,
+        title: SharedString,
+        renamable: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some(input) = &self.renaming {
+            return div()
+                .flex_1()
+                .min_w_0()
+                .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                    this.cancel_rename(window, cx);
+                    cx.stop_propagation();
+                }))
+                .child(
+                    div().max_w(px(448.)).child(
+                        Input::new(input)
+                            .appearance(false)
+                            .t_body_strong()
+                            .px(px(0.)),
+                    ),
+                )
+                .into_any_element();
+        }
+        let label = div()
+            .min_w_0()
+            .truncate()
+            .t_body_strong()
+            .child(title.clone());
+        if !renamable {
+            return div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .child(label)
+                .into_any_element();
+        }
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .child(
+                label
+                    .id("session-title")
+                    .cursor_pointer()
+                    .hover(|s| s.underline())
+                    .tooltip(|window, cx| {
+                        crate::ds::Tooltip::new("Rename session").build(window, cx)
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.start_rename(title.to_string(), window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn render_header(
         &self,
         focused: bool,
@@ -104,9 +200,11 @@ impl ChatPane {
         let state = &self.store.read(cx).state;
         let status = state.status(&self.key);
         let session = state.session(&self.key);
-        let title = session
+        let renamable = session.is_some_and(|s| s.id.is_some());
+        let title: SharedString = session
             .map(|s| s.title.clone())
-            .unwrap_or_else(|| "Session".into());
+            .unwrap_or_else(|| "Session".into())
+            .into();
         let ui = self.ui.clone();
         let split_store = self.store.clone();
         let split = move |direction: SplitDirection| {
@@ -140,14 +238,7 @@ impl ChatPane {
             .when(status == SessionStatus::Running, |el| {
                 el.child(loop_mark("pane-running", 20., LoopState::Thinking, p.ink))
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .t_body_strong()
-                    .child(title),
-            )
+            .child(self.render_title(title, renamable, cx))
             .when(status != SessionStatus::Idle, |el| {
                 el.child(status_pill(status, p))
             })

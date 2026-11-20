@@ -5,7 +5,7 @@
 //! the events and the history keep the contract the UI relies on. The
 //! session it creates is deleted again at the end.
 //!
-//! pnpm smoke
+//! sh scripts/smoke.sh
 //! cargo run -p panoptes-pi --example smoke -- "Reply with just OK"
 
 use std::time::Duration;

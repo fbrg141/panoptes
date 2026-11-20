@@ -1,7 +1,6 @@
 //! The confirmations a lane or project action can need: removing a project,
 //! deleting a lane, preserving a dirty lane, recovering a detached HEAD and
-//! choosing a lane to adopt a conversation into. Port of the dialogs in
-//! `Sidebar.tsx`.
+//! choosing a lane to adopt a conversation into.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -46,10 +45,6 @@ impl LaneDialogs {
             current: None,
             busy: false,
         }
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.current.is_some()
     }
 
     fn show(&mut self, dialog: Option<LaneDialog>, cx: &mut Context<Self>) {

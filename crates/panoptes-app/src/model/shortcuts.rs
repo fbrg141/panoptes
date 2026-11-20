@@ -1,7 +1,5 @@
-//! The keyboard cheatsheet: every shortcut the app responds to, in one
-//! place so the key bindings and the cheatsheet never drift apart. Port of
-//! `shortcuts.ts`; the bindings themselves are GPUI key bindings in
-//! `views::shortcuts`.
+//! The keyboard cheatsheet: every shortcut the app responds to, in one place so
+//! the key bindings and the cheatsheet never drift apart.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutEntry {

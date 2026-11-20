@@ -1,10 +1,9 @@
-//! Line diffs of a tool call's file edits. Port of `src/diff.ts`.
+//! Line diffs of a tool call's file edits.
 
 use panoptes_harness::FileEdit;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
-    Hunk,
     Context,
     Add,
     Remove,

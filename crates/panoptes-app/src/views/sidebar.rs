@@ -1,5 +1,5 @@
 //! The sidebar: header, the Lanes and All sessions tabs, projects with their
-//! lanes, and session rows. Port of `Sidebar.tsx` and `SessionItem.tsx`.
+//! lanes, and session rows.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

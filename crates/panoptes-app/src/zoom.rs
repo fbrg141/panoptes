@@ -1,6 +1,6 @@
-//! Window zoom driven by ⌘+/- and ⌘0. GPUI has no page zoom, so every
-//! length the app sets goes through this module's `px`, which scales by the
-//! current zoom; views import it in place of GPUI's. Port of `zoom.ts`.
+//! Window zoom driven by ⌘+/- and ⌘0. GPUI has no page zoom, so every length
+//! the app sets goes through this module's `px`, which scales by the current
+//! zoom; views import it in place of GPUI's.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

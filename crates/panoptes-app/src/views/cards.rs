@@ -1,6 +1,5 @@
 //! The cards that wait on the user: a tool call to allow or reject, and a
-//! question from the harness. Port of `ApprovalCard.tsx` and
-//! `QuestionCard.tsx`.
+//! question from the harness.
 
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::*;

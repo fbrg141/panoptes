@@ -1,5 +1,4 @@
 //! Project-scoped worktree usage and explicit, checkpoint-safe bulk archive.
-//! Port of `CleanupDialog.tsx`.
 
 use std::collections::BTreeSet;
 use std::rc::Rc;

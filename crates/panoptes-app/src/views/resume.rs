@@ -1,6 +1,6 @@
-//! A lane-owned history picker; it never scans the harness's shared cwd.
-//! With a session id it only confirms resuming that record, since doing so
-//! stops the lane's live session. Port of `ResumeSessionDialog.tsx`.
+//! A lane-owned history picker; it never scans the harness's shared cwd. With a
+//! session id it only confirms resuming that record, since doing so stops the
+//! lane's live session.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -60,9 +60,8 @@ impl ResumeSession {
             let palette =
                 cx.new(|cx| CommandPalette::new("Resume an earlier session", list, window, cx));
             cx.subscribe(&palette, |this, _, event, cx| {
-                if let PaletteEvent::Selected(id) = event
-                    && let Ok(id) = id.parse()
-                {
+                let PaletteEvent::Selected(id) = event;
+                if let Ok(id) = id.parse() {
                     this.resume(id, cx);
                 }
             })

@@ -1,5 +1,5 @@
-//! Window state that is not the backend's: the one overlay shown at a time
-//! and the pane layout. Port of `src/ui.ts`.
+//! Window state that is not the backend's: the one overlay shown at a time and
+//! the pane layout.
 
 use gpui_kit::*;
 
@@ -125,8 +125,7 @@ impl Ui {
 }
 
 /// Shows a session and opens it, unless that would stop the lane's live
-/// session: then it asks first, through the resume confirmation. Port of
-/// `requestOpen` in `openSession.ts`.
+/// session: then it asks first, through the resume confirmation.
 pub fn request_open(
     store: &Entity<AppStore>,
     ui: &Entity<Ui>,

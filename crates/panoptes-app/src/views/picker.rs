@@ -1,8 +1,7 @@
-//! A button that opens a list to pick one value from, driven from the
-//! keyboard: the list opens on the current value, typing narrows it, arrows
-//! move, Enter picks and Escape backs out. The composer's model menu and the
-//! new lane and settings forms' menus are all this one control. Port of
-//! `Picker.tsx`; the pure part is `model::picker`.
+//! A button that opens a list to pick one value from, driven from the keyboard:
+//! the list opens on the current value, typing narrows it, arrows move, Enter
+//! picks and Escape backs out. The composer's model menu and the new lane and
+//! settings forms' menus are all this one control.
 
 use std::rc::Rc;
 

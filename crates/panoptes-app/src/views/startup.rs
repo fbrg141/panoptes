@@ -1,6 +1,5 @@
-//! What the window shows before the first listing: nothing for a brief load,
-//! a loader for a slow one, and a failure with a retry, never a spinner
-//! forever. Port of `StartupGate.tsx`.
+//! What the window shows before the first listing: nothing for a brief load, a
+//! loader for a slow one, and a failure with a retry, never a spinner forever.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;

@@ -25,7 +25,7 @@ pub fn apply() {
     };
     let current = std::env::var_os("PATH").unwrap_or_default();
     if let Some(merged) = merge(&shell_path, &current) {
-        // SAFETY: called first thing in `run`, before Tauri or the async
+        // SAFETY: called first thing in `run`, before the UI or the async
         // runtime start any thread that could read the environment.
         unsafe { std::env::set_var("PATH", merged) };
     }

@@ -1,6 +1,6 @@
 //! The app's session registry: which harnesses are loaded, which sessions
-//! are open, and Panoptes' own store. Independent of Tauri so it can be
-//! tested with a fake harness; `lib.rs` exposes it as commands.
+//! are open, and Panoptes' own store. Independent of the UI so it can be
+//! tested with a fake harness.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

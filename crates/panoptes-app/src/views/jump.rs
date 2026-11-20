@@ -1,6 +1,5 @@
-//! The palettes that jump somewhere: ⌘P search over projects, lanes,
-//! sessions and a few actions, and the session picker that fills an empty or
-//! split pane. Ports of `SearchPalette.tsx` and `SessionPicker.tsx`.
+//! The palettes that jump somewhere: ⌘P search over projects, lanes, sessions
+//! and a few actions, and the session picker that fills an empty or split pane.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -56,9 +55,8 @@ impl Jump {
         let list = groups(&kind, store.read(cx));
         let palette = cx.new(|cx| CommandPalette::new(placeholder, list, window, cx));
         cx.subscribe(&palette, |this, _, event, cx| {
-            if let PaletteEvent::Selected(id) = event {
-                this.select(id, cx);
-            }
+            let PaletteEvent::Selected(id) = event;
+            this.select(id, cx);
         })
         .detach();
         cx.observe(&store, |this, store, cx| {

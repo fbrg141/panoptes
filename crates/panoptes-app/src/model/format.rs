@@ -1,5 +1,4 @@
-//! Small text formats shared by the views. Ports of `formatTokens`
-//! (`composer.ts`) and `relativeTime` (`grouping.ts`).
+//! Small text formats shared by the views.
 
 use chrono::{Datelike as _, TimeZone as _};
 

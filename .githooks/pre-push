@@ -16,4 +16,4 @@ unset SDKROOT
 # Git's own list of them covers GIT_COMMON_DIR, GIT_PREFIX and the rest too.
 unset $(git rev-parse --local-env-vars)
 
-exec pnpm check
+exec sh scripts/check.sh

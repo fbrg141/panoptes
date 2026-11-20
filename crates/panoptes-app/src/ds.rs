@@ -1,6 +1,5 @@
-//! The design system's components in GPUI: the same anatomy and token use
-//! as `packages/design-system/src/components.css`, so screens match the
-//! Tauri app.
+//! The design system's components: Button, Kbd, Tooltip, StatusPill, the loop
+//! mark, tabs, menus, dialogs, fields and overlays, drawn from the tokens.
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -32,9 +31,6 @@ pub trait Type: Styled + Sized {
             .text_size(px(size))
             .line_height(px(line))
             .font_weight(weight)
-    }
-    fn t_display(self) -> Self {
-        self.type_style(FONT_DISPLAY, 32., 38., FontWeight::NORMAL)
     }
     fn t_wordmark(self) -> Self {
         self.type_style(FONT_DISPLAY, 20., 24., FontWeight::NORMAL)
@@ -166,11 +162,6 @@ impl Element for Icon {
     }
 }
 
-/// Caption text: 11px, tracked and upper-cased.
-pub fn caption(text: impl AsRef<str>) -> String {
-    text.as_ref().to_uppercase()
-}
-
 // --- Kbd -------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -178,14 +169,12 @@ pub enum KbdTone {
     #[default]
     Normal,
     OnPrimary,
-    Inverse,
 }
 
 pub fn kbd(keys: &[&str], tone: KbdTone, p: &Palette) -> Div {
     let (bg, border, ink) = match tone {
         KbdTone::Normal => (p.surface_raised, p.line_strong, p.ink_muted),
         KbdTone::OnPrimary => (transparent_black(), p.on_primary, p.on_primary),
-        KbdTone::Inverse => (transparent_black(), p.bg, p.bg),
     };
     h_flex_gap(2.).children(keys.iter().map(|k| {
         div()
@@ -229,7 +218,6 @@ pub enum Size {
     Sm,
     #[default]
     Md,
-    Lg,
 }
 
 #[derive(IntoElement)]
@@ -298,9 +286,6 @@ impl Button {
     pub fn small(self) -> Self {
         self.size(Size::Sm)
     }
-    pub fn large(self) -> Self {
-        self.size(Size::Lg)
-    }
     pub fn kbd(mut self, keys: Vec<&'static str>) -> Self {
         self.kbd = Some(keys);
         self
@@ -335,7 +320,6 @@ impl RenderOnce for Button {
         let (height, pad, gap, font) = match self.size {
             Size::Sm => (CONTROL_SM, 8., 4., 12.),
             Size::Md => (CONTROL, 12., 8., 13.),
-            Size::Lg => (CONTROL_LG, 16., 8., 13.),
         };
         let (bg, ink, border, hover_bg, hover_ink, hover_border) = match self.variant {
             Variant::Primary => (
@@ -438,19 +422,13 @@ impl RenderOnce for Button {
 
 pub struct Tooltip {
     label: SharedString,
-    kbd: Option<Vec<&'static str>>,
 }
 
 impl Tooltip {
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
-            kbd: None,
         }
-    }
-    pub fn kbd(mut self, keys: Vec<&'static str>) -> Self {
-        self.kbd = Some(keys);
-        self
     }
     pub fn build(self, _: &mut Window, cx: &mut App) -> AnyView {
         cx.new(|_| self).into()
@@ -469,7 +447,6 @@ impl Render for Tooltip {
             .t_label()
             .whitespace_nowrap()
             .child(self.label.clone())
-            .children(self.kbd.as_ref().map(|k| kbd(k, KbdTone::Inverse, &p)))
     }
 }
 
@@ -730,16 +707,6 @@ pub fn panel(p: &Palette) -> Div {
         .text_color(p.ink)
 }
 
-pub fn menu_heading(text: &str, p: &Palette) -> Div {
-    div()
-        .pt(px(8.))
-        .pb(px(4.))
-        .px(px(8.))
-        .t_caption()
-        .text_color(p.ink_muted)
-        .child(caption(text))
-}
-
 pub fn menu_separator(p: &Palette) -> Div {
     div().h(px(1.)).my(px(4.)).mx(px(8.)).bg(p.line)
 }
@@ -979,9 +946,9 @@ pub fn text_field(
 // --- Overlay ---------------------------------------------------------------
 
 /// The window's modal layer: a scrim, and the content near the top like a
-/// command palette. A click on the scrim or Escape calls `on_close`, which
-/// says whether it closed: a panel with an open menu lets Escape close the
-/// menu instead. Port of `ModalLayer` in `Overlay.tsx`.
+/// command palette. A click on the scrim or Escape calls `on_close`, which says
+/// whether it closed: a panel with an open menu lets Escape close the menu
+/// instead.
 pub fn modal_layer(
     window: &Window,
     on_close: impl Fn(&mut Window, &mut App) -> bool + 'static,

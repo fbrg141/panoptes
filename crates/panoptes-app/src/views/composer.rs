@@ -1,7 +1,6 @@
 //! The message field under a session: @-mentions, slash commands, list
-//! continuation, attachments, the model and thinking pickers and the
-//! session's usage. Port of `Composer.tsx`; the text logic is
-//! `model::composer`.
+//! continuation, attachments, the model and thinking pickers and the session's
+//! usage. The text logic is `model::composer`.
 
 use std::collections::HashSet;
 
@@ -135,8 +134,7 @@ impl Composer {
         })
         .detach();
         cx.observe(&store, |_, _, cx| cx.notify()).detach();
-        let draft = store.read(cx).state.drafts.get(&key).cloned();
-        let mut this = Self {
+        Self {
             key,
             store,
             ui,
@@ -152,11 +150,7 @@ impl Composer {
             model_picker,
             thinking_open: false,
             placeholder_busy: false,
-        };
-        if let Some(draft) = draft {
-            this.restore(draft, window, cx);
         }
-        this
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {

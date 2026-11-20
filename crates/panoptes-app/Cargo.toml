@@ -1,6 +1,6 @@
 [package]
 name = "panoptes-app"
-description = "The Panoptes desktop app in GPUI, replacing the Tauri app (#222)"
+description = "The Panoptes desktop app, in GPUI"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 authors.workspace = true
 
 [[bin]]
-name = "panoptes-gpui"
+name = "panoptes"
 path = "src/main.rs"
 
 [dependencies]
@@ -22,6 +22,3 @@ panoptes-harness.workspace = true
 panoptes-pi.workspace = true
 # GPUI is pre-1.0 and breaks often: pin exactly and upgrade on purpose.
 gpui-kit = "=0.10.0"
-
-[build-dependencies]
-serde_json.workspace = true

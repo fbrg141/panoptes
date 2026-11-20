@@ -1,4 +1,4 @@
-//! What a run of model calls used, added up. Port of `src/usage.ts`.
+//! What a run of model calls used, added up.
 
 use panoptes_harness::{Message, StopReason};
 
