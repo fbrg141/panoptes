@@ -164,3 +164,20 @@ impl Render for DraggedSession {
         div()
     }
 }
+
+/// Splits the focused pane; the new empty pane takes focus, so no session
+/// is active until one is picked for it.
+pub fn split_focused_pane(
+    store: &Entity<AppStore>,
+    ui: &Entity<Ui>,
+    direction: SplitDirection,
+    cx: &mut App,
+) {
+    let split = ui.update(cx, |ui, cx| ui.split_focused(direction, cx));
+    if split.is_some() {
+        store.update(cx, |store, cx| {
+            store.state.active_key = None;
+            cx.notify();
+        });
+    }
+}

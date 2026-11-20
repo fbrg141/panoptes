@@ -107,12 +107,11 @@ impl ChatPane {
             .map(|s| s.title.clone())
             .unwrap_or_else(|| "Session".into());
         let ui = self.ui.clone();
+        let split_store = self.store.clone();
         let split = move |direction: SplitDirection| {
-            let ui = ui.clone();
+            let (store, ui) = (split_store.clone(), ui.clone());
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                ui.update(cx, |ui, cx| {
-                    ui.split_focused(direction, cx);
-                })
+                crate::ui::split_focused_pane(&store, &ui, direction, cx)
             }
         };
         let pane_id = self

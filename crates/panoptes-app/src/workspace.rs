@@ -15,7 +15,7 @@ use crate::model::panes::{DropZone, PaneNode, SplitDirection, drop_zone_at};
 use crate::store::AppStore;
 use crate::store::Startup;
 use crate::theme::{Palette, PaletteExt as _};
-use crate::ui::{DraggedSession, Overlay, Ui};
+use crate::ui::{DraggedSession, Overlay, Ui, split_focused_pane};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
 use crate::views::jump::{Jump, JumpKind};
@@ -430,13 +430,12 @@ impl Render for Workspace {
                 .into_any_element();
         }
         let error = state.error.clone();
-        let warning = self
-            .store
-            .read(cx)
-            .backend()
+        let backend = self.store.read(cx).backend();
+        let warning = backend
             .harness_errors
             .first()
-            .cloned();
+            .cloned()
+            .or_else(|| backend.unsupported.clone());
         let first_project = state.projects.first().map_or(0, |p| p.id);
         let active_lane = state
             .sessions
@@ -452,21 +451,28 @@ impl Render for Workspace {
             overlay: Overlay,
         ) -> impl Fn(&A, &mut Window, &mut App) + use<A> {
             let ui = ui.clone();
-            move |_, _, cx| ui.update(cx, |ui, cx| ui.open(overlay.clone(), cx))
+            move |_, _, cx| {
+                // An open overlay keeps the keyboard.
+                if ui.read(cx).overlay.is_none() {
+                    ui.update(cx, |ui, cx| ui.open(overlay.clone(), cx))
+                }
+            }
         }
         fn split<A: Action>(
+            store: &Entity<AppStore>,
             ui: &Entity<Ui>,
             direction: SplitDirection,
         ) -> impl Fn(&A, &mut Window, &mut App) + use<A> {
-            let ui = ui.clone();
+            let (store, ui) = (store.clone(), ui.clone());
             move |_, _, cx| {
-                ui.update(cx, |ui, cx| {
-                    ui.split_focused(direction, cx);
-                })
+                if ui.read(cx).overlay.is_none() {
+                    split_focused_pane(&store, &ui, direction, cx);
+                }
             }
         }
         let ui = &self.ui;
         let (lane_store, project_store) = (self.store.clone(), self.store.clone());
+        let (lane_ui, project_ui) = (self.ui.clone(), self.ui.clone());
         div()
             .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
@@ -480,15 +486,27 @@ impl Render for Workspace {
                 },
             ))
             .on_action(move |_: &NewLaneSession, _, cx| {
-                if let Some(lane_id) = active_lane {
+                if let Some(lane_id) = active_lane
+                    && lane_ui.read(cx).overlay.is_none()
+                {
                     lane_store.update(cx, |store, cx| store.new_lane_session(lane_id, cx).detach());
                 }
             })
             .on_action(move |_: &AddProject, _, cx| {
-                project_store.update(cx, |store, cx| store.pick_project(cx))
+                if project_ui.read(cx).overlay.is_none() {
+                    project_store.update(cx, |store, cx| store.pick_project(cx))
+                }
             })
-            .on_action(split::<SplitVertical>(ui, SplitDirection::Vertical))
-            .on_action(split::<SplitHorizontal>(ui, SplitDirection::Horizontal))
+            .on_action(split::<SplitVertical>(
+                &self.store,
+                ui,
+                SplitDirection::Vertical,
+            ))
+            .on_action(split::<SplitHorizontal>(
+                &self.store,
+                ui,
+                SplitDirection::Horizontal,
+            ))
             .relative()
             .flex()
             .flex_col()
