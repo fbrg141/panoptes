@@ -122,6 +122,13 @@ impl ChatPane {
             .session_pane(&self.key)
             .map(|p| p.id.clone());
         div()
+            .id("pane-header")
+            .on_drag(
+                crate::ui::DraggedSession {
+                    key: self.key.clone(),
+                },
+                |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+            )
             .flex()
             .flex_none()
             .items_center()

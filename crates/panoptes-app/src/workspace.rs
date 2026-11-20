@@ -11,10 +11,11 @@ use tokio::sync::mpsc;
 
 use crate::backend::Backend;
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark};
-use crate::model::panes::{PaneNode, SplitDirection};
+use crate::model::panes::{DropZone, PaneNode, SplitDirection, drop_zone_at};
 use crate::store::AppStore;
+use crate::store::Startup;
 use crate::theme::{Palette, PaletteExt as _};
-use crate::ui::{Overlay, Ui};
+use crate::ui::{DraggedSession, Overlay, Ui};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
 use crate::views::jump::{Jump, JumpKind};
@@ -27,6 +28,7 @@ use crate::views::shortcuts::{
     ShowShortcuts, SplitHorizontal, SplitVertical,
 };
 use crate::views::sidebar::{Sidebar, SidebarEvent};
+use crate::views::startup;
 
 pub struct Workspace {
     store: Entity<AppStore>,
@@ -37,6 +39,10 @@ pub struct Workspace {
     overlay: Option<(Overlay, AnyView)>,
     /// Holds the keyboard when no text field does, so window shortcuts work.
     focus: FocusHandle,
+    /// Whether a slow first load has gone on long enough to show a loader.
+    show_loader: bool,
+    /// Where a dragged session would land: a pane and a zone of it.
+    drop_target: Option<(String, DropZone)>,
     panes: HashMap<String, Entity<ChatPane>>,
     /// Open conversations when last seen, to close the panes of ones that went.
     open_keys: HashSet<String>,
@@ -82,6 +88,16 @@ impl Workspace {
 
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(startup::LOADER_DELAY_MS))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.show_loader = true;
+                cx.notify();
+            });
+        })
+        .detach();
         Self {
             store,
             ui,
@@ -89,6 +105,8 @@ impl Workspace {
             dialogs,
             overlay: None,
             focus,
+            show_loader: false,
+            drop_target: None,
             panes: HashMap::new(),
             open_keys: HashSet::new(),
             active_key: None,
@@ -102,7 +120,7 @@ impl Workspace {
             return;
         }
         let (store, ui) = (self.store.clone(), self.ui.clone());
-        self.overlay = wanted.and_then(|overlay| {
+        self.overlay = wanted.map(|overlay| {
             let view: AnyView = match &overlay {
                 Overlay::NewLane { project_id, prompt } => {
                     let (id, prompt) = (*project_id, prompt.clone());
@@ -131,11 +149,33 @@ impl Workspace {
                 Overlay::Shortcuts => cx.new(|cx| Shortcuts::new(ui, window, cx)).into(),
                 Overlay::Settings => cx.new(|cx| Settings::new(store, ui, window, cx)).into(),
             };
-            Some((overlay, view))
+            (overlay, view)
         });
         if self.overlay.is_none() {
             self.focus_active(window, cx);
         }
+    }
+
+    /// Places a dropped session: in the pane, or in a split beside it.
+    fn drop_session(&mut self, key: String, pane: &str, cx: &mut Context<Self>) {
+        let Some((target, zone)) = self.drop_target.take() else {
+            return;
+        };
+        if target != pane {
+            return;
+        }
+        let visible = self.ui.read(cx).layout.session_pane(&key).is_some();
+        self.ui
+            .update(cx, |ui, cx| ui.drop_session(&key, pane, zone, cx));
+        self.store.update(cx, |store, cx| {
+            store.state.active_key = Some(key.clone());
+            if !visible
+                && let Some(session) = store.state.sessions.iter().find(|s| s.key == key).cloned()
+            {
+                store.open(&session, cx).detach();
+            }
+            cx.notify();
+        });
     }
 
     /// Focus back on the focused pane's composer.
@@ -257,6 +297,14 @@ impl Workspace {
                     Some(key) => self.pane(key, window, cx).into_any_element(),
                     None => self.empty_pane(&leaf.id, multiple, p),
                 };
+                let zone = self
+                    .drop_target
+                    .as_ref()
+                    .filter(|(pane, _)| pane == &leaf.id && cx.has_active_drag())
+                    .map(|(_, zone)| *zone);
+                let this = cx.entity().downgrade();
+                let (moving, dropping) = (this.clone(), this);
+                let (move_pane, drop_pane) = (leaf.id.clone(), leaf.id.clone());
                 div()
                     .relative()
                     .flex()
@@ -266,7 +314,39 @@ impl Workspace {
                     .min_w_0()
                     .min_h_0()
                     .capture_any_mouse_down(activate)
+                    .on_drag_move::<DraggedSession>(move |event, _, cx| {
+                        let bounds = event.bounds;
+                        let at = event.event.position;
+                        let target = bounds.contains(&at).then(|| {
+                            let zone = drop_zone_at(
+                                f32::from(bounds.size.width),
+                                f32::from(bounds.size.height),
+                                f32::from(at.x - bounds.origin.x),
+                                f32::from(at.y - bounds.origin.y),
+                            );
+                            (move_pane.clone(), zone)
+                        });
+                        let _ = moving.update(cx, |this, cx| {
+                            let mine = this
+                                .drop_target
+                                .as_ref()
+                                .is_some_and(|(pane, _)| pane == &move_pane);
+                            if target.is_some() && this.drop_target != target {
+                                this.drop_target = target;
+                                cx.notify();
+                            } else if target.is_none() && mine {
+                                this.drop_target = None;
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .on_drop(move |dragged: &DraggedSession, _, cx| {
+                        let key = dragged.key.clone();
+                        let pane = drop_pane.clone();
+                        let _ = dropping.update(cx, |this, cx| this.drop_session(key, &pane, cx));
+                    })
                     .child(content)
+                    .children(zone.map(|zone| drop_indicator(zone, leaf.session_key.is_none(), p)))
                     .into_any_element()
             }
         }
@@ -345,6 +425,10 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *cx.palette();
         let state = &self.store.read(cx).state;
+        if state.startup != Startup::Ready {
+            return startup::startup_gate(&state.startup, self.show_loader, &self.store, &p)
+                .into_any_element();
+        }
         let error = state.error.clone();
         let warning = self
             .store
@@ -460,5 +544,52 @@ impl Render for Workspace {
             )
             .child(self.dialogs.clone())
             .children(self.overlay.as_ref().map(|(_, view)| view.clone()))
+            .into_any_element()
     }
+}
+
+/// Where a dragged session will land, drawn over the pane.
+fn drop_indicator(zone: DropZone, empty: bool, p: &Palette) -> Div {
+    let label = if empty {
+        "Drop session here".to_string()
+    } else {
+        match zone {
+            DropZone::Center => "Drop session in this pane".to_string(),
+            DropZone::Left => "Drop to split left".to_string(),
+            DropZone::Right => "Drop to split right".to_string(),
+            DropZone::Top => "Drop to split top".to_string(),
+            DropZone::Bottom => "Drop to split bottom".to_string(),
+        }
+    };
+    let inset = px(12.);
+    let half = relative(0.5);
+    let base = div().absolute();
+    let placed = match zone {
+        DropZone::Left => base.top(inset).bottom(inset).left(inset).right(half),
+        DropZone::Right => base.top(inset).bottom(inset).left(half).right(inset),
+        DropZone::Top => base.left(inset).right(inset).top(inset).bottom(half),
+        DropZone::Bottom => base.left(inset).right(inset).top(half).bottom(inset),
+        DropZone::Center => base.top(inset).bottom(inset).left(inset).right(inset),
+    };
+    placed
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(8.))
+        .p(px(12.))
+        .rounded(px(crate::ds::RADIUS_MD))
+        .border_1()
+        .border_color(p.focus)
+        .bg(p.selection.opacity(0.8))
+        .t_body_strong()
+        .text_color(p.ink)
+        .child(icon(
+            if zone == DropZone::Center {
+                "session"
+            } else {
+                "plus"
+            },
+            16.,
+        ))
+        .child(label)
 }

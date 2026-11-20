@@ -151,3 +151,16 @@ pub fn request_open(
     ui.update(cx, |ui, cx| ui.show_session(&session.key, pane_id, cx));
     store.update(cx, |store, cx| store.open(session, cx).detach());
 }
+
+/// A session being dragged from the sidebar or a pane header onto a pane.
+/// The drag draws nothing under the pointer; the pane shows where it lands.
+#[derive(Clone)]
+pub struct DraggedSession {
+    pub key: String,
+}
+
+impl Render for DraggedSession {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}

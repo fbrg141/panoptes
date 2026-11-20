@@ -14,4 +14,5 @@ pub mod resume;
 pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;
+pub mod startup;
 pub mod turn;

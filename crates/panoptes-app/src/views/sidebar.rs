@@ -831,6 +831,10 @@ impl Sidebar {
 
         let hit = div()
             .id(SharedString::from(format!("hit-{key}")))
+            .on_drag(
+                crate::ui::DraggedSession { key: key.clone() },
+                |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+            )
             .flex()
             .items_center()
             .gap(px(8.))
