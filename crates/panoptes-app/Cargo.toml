@@ -20,3 +20,6 @@ panoptes-harness.workspace = true
 panoptes-pi.workspace = true
 # GPUI is pre-1.0 and breaks often: pin exactly and upgrade on purpose.
 gpui-kit = "=0.10.0"
+
+[build-dependencies]
+serde_json.workspace = true

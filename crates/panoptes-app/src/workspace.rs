@@ -16,7 +16,8 @@ use panoptes_harness::{HarnessEvent, PromptMode, Role, SessionStatus};
 use tokio::sync::mpsc;
 
 use crate::backend::Backend;
-use crate::transcript::Transcript;
+use crate::model::conversation::Conversation;
+use crate::model::format::now_ms;
 
 pub struct Workspace {
     backend: Arc<Backend>,
@@ -31,7 +32,7 @@ pub struct Workspace {
 struct Current {
     key: String,
     title: String,
-    transcript: Transcript,
+    conversation: Conversation,
 }
 
 impl Workspace {
@@ -128,15 +129,15 @@ impl Workspace {
             this.update(cx, |this, cx| {
                 match opened {
                     Ok(opened) => {
-                        let mut transcript = Transcript::from_history(&opened.history);
+                        let mut conversation = Conversation::new(opened.history);
                         for event in &opened.replay {
-                            transcript.apply(event);
+                            conversation.apply(event, now_ms());
                         }
                         this.statuses.insert(opened.key.clone(), opened.status);
                         this.current = Some(Current {
                             key: opened.key,
                             title,
-                            transcript,
+                            conversation,
                         });
                         this.error = None;
                         this.transcript_scroll.scroll_to_bottom();
@@ -192,12 +193,15 @@ impl Workspace {
                 match harness_event {
                     // The history is authoritative once a run settles.
                     HarnessEvent::RunSettled { .. } if is_current => {
+                        if let Some(current) = &mut self.current {
+                            current.conversation.apply(harness_event, now_ms());
+                        }
                         self.reload_history(event.key.clone(), cx)
                     }
                     HarnessEvent::TitleChanged { .. } => self.refresh(cx),
                     _ if is_current => {
                         if let Some(current) = &mut self.current {
-                            current.transcript.apply(harness_event);
+                            current.conversation.apply(harness_event, now_ms());
                         }
                         self.transcript_scroll.scroll_to_bottom();
                     }
@@ -222,7 +226,7 @@ impl Workspace {
                         if let Some(current) = &mut this.current
                             && current.key == key
                         {
-                            current.transcript = Transcript::from_history(&history);
+                            current.conversation.messages = history;
                         }
                     }
                     Err(error) => this.error = Some(error),
@@ -343,7 +347,7 @@ impl Workspace {
             .statuses
             .get(&current.key)
             .and_then(|status| status_word(*status));
-        let entries = current.transcript.entries.iter().map(|entry| {
+        let entries = current.conversation.messages.iter().map(|entry| {
             let user = entry.role == Role::User;
             div()
                 .px_4()
@@ -352,7 +356,7 @@ impl Workspace {
                 .when(entry.role == Role::Other, |row| {
                     row.text_color(theme.muted_foreground)
                 })
-                .child(entry.text())
+                .child(crate::model::turns::plain_text(entry))
         });
         v_flex()
             .flex_1()

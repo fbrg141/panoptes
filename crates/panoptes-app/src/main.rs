@@ -1,8 +1,11 @@
 //! Panoptes in GPUI: the walking skeleton of #222. A window with the lane
 //! list read from the store, and one live session pane.
 
+mod assets;
 mod backend;
-mod transcript;
+mod ds;
+mod model;
+mod theme;
 mod workspace;
 
 use gpui_kit::*;
@@ -16,8 +19,9 @@ fn main() {
     }
     let started = backend::Backend::start();
 
-    gpui_kit::application().run(move |cx| {
+    gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
+        theme::init(cx);
         let started = match started {
             Ok(started) => started,
             Err(error) => {
