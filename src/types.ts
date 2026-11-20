@@ -166,7 +166,7 @@ export type ErrorKind =
   | "cancelled"
   | "other";
 
-/** How every failed command rejects (`ServiceError` in src-tauri/src/service.rs). */
+/** How every failed command rejects (`ServiceError` in crates/panoptes-core/src/service.rs). */
 export interface ServiceError {
   kind: ErrorKind;
   message: string;
@@ -182,7 +182,7 @@ export interface HarnessRef {
 }
 
 /**
- * The one session type (`Session` in src-tauri/src/service.rs): a Panoptes session
+ * The one session type (`Session` in crates/panoptes-core/src/service.rs): a Panoptes session
  * in a lane (`key` is `panoptes:<id>`), or a harness conversation found on disk
  * that no lane has adopted (`key` is `<harness>:<id>`).
  */
@@ -212,7 +212,7 @@ export interface Session {
   open: boolean;
 }
 
-/** What can be changed about a project (`ProjectSettings` in src-tauri/src/store.rs). */
+/** What can be changed about a project (`ProjectSettings` in crates/panoptes-core/src/store.rs). */
 export interface ProjectSettings {
   name: string;
   /** What new worktrees branch from. */
@@ -223,7 +223,7 @@ export interface ProjectSettings {
   setup: string | null;
 }
 
-/** A registered git repository (`Project` in src-tauri/src/store.rs). */
+/** A registered git repository (`Project` in crates/panoptes-core/src/store.rs). */
 export interface Project extends ProjectSettings {
   id: number;
   /** Path of the main checkout. */
@@ -342,7 +342,7 @@ export interface Hunk {
   lines: DiffLine[];
 }
 
-/** What an active lane's worktree holds (`LaneWork` in src-tauri/src/lanes.rs). */
+/** What an active lane's worktree holds (`LaneWork` in crates/panoptes-core/src/lanes.rs). */
 export interface LaneWork {
   /** Uncommitted files, untracked ones included. */
   changedFiles: number;

@@ -185,7 +185,8 @@ check the Open Anyway flow, then attach it to a GitHub release tagged
 |---|---|
 | `crates/panoptes-harness` | The harness-neutral interface: sessions, messages, events, and the `Harness` / `AgentSession` traits |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `src-tauri` | The app: `service.rs` (open sessions, event forwarding), `store.rs` (Panoptes' own data in SQLite), exposed as Tauri commands in `lib.rs` |
+| `crates/panoptes-core` | The backend: `service.rs` (open sessions, event forwarding), `store.rs` (Panoptes' own data in SQLite), lanes, changes and cleanup |
+| `src-tauri` | The Tauri app: `panoptes-core` exposed as Tauri commands in `lib.rs` |
 | `src` | React UI: `conversation.ts` folds events into state, `store.ts` talks to the app, `components/` renders |
 | `packages/design-system` | Tokens, fonts, logos, icons and components |
 

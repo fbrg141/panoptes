@@ -29,12 +29,5 @@ anyhow.workspace = true
 tokio.workspace = true
 panoptes-harness.workspace = true
 panoptes-pi.workspace = true
-ignore = "0.4"
-base64 = "0.23"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
-libc = "0.2"
-
-[dev-dependencies]
-async-trait.workspace = true
-tempfile = "3"
+panoptes-core.workspace = true
 

@@ -55,7 +55,7 @@ pub fn command() -> Command {
 /// # Safety
 ///
 /// Changes the process environment, so it must run before any other thread
-/// starts; [`crate::run`] calls it first.
+/// starts; the app shell calls it first in `run`.
 pub unsafe fn forget_inherited_repository() {
     for name in REPOSITORY_VARS {
         // SAFETY: the caller guarantees no other thread is running.
