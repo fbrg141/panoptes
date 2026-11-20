@@ -13,6 +13,7 @@ use crate::assets::loop_geometry;
 use crate::theme::{FONT_DISPLAY, FONT_MONO, FONT_SANS, Palette, PaletteExt as _};
 
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+pub type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 // Sizes from the tokens.
 pub const CONTROL_SM: f32 = 24.;
@@ -943,6 +944,164 @@ pub fn input_frame(focused: bool, error: bool, p: &Palette) -> Div {
         })
         .rounded(px(RADIUS_SM))
         .text_color(p.ink_muted)
+}
+
+// --- Overlay ---------------------------------------------------------------
+
+/// The window's modal layer: a scrim, and the content near the top like a
+/// command palette. A click on the scrim or Escape calls `on_close`, which
+/// says whether it closed: a panel with an open menu lets Escape close the
+/// menu instead. Port of `ModalLayer` in `Overlay.tsx`.
+pub fn modal_layer(
+    window: &Window,
+    on_close: impl Fn(&mut Window, &mut App) -> bool + 'static,
+    content: impl IntoElement,
+    p: &Palette,
+) -> Stateful<Div> {
+    let on_close = Rc::new(on_close);
+    let (on_scrim, on_escape, on_key) = (on_close.clone(), on_close.clone(), on_close);
+    let top = window.viewport_size().height * 0.12;
+    div()
+        .id("modal-layer")
+        .absolute()
+        .inset_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .px(px(24.))
+        .pt(top)
+        .bg(p.scrim)
+        .occlude()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            on_scrim(window, cx);
+        })
+        .capture_action(move |_: &gpui_kit::component::input::Escape, window, cx| {
+            if on_escape(window, cx) {
+                cx.stop_propagation();
+            }
+        })
+        // Escape with focus outside a text field, where it is no action.
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key == "escape" && on_key(window, cx) {
+                cx.stop_propagation();
+            }
+        })
+        .child(
+            div()
+                .id("modal-content")
+                .max_w_full()
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(content),
+        )
+}
+
+/// A panel in the modal layer: the content decides its header and footer.
+pub fn overlay_panel(width: f32, window: &Window, p: &Palette) -> Div {
+    div()
+        .w(px(width))
+        .max_w_full()
+        .max_h(window.viewport_size().height * 0.76)
+        .flex()
+        .flex_col()
+        .rounded(px(RADIUS_LG))
+        .bg(p.surface_raised)
+        .text_color(p.ink)
+        .shadow(p.shadow_pop())
+}
+
+/// A panel's top line: what it is, and where it acts.
+pub fn overlay_header(content: impl IntoElement, on_close: Option<CloseHandler>) -> Div {
+    h_flex_gap(8.)
+        .h(px(44.))
+        .flex_none()
+        .px(px(16.))
+        .child(h_flex_gap(6.).flex_1().min_w_0().child(content))
+        .children(on_close.map(|on_close| {
+            div().mr(px(-6.)).child(
+                Button::new("overlay-close")
+                    .ghost()
+                    .small()
+                    .icon("x")
+                    .tooltip("Close (Esc)")
+                    .on_click(move |_, window, cx| on_close(window, cx)),
+            )
+        }))
+}
+
+/// A panel's bottom line: options on the left, the one action on the right.
+pub fn overlay_footer(p: &Palette) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.))
+        .min_h(px(48.))
+        .border_t_1()
+        .border_color(p.line)
+        .px(px(12.))
+        .py(px(8.))
+}
+
+/// An on/off option in a panel's footer, styled as a chip beside the pickers.
+pub fn option_toggle(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    title: Option<SharedString>,
+    pressed: bool,
+    disabled: bool,
+    p: &Palette,
+    on_change: impl Fn(bool, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let p = *p;
+    div()
+        .id(id.into())
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(CONTROL_SM))
+        .px(px(8.))
+        .rounded(px(RADIUS_SM))
+        .border_1()
+        .border_color(p.line)
+        .bg(p.surface_raised)
+        .t_small()
+        .text_color(if disabled { p.ink_faint } else { p.ink_muted })
+        .when(!disabled, |el| {
+            el.cursor_pointer()
+                .hover(move |s| {
+                    s.bg(p.selection)
+                        .text_color(p.ink)
+                        .border_color(p.line_strong)
+                })
+                .on_click(move |_, window, cx| on_change(!pressed, window, cx))
+        })
+        .when_some(title, |el, title| {
+            el.tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
+        })
+        .child(
+            div()
+                .size(px(14.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(RADIUS_XS))
+                .border_1()
+                .when(pressed, |el| {
+                    el.border_color(p.focus)
+                        .bg(p.focus)
+                        .text_color(p.on_focus)
+                        .child(icon("check", 12.))
+                })
+                .when(!pressed, |el| el.border_color(p.line_strong)),
+        )
+        .child(label.into())
 }
 
 #[cfg(test)]

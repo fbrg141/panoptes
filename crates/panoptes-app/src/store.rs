@@ -9,6 +9,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use gpui_kit::*;
+use panoptes_core::cleanup::LaneCleanup;
 use panoptes_core::files::Attachment;
 use panoptes_core::lanes::ArchiveStrategy;
 use panoptes_core::service::{
@@ -996,6 +997,25 @@ impl AppStore {
         .detach();
     }
 
+    /// Asks for a folder and registers it as a project.
+    pub fn pick_project(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add project".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(folder) = paths.first() else { return };
+            let folder = folder.to_string_lossy().to_string();
+            let _ = this.update(cx, |store, cx| store.add_project(folder, cx));
+        })
+        .detach();
+    }
+
     /// Registers the git repository `folder` is in.
     pub fn add_project(&mut self, folder: String, cx: &mut Context<Self>) {
         let work = self.backend.run("add_project", move |s| async move {
@@ -1105,6 +1125,17 @@ impl AppStore {
                 None
             }
         })
+    }
+
+    /// Worktree usage and safe idle lanes for one project, measured now.
+    pub fn lane_cleanup(
+        &self,
+        project_id: i64,
+    ) -> impl Future<Output = Result<LaneCleanup, String>> + use<> {
+        let work = self.backend.run("lane_cleanup", move |s| async move {
+            s.lane_cleanup(project_id).await
+        });
+        async move { work.await.map_err(|e| e.message) }
     }
 
     /// Archives independently, preserving any dirty lane as a checkpoint.

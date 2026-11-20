@@ -16,12 +16,19 @@ use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{Overlay, Ui};
 use crate::views::chat::ChatPane;
+use crate::views::cleanup::Cleanup;
+use crate::views::lane_dialogs::LaneDialogs;
+use crate::views::new_lane::NewLane;
+use crate::views::resume::ResumeSession;
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 
 pub struct Workspace {
     store: Entity<AppStore>,
     ui: Entity<Ui>,
     sidebar: Entity<Sidebar>,
+    dialogs: Entity<LaneDialogs>,
+    /// The overlay shown, and the view drawing it.
+    overlay: Option<(Overlay, AnyView)>,
     panes: HashMap<String, Entity<ChatPane>>,
     /// Open conversations when last seen, to close the panes of ones that went.
     open_keys: HashSet<String>,
@@ -32,19 +39,25 @@ impl Workspace {
     pub fn new(
         backend: Arc<Backend>,
         mut events: mpsc::UnboundedReceiver<SessionEvent>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let store = cx.new(|cx| AppStore::new(backend, cx));
         let ui = cx.new(|_| Ui::default());
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), ui.clone(), cx));
+        let dialogs = cx.new(|_| LaneDialogs::new(store.clone()));
+        cx.observe(&dialogs, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&sidebar, |this, _, event, cx| {
             this.on_sidebar(event.clone(), cx)
         })
         .detach();
         cx.observe(&store, |this, _, cx| this.sync_panes(cx))
             .detach();
-        cx.observe(&ui, |_, _, cx| cx.notify()).detach();
+        cx.observe_in(&ui, window, |this, _, window, cx| {
+            this.sync_overlay(window, cx);
+            cx.notify();
+        })
+        .detach();
 
         let events_store = store.downgrade();
         cx.spawn(async move |_, cx| {
@@ -63,9 +76,58 @@ impl Workspace {
             store,
             ui,
             sidebar,
+            dialogs,
+            overlay: None,
             panes: HashMap::new(),
             open_keys: HashSet::new(),
             active_key: None,
+        }
+    }
+
+    /// Builds the view for the overlay the window shows, once per opening.
+    fn sync_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.ui.read(cx).overlay.clone();
+        if self.overlay.as_ref().map(|(o, _)| o) == wanted.as_ref() {
+            return;
+        }
+        let (store, ui) = (self.store.clone(), self.ui.clone());
+        self.overlay = wanted.and_then(|overlay| {
+            let view: AnyView = match &overlay {
+                Overlay::NewLane { project_id, prompt } => {
+                    let (id, prompt) = (*project_id, prompt.clone());
+                    cx.new(|cx| NewLane::new(id, prompt, store, ui, window, cx))
+                        .into()
+                }
+                Overlay::ResumeSession {
+                    lane_id,
+                    session_id,
+                } => {
+                    let (lane, session) = (*lane_id, *session_id);
+                    cx.new(|cx| ResumeSession::new(lane, session, store, ui, window, cx))
+                        .into()
+                }
+                Overlay::Cleanup { project_id } => {
+                    let id = *project_id;
+                    cx.new(|cx| Cleanup::new(id, store, ui, window, cx)).into()
+                }
+                _ => return None,
+            };
+            Some((overlay, view))
+        });
+        if self.overlay.is_none() {
+            self.focus_active(window, cx);
+        }
+    }
+
+    /// Focus back on the focused pane's composer.
+    fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ui = self.ui.read(cx);
+        let key = ui
+            .layout
+            .find(&ui.focused_pane)
+            .and_then(|leaf| leaf.session_key.clone());
+        if let Some(pane) = key.and_then(|key| self.panes.get(&key)) {
+            pane.update(cx, |pane, cx| pane.focus(window, cx));
         }
     }
 
@@ -99,18 +161,12 @@ impl Workspace {
     }
 
     fn on_sidebar(&mut self, event: SidebarEvent, cx: &mut Context<Self>) {
-        match event {
-            SidebarEvent::ArchiveLane(id) => {
-                self.store.update(cx, |store, cx| {
-                    store.archive_lane(id, None, false, cx).detach()
-                });
-            }
-            SidebarEvent::Adopt(session) => {
-                self.store
-                    .update(cx, |store, cx| store.adopt(&session, None, cx).detach());
-            }
-            SidebarEvent::RemoveProject(_) | SidebarEvent::DeleteLane(_) => {}
-        }
+        self.dialogs.update(cx, |dialogs, cx| match event {
+            SidebarEvent::ArchiveLane(id) => dialogs.archive(id, None, false, cx),
+            SidebarEvent::Adopt(session) => dialogs.adopt(*session, None, cx),
+            SidebarEvent::RemoveProject(id) => dialogs.remove_project(id, cx),
+            SidebarEvent::DeleteLane(id) => dialogs.delete_lane(id, cx),
+        });
     }
 
     fn pane(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<ChatPane> {
@@ -282,6 +338,7 @@ impl Render for Workspace {
         let panes = self.render_node(&layout, multiple, &p, window, cx);
         let store = self.store.clone();
         div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -334,5 +391,7 @@ impl Render for Workspace {
                     .child(self.sidebar.clone())
                     .child(div().flex().flex_1().min_w_0().min_h_0().child(panes)),
             )
+            .child(self.dialogs.clone())
+            .children(self.overlay.as_ref().map(|(_, view)| view.clone()))
     }
 }

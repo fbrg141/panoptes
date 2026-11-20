@@ -2,8 +2,13 @@
 
 pub mod cards;
 pub mod chat;
+pub mod cleanup;
 pub mod composer;
+pub mod lane_dialogs;
 pub mod menu;
+pub mod new_lane;
+pub mod palette;
 pub mod picker;
+pub mod resume;
 pub mod sidebar;
 pub mod turn;
