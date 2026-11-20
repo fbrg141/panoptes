@@ -1,0 +1,22 @@
+[package]
+name = "panoptes-app"
+description = "The Panoptes desktop app in GPUI, replacing the Tauri app (#222)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "panoptes-gpui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+panoptes-core.workspace = true
+panoptes-harness.workspace = true
+panoptes-pi.workspace = true
+# GPUI is pre-1.0 and breaks often: pin exactly and upgrade on purpose.
+gpui-kit = "=0.10.0"

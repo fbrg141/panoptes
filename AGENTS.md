@@ -11,8 +11,8 @@ this way.
 |---|---|
 | `crates/panoptes-harness` | The neutral interface: `Harness` and `AgentSession` traits, `HarnessEvent`, `Message`, `Block`, `Question` |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `crates/panoptes-core` | The backend with no UI dependency, shared by the Tauri app and the GPUI app to come ([#222](https://github.com/fbrg141/panoptes/issues/222)) |
-| `crates/panoptes-core` | The backend with no UI dependency, shared by the Tauri app and the GPUI app to come ([#222](https://github.com/fbrg141/panoptes/issues/222)) |
+| `crates/panoptes-core` | The backend with no UI dependency, shared by the Tauri app and the GPUI app ([#222](https://github.com/fbrg141/panoptes/issues/222)) |
+| `crates/panoptes-app` | The GPUI app replacing the Tauri one: `backend.rs` runs the service on tokio, `transcript.rs` folds events (pure, tested), views render |
 | `crates/panoptes-core/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
 | `crates/panoptes-core/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
 | `crates/panoptes-core/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |

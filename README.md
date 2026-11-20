@@ -149,6 +149,10 @@ pnpm install
 pnpm tauri dev
 ```
 
+The GPUI app that is replacing the Tauri one ([#222](https://github.com/fbrg141/panoptes/issues/222))
+runs with `cargo run -p panoptes-app`. It shares the Tauri app's store and
+lanes folder, so don't run both at once.
+
 Opening http://localhost:1420 in a normal browser while the dev server runs
 shows the UI with fixture data and no agent (`src/dev/mockBackend.ts`). That
 is handy for design work, and it's how the screenshots above were made.
@@ -186,6 +190,7 @@ check the Open Anyway flow, then attach it to a GitHub release tagged
 | `crates/panoptes-harness` | The harness-neutral interface: sessions, messages, events, and the `Harness` / `AgentSession` traits |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
 | `crates/panoptes-core` | The backend: `service.rs` (open sessions, event forwarding), `store.rs` (Panoptes' own data in SQLite), lanes, changes and cleanup |
+| `crates/panoptes-app` | The GPUI app in progress, on `panoptes-core` |
 | `src-tauri` | The Tauri app: `panoptes-core` exposed as Tauri commands in `lib.rs` |
 | `src` | React UI: `conversation.ts` folds events into state, `store.ts` talks to the app, `components/` renders |
 | `packages/design-system` | Tokens, fonts, logos, icons and components |

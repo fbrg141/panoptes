@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "src-tauri",
+    "crates/panoptes-app",
     "crates/panoptes-core",
     "crates/panoptes-harness",
     "crates/panoptes-pi",
