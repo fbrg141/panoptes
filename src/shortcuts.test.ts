@@ -18,6 +18,7 @@ describe("shortcutFor", () => {
     expect(key("p", { meta: true })).toBe("search");
     expect(key("t", { meta: true })).toBe("newSession");
     expect(key("n", { meta: true })).toBe("newProject");
+    expect(key("n", { meta: true, shift: true })).toBe("newLaneSession");
     expect(key("d", { meta: true })).toBe("splitVertical");
     expect(key("D", { meta: true, shift: true })).toBe("splitHorizontal");
   });

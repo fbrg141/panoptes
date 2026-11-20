@@ -182,6 +182,21 @@ describe("lane main session card", () => {
     expect(document.activeElement).toBe(expandedRows[1]);
   });
 
+  it("folds earlier root sessions under the current session", () => {
+    const earlier = session({
+      key: "panoptes:3",
+      id: 3,
+      title: "Earlier context",
+      createdAt: now - 120_000,
+    });
+    render([earlier, { ...main, open: true }]);
+
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0].textContent).toContain("Build the parser");
+    click(disclosure() as HTMLButtonElement);
+    expect(rows().some((row) => row.textContent?.includes("Earlier context"))).toBe(true);
+  });
+
   it("uses the main session's selection state on the lane card", () => {
     useStore.setState({ activeKey: main.key });
     render([main, sub]);

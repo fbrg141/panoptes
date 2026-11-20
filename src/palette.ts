@@ -7,6 +7,8 @@ export type PaletteTarget =
   | { kind: "lane"; lane: Lane }
   | { kind: "project"; project: Project }
   | { kind: "newSession" }
+  | { kind: "newLaneSession" }
+  | { kind: "resumeSession" }
   | { kind: "newProject" }
   | { kind: "shortcuts" }
   | { kind: "showLogs" };
@@ -53,6 +55,8 @@ export function paletteGroups(
 ): { label: string; items: CommandItem[] }[] {
   const projectName = (id: number) =>
     projects.find((project) => project.id === id)?.name ?? "Project";
+  const activeLaneId = sessions.find((session) => session.key === activeKey)?.laneId;
+  const hasActiveLane = lanes.some((lane) => lane.id === activeLaneId && lane.state === "active");
   return [
     {
       label: "Sessions",
@@ -95,6 +99,21 @@ export function paletteGroups(
     {
       label: "Actions",
       items: [
+        ...(hasActiveLane
+          ? [
+              {
+                id: "action:newLaneSession",
+                label: "New session in current lane (/new)",
+                icon: "plus",
+                kbd: ["⌘", "⇧", "N"],
+              },
+              {
+                id: "action:resumeSession",
+                label: "Resume earlier session (/resume)",
+                icon: "history",
+              },
+            ]
+          : []),
         { id: "action:newSession", label: "New lane", icon: "plus", kbd: ["⌘", "T"] },
         { id: "action:newProject", label: "Add a project", icon: "folder", kbd: ["⌘", "N"] },
         {
@@ -132,6 +151,8 @@ export function paletteTarget(
     }
     case "action":
       if (rest === "newSession") return { kind: "newSession" };
+      if (rest === "newLaneSession") return { kind: "newLaneSession" };
+      if (rest === "resumeSession") return { kind: "resumeSession" };
       if (rest === "newProject") return { kind: "newProject" };
       if (rest === "shortcuts") return { kind: "shortcuts" };
       if (rest === "showLogs") return { kind: "showLogs" };

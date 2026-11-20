@@ -38,7 +38,9 @@ time. ([Why it's built this way](docs/decisions.md#observe-pi-do-not-orchestrate
 
 - **Lanes: one task, one worktree.** Start a task from a prompt and Panoptes
   creates a git worktree and branch for it, copies project files and runs
-  setup. A lane holds exactly one session, so there is only ever one writer.
+  setup. A lane keeps earlier sessions but opens only one at a time, so there
+  is only ever one writer. Use `/new` for a fresh context and `/resume` for an
+  earlier conversation in the same lane.
 - **Every session in one list.** All Pi conversations, including ones you
   started from the terminal, in one reverse-chronological list. Adopt them
   into lanes without copying or rewriting Pi's files. `pi --continue` and

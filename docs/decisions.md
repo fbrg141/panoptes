@@ -169,16 +169,14 @@ machine. It is the smallest part of #43; the rest of #43 stays parked.
 [domain-model.md](domain-model.md); this records the choices behind it.
 
 A project wraps a git repository (#19). A project has **lanes**. A lane owns
-a worktree, a branch, a task and one session (#228). The lane is the durable
-unit: it keeps its worktree, branch and task when that session closes. There
-is no replacement conversation on the same lane; an old conversation can be
-discarded, and a new task gets a new lane.
+a worktree, a branch, a task and its session history (#228). The lane is the
+durable unit: it keeps its worktree, branch, task and earlier conversations
+when the current session closes.
 
-1. **One session, one writer.** A lane holds exactly one session, so there is
-   one writer by construction. The write lock, read-only non-holder sessions
-   and lock queue go away. Parallel work still means separate lanes, but
-   Panoptes does not coordinate them. The schema may continue to allow several
-   sessions; the core will enforce one.
+1. **One live session, one writer.** A lane holds many session records over
+   time, but the core permits only one open process. Starting a fresh session
+   or resuming an earlier one first stops the current process. Parallel work
+   still means separate lanes, and Panoptes does not coordinate them.
 2. **One worktree now, room for more.** The schema lets a lane hold several
    worktrees, so multi-repo lanes (#21) need no migration, but the UI only
    ever creates one. Room without complexity.
@@ -210,13 +208,13 @@ every harness session found on disk appears in a flat **All sessions** list
 that you can adopt from.
 
 All of this follows the standing rule that decisions live in Rust and the UI
-only renders: the one-session rule, lane state and what appears where are
+only renders: the one-live-session rule, lane state and what appears where are
 worked out in the core.
 
-**Implementation status.** #228 makes this one-session rule real: project `+`
-creates a lane from a prompt and starts its only session. The write lock,
-queue, non-holder read-only sessions and replacement flow are gone. The
-original build order ending in subsessions (#58) and groups (#21) is closed.
+**Implementation status.** #228 made the one-writer rule real: project `+`
+creates a lane from a prompt and starts its first session. The write lock,
+queue and non-holder read-only sessions remain gone. The later `/new` and
+`/resume` flows retain conversation history without weakening that rule.
 
 **Deferred on purpose.** What happens when the base branch moves underneath
 a lane, and remote or cloud execution. The harness adapter boundary keeps the
@@ -259,10 +257,11 @@ the agent.
   set limit are skipped and the checkpoint says which. Configured `copyFiles`
   are preserved separately during archive and restore; they are not added to
   tracked checkpoints.
-- **One session per lane (#228) is what makes it sound.** A turn is that
-  session's run, so a checkpoint never mixes two agents, and an undo needs an
-  idle lane. Starting from a copy of the real index keeps git's stat cache, so
-  a checkpoint costs about as much as `git status`.
+- **One live session per lane (#228) is what makes it sound.** A turn belongs
+  to the current session, so a checkpoint never mixes two agents, and an undo
+  needs an idle lane. Undo covers only that session's turns; earlier sessions'
+  checkpoint refs stay untouched. Starting from a copy of the real index keeps
+  git's stat cache, so a checkpoint costs about as much as `git status`.
 - **The main checkout is the weak case.** You may be editing the same tree,
   so diffs per turn are approximate there and undo asks first.
 - **Finishing needs no squash.** Checkpoints sit beside the branch, not on
@@ -287,22 +286,28 @@ holding area lives. #20 reserves the `refs/panoptes/lanes/` namespace,
 keyed by lane name (`refs/panoptes/lanes/<lane>/archive`) rather than store
 id, because debug and release builds keep separate stores that can reuse an
 id in the same repository. Per-turn checkpoints are tracked by #204 and use
-the one-session boundary from #228, not #22's removed write lock.
+the one-live-session boundary from #228, not #22's removed write lock.
 
-## One session per lane
+## One live session per lane, with retained history
 
-*Decided 2026-11-11 (#228), implemented the same day.* A lane holds exactly one
-session. Clicking `+` on a project asks for a prompt and creates a lane with
-it, with the existing clearly marked option to use the main checkout when a
-worktree is unnecessary.
+*Decided 2026-11-11 (#228), implemented the same day; revised 2026-11-19.* A
+lane starts with one session and can hold earlier sessions over time. Clicking
+`+` on a project asks for a prompt and creates a lane with it, with the
+existing clearly marked option to use the main checkout when a worktree is
+unnecessary.
 
-- One session means one writer by construction. The write lock, read-only
+- One live session means one writer by construction. The write lock, read-only
   non-holder sessions and lock queue are removed rather than repaired.
-- There is no "replace session" flow. An old conversation can be discarded;
-  a new task is a new lane.
-- Pi's own subagents appear nested under that session and are read-only (#227).
-- The store schema does not need to forbid multiple sessions; the core enforces
-  the rule.
+- `/new` stops the current process and creates a fresh Panoptes session record
+  and Pi conversation in the same lane. `/resume` offers only that lane's own
+  earlier records, newest first, and reopens the selected conversation's file.
+- Neither flow uses Pi's in-process `new_session` or `switch_session` RPC. A
+  record keeps its harness identity, timeline, title and usage permanently.
+- Changing sessions is refused while the current agent streams, waits for a
+  question or approval, or has queued steering or follow-up messages.
+- Pi's own subagents appear nested under their parent and are read-only (#227).
+- The store schema does not forbid multiple records; the service enforces at
+  most one open session per lane.
 
 This supersedes #22's write-lock decision and the earlier subsession proposal.
 It is intentionally simpler than worker fan-out: Panoptes observes one agent's

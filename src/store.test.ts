@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { api } from "./api";
+import { emptyConversation } from "./conversation";
 import { createAppStore, describeError } from "./store";
 import type {
   AdoptionOutcome,
@@ -116,6 +117,8 @@ function fakeBackend() {
     ),
     openSession: vi.fn(async () => opened),
     newSession: vi.fn(async (): Promise<OpenedSession> => opened),
+    newLaneSession: vi.fn(async (): Promise<OpenedSession> => opened),
+    resumeLaneSession: vi.fn(async (): Promise<OpenedSession> => opened),
     adoptSession: vi.fn(
       async (): Promise<AdoptionOutcome> => ({ type: "adopted", key: "panoptes:7" }),
     ),
@@ -667,6 +670,34 @@ describe("store", () => {
     expect(store.getState().error).toBe("/tmp is not in a git repository");
   });
 
+  it("replaces a lane's live conversation with a fresh context", async () => {
+    const current = { ...laneSession, open: true };
+    store.setState({
+      sessions: [current],
+      conversations: { [current.key]: emptyConversation() },
+      activeKey: current.key,
+    });
+    fake.backend.newLaneSession.mockResolvedValueOnce({ ...opened, key: "panoptes:8" });
+
+    expect(await store.getState().newLaneSession(lane.id)).toBe(true);
+    expect(fake.backend.newLaneSession).toHaveBeenCalledWith(lane.id);
+    expect(store.getState().conversations[current.key]).toBeUndefined();
+    expect(store.getState().conversations["panoptes:8"]).toBeDefined();
+    expect(store.getState().activeKey).toBe("panoptes:8");
+  });
+
+  it("uses lane resume when an earlier session is selected", async () => {
+    const current = { ...laneSession, open: true };
+    const earlier = { ...laneSession, key: "panoptes:8", id: 8, open: false };
+    store.setState({ sessions: [current, earlier] });
+    fake.backend.resumeLaneSession.mockResolvedValueOnce({ ...opened, key: earlier.key });
+
+    await store.getState().open(earlier);
+    expect(fake.backend.resumeLaneSession).toHaveBeenCalledWith(lane.id, 8);
+    expect(fake.backend.openSession).not.toHaveBeenCalled();
+    expect(store.getState().activeKey).toBe(earlier.key);
+  });
+
   it("creates a durable lane and lists it without a session", async () => {
     fake.backend.listSessions.mockResolvedValueOnce({
       sessions: [session],
@@ -681,7 +712,7 @@ describe("store", () => {
     expect(store.getState().lanes).toEqual([lane]);
   });
 
-  it("creates a lane and its only session from the project prompt", async () => {
+  it("creates a lane and its first session from the project prompt", async () => {
     fake.backend.newSession.mockResolvedValueOnce({
       key: "panoptes:7",
       history: [],

@@ -84,6 +84,10 @@ export interface State {
   open: (session: Session) => Promise<void>;
   /** Starts a new session in a lane's worktree, configured and prompted. */
   create: (laneId: number, options?: SessionOptions) => Promise<void>;
+  /** Replaces the lane's live process with a fresh conversation record. */
+  newLaneSession: (laneId: number) => Promise<boolean>;
+  /** Reopens one of the lane's own earlier conversation records. */
+  resumeLaneSession: (laneId: number, sessionId: number) => Promise<boolean>;
   /** Adopts a discovered conversation into a matching or explicitly chosen lane. */
   adopt: (session: Session, laneId?: number | null) => Promise<AdoptionOutcome | null>;
   /** Hides a lane session (closing it first) or brings it back; its lane is untouched. */
@@ -111,7 +115,7 @@ export interface State {
   /** Removes a project after explicit confirmation in the UI. */
   removeProject: (id: number) => Promise<boolean>;
   createLane: (projectId: number, task: string, mainCheckout: boolean) => Promise<Lane | null>;
-  /** Creates a lane and starts its only session, configured by `options`. */
+  /** Creates a lane and starts its first session, configured by `options`. */
   createFromPrompt: (
     projectId: number,
     task: string,
@@ -347,6 +351,17 @@ export function createAppStore(backend: typeof api) {
       },
 
       open: async (session) => {
+        const current = get().sessions.find(
+          (item) =>
+            item.laneId !== null &&
+            item.laneId === session.laneId &&
+            item.open &&
+            item.key !== session.key,
+        );
+        if (session.id !== null && session.laneId !== null && current) {
+          await get().resumeLaneSession(session.laneId, session.id);
+          return;
+        }
         set((s) => {
           const { [session.key]: _openError, ...openErrors } = s.openErrors;
           return { activeKey: session.key, openErrors };
@@ -405,6 +420,38 @@ export function createAppStore(backend: typeof api) {
           }
         } catch (e) {
           fail(e);
+        }
+      },
+
+      newLaneSession: async (laneId) => {
+        const previous = get().sessions.find(
+          (session) => session.laneId === laneId && session.open,
+        );
+        try {
+          const opened = await backend.newLaneSession(laneId);
+          if (previous && previous.key !== opened.key) forget(previous.key);
+          adopt(opened);
+          await get().refresh();
+          return true;
+        } catch (e) {
+          fail(e);
+          return false;
+        }
+      },
+
+      resumeLaneSession: async (laneId, sessionId) => {
+        const previous = get().sessions.find(
+          (session) => session.laneId === laneId && session.open,
+        );
+        try {
+          const opened = await backend.resumeLaneSession(laneId, sessionId);
+          if (previous && previous.key !== opened.key) forget(previous.key);
+          adopt(opened);
+          await get().refresh();
+          return true;
+        } catch (e) {
+          fail(e);
+          return false;
         }
       },
 

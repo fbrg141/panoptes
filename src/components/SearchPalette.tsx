@@ -17,6 +17,7 @@ export function SearchPalette() {
   const activeKey = useStore((s) => s.activeKey);
   const open = useStore((s) => s.open);
   const create = useStore((s) => s.create);
+  const newLaneSession = useStore((s) => s.newLaneSession);
   const showLogs = useStore((s) => s.showLogs);
   const close = useUi((s) => s.close);
   const show = useUi((s) => s.open);
@@ -63,6 +64,16 @@ export function SearchPalette() {
       case "newSession":
         show({ type: "newLane", projectId: projects[0]?.id ?? 0 });
         break;
+      case "newLaneSession": {
+        const laneId = sessions.find((session) => session.key === activeKey)?.laneId;
+        if (laneId !== null && laneId !== undefined) await newLaneSession(laneId);
+        break;
+      }
+      case "resumeSession": {
+        const laneId = sessions.find((session) => session.key === activeKey)?.laneId;
+        if (laneId !== null && laneId !== undefined) show({ type: "resumeSession", laneId });
+        break;
+      }
       case "newProject":
         await pickProjectFolder();
         break;

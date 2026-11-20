@@ -7,6 +7,7 @@
 export type ShortcutId =
   | "search"
   | "newSession"
+  | "newLaneSession"
   | "newProject"
   | "shortcuts"
   | "splitVertical"
@@ -31,7 +32,7 @@ export function shortcutFor(
     case "t":
       return letter("newSession");
     case "n":
-      return letter("newProject");
+      return e.shiftKey ? "newLaneSession" : "newProject";
     // ⌘/ arrives as "/" unshifted and "?" with shift held.
     case "/":
     case "?":
@@ -58,6 +59,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     entries: [
       { label: "Search projects, lanes and sessions", keys: ["⌘", "P"] },
       { label: "New lane", keys: ["⌘", "T"] },
+      { label: "New session in current lane", keys: ["⌘", "⇧", "N"] },
       { label: "Add a project", keys: ["⌘", "N"] },
       { label: "Split pane vertically (side by side)", keys: ["⌘/Ctrl", "D"] },
       { label: "Split pane horizontally (stacked)", keys: ["⌘/Ctrl", "⇧", "D"] },

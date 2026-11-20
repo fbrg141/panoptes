@@ -17,7 +17,7 @@ import { OptionToggle, Overlay, OverlayFooter, OverlayHeader } from "./Overlay";
 import { Picker } from "./Picker";
 
 /**
- * The project + flow: one prompt creates a lane and its only session. The
+ * The project + flow: one prompt creates a lane and its first session. The
  * prompt names the lane and becomes its first message.
  */
 export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt?: string }) {
@@ -177,7 +177,7 @@ export function NewLaneDialog({ projectId, prompt }: { projectId: number; prompt
             <span className="sr-only">Enter creates the lane. Shift+Enter adds a line.</span>
             {mainCheckout
               ? "Shares the project's own checkout: no worktree, copied files or setup command. Archiving the lane never removes it."
-              : `Gets its own worktree and branch from ${project.baseBranch}. Your prompt starts the lane's one session.`}
+              : `Gets its own worktree and branch from ${project.baseBranch}. Your prompt starts the lane's first session.`}
           </p>
         </div>
 

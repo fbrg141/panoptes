@@ -33,6 +33,8 @@ describe("sidebar row menus", () => {
 
   it("offers the actions appropriate to the lane state", () => {
     expect(ids(laneMenuItems({ state: "active" } satisfies Pick<Lane, "state">))).toEqual([
+      "new-session",
+      "resume-session",
       "archive-lane",
       "delete-lane",
     ]);

@@ -342,6 +342,8 @@ export function LaneItem({
   onAction: () => void;
   onDelete: () => void;
 }) {
+  const newLaneSession = useStore((s) => s.newLaneSession);
+  const show = useUi((s) => s.open);
   const [expanded, setExpanded] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const mainCheckout = lane.worktrees.some((worktree) => worktree.mainCheckout);
@@ -364,6 +366,8 @@ export function LaneItem({
   const archivedExtras = archived ? [] : extraSessions.filter((session) => session.archived);
   const expandable = extraSessions.length > 0;
   const selectLaneAction = (id: string) => {
+    if (id === "new-session") void newLaneSession(lane.id);
+    if (id === "resume-session") show({ type: "resumeSession", laneId: lane.id });
     if (id === "archive-lane" || id === "restore-lane") onAction();
     if (id === "delete-lane") onDelete();
   };
@@ -769,7 +773,7 @@ function AdoptSessionDialog({
     >
       <p className="pb-3 text-ink-muted">
         The conversation stays in the harness's own files. Only its Panoptes lane membership is
-        added. Each lane can hold one session.
+        added. Only one session runs in a lane at a time.
       </p>
       {lanes.length === 0 ? (
         <p>No active lane without a session is available. Create a lane for a new task instead.</p>

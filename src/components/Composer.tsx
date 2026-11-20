@@ -20,6 +20,7 @@ import { modelGroups, shortModelId } from "../newSession";
 import { describeError, useStore } from "../store";
 import { proseField } from "../textFields";
 import type { CommandInfo, FileAttachment, QueuedPrompt, SessionSettings } from "../types";
+import { useUi } from "../ui";
 import { Picker } from "./Picker";
 import { SessionUsage } from "./SessionUsage";
 
@@ -277,6 +278,26 @@ export function Composer({
 
   const submit = (queue: boolean) => {
     if (sending || (!text.trim() && attachments.length === 0)) return;
+    const laneCommand = text.trim();
+    if (laneCommand === "/new" || laneCommand === "/resume") {
+      const laneId = useStore
+        .getState()
+        .sessions.find((session) => session.key === sessionKey)?.laneId;
+      setText("");
+      setAttachments([]);
+      setMentioned(new Set());
+      setMention(null);
+      setSlash(null);
+      saveDraft(sessionKey, { text: "", attachments: [], mentioned: [] });
+      if (laneId === null || laneId === undefined) {
+        fail("This command is only available in a lane");
+      } else if (laneCommand === "/new") {
+        void useStore.getState().newLaneSession(laneId);
+      } else {
+        useUi.getState().open({ type: "resumeSession", laneId });
+      }
+      return;
+    }
     const prompt = composePrompt(text, attachments);
     const sentFrom = sessionKey;
     const unsent = { text, attachments, mentioned: [...mentioned] };
@@ -314,6 +335,11 @@ export function Composer({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey && (text.trim() === "/new" || text.trim() === "/resume")) {
+      e.preventDefault();
+      submit(false);
+      return;
+    }
     const completionRows = mention ? matches : slash ? commandMatches : [];
     if ((mention || slash) && completionRows.length > 0) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
