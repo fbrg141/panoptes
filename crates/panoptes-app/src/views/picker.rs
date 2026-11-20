@@ -119,6 +119,7 @@ pub struct Picker {
     up: bool,
     width: f32,
     empty_text: SharedString,
+    searchable: bool,
     disabled: bool,
     p: Palette,
 }
@@ -142,6 +143,7 @@ impl Picker {
             up: false,
             width: 320.,
             empty_text: "Nothing to pick yet".into(),
+            searchable: true,
             disabled: false,
             p: *p,
         }
@@ -168,6 +170,11 @@ impl Picker {
     }
     pub fn empty_text(mut self, text: impl Into<SharedString>) -> Self {
         self.empty_text = text.into();
+        self
+    }
+    /// Without a search field typing still narrows the list.
+    pub fn searchable(mut self, searchable: bool) -> Self {
+        self.searchable = searchable;
         self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -407,9 +414,9 @@ impl Picker {
                     .flex_none()
                     .items_center()
                     .gap(px(8.))
-                    .h(px(CONTROL_LG))
-                    .px(px(12.))
-                    .border_b_1()
+                    .when(self.searchable, |el| el.h(px(CONTROL_LG)).px(px(12.)))
+                    .when(!self.searchable, |el| el.h(px(0.)).overflow_hidden())
+                    .when(self.searchable, |el| el.border_b_1())
                     .border_color(p.line)
                     .text_color(p.ink_muted)
                     .child(icon("search", 14.).flex_none())
@@ -431,23 +438,25 @@ impl Picker {
                     .p(px(4.))
                     .children(children),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(16.))
-                    .h(px(CONTROL))
-                    .px(px(12.))
-                    .border_t_1()
-                    .border_color(p.line)
-                    .t_small()
-                    .text_color(p.ink_muted)
-                    .child(hint(&["↑", "↓"], "move", &p))
-                    .child(hint(&["↵"], "choose", &p))
-                    .child(div().flex_1())
-                    .child(hint(&["Esc"], "back", &p)),
-            );
+            .when(self.searchable, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(16.))
+                        .h(px(CONTROL))
+                        .px(px(12.))
+                        .border_t_1()
+                        .border_color(p.line)
+                        .t_small()
+                        .text_color(p.ink_muted)
+                        .child(hint(&["↑", "↓"], "move", &p))
+                        .child(hint(&["↵"], "choose", &p))
+                        .child(div().flex_1())
+                        .child(hint(&["Esc"], "back", &p)),
+                )
+            });
         deferred(
             div()
                 .absolute()

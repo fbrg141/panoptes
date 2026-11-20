@@ -16,12 +16,14 @@ use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{Overlay, Ui};
 use crate::views::chat::ChatPane;
+use crate::views::lane_dialogs::LaneDialogs;
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 
 pub struct Workspace {
     store: Entity<AppStore>,
     ui: Entity<Ui>,
     sidebar: Entity<Sidebar>,
+    dialogs: Entity<LaneDialogs>,
     panes: HashMap<String, Entity<ChatPane>>,
     /// Open conversations when last seen, to close the panes of ones that went.
     open_keys: HashSet<String>,
@@ -38,6 +40,8 @@ impl Workspace {
         let store = cx.new(|cx| AppStore::new(backend, cx));
         let ui = cx.new(|_| Ui::default());
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), ui.clone(), cx));
+        let dialogs = cx.new(|_| LaneDialogs::new(store.clone()));
+        cx.observe(&dialogs, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&sidebar, |this, _, event, cx| {
             this.on_sidebar(event.clone(), cx)
         })
@@ -63,6 +67,7 @@ impl Workspace {
             store,
             ui,
             sidebar,
+            dialogs,
             panes: HashMap::new(),
             open_keys: HashSet::new(),
             active_key: None,
@@ -99,18 +104,12 @@ impl Workspace {
     }
 
     fn on_sidebar(&mut self, event: SidebarEvent, cx: &mut Context<Self>) {
-        match event {
-            SidebarEvent::ArchiveLane(id) => {
-                self.store.update(cx, |store, cx| {
-                    store.archive_lane(id, None, false, cx).detach()
-                });
-            }
-            SidebarEvent::Adopt(session) => {
-                self.store
-                    .update(cx, |store, cx| store.adopt(&session, None, cx).detach());
-            }
-            SidebarEvent::RemoveProject(_) | SidebarEvent::DeleteLane(_) => {}
-        }
+        self.dialogs.update(cx, |dialogs, cx| match event {
+            SidebarEvent::ArchiveLane(id) => dialogs.archive(id, None, false, cx),
+            SidebarEvent::Adopt(session) => dialogs.adopt(*session, None, cx),
+            SidebarEvent::RemoveProject(id) => dialogs.remove_project(id, cx),
+            SidebarEvent::DeleteLane(id) => dialogs.delete_lane(id, cx),
+        });
     }
 
     fn pane(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<ChatPane> {
@@ -282,6 +281,7 @@ impl Render for Workspace {
         let panes = self.render_node(&layout, multiple, &p, window, cx);
         let store = self.store.clone();
         div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -334,5 +334,6 @@ impl Render for Workspace {
                     .child(self.sidebar.clone())
                     .child(div().flex().flex_1().min_w_0().min_h_0().child(panes)),
             )
+            .child(self.dialogs.clone())
     }
 }

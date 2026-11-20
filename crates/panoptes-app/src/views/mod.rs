@@ -3,6 +3,7 @@
 pub mod cards;
 pub mod chat;
 pub mod composer;
+pub mod lane_dialogs;
 pub mod menu;
 pub mod picker;
 pub mod sidebar;
