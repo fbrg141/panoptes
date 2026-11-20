@@ -174,22 +174,7 @@ impl Sidebar {
     }
 
     fn add_project(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Add project".into()),
-        });
-        let store = self.store.clone();
-        cx.spawn(async move |_, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else {
-                return;
-            };
-            let Some(folder) = paths.first() else { return };
-            let folder = folder.to_string_lossy().to_string();
-            store.update(cx, |store, cx| store.add_project(folder, cx));
-        })
-        .detach();
+        self.store.update(cx, |store, cx| store.pick_project(cx));
     }
 
     fn open_menu(

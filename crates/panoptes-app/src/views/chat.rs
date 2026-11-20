@@ -536,6 +536,11 @@ impl Render for ChatPane {
 }
 
 impl ChatPane {
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |composer, cx| composer.focus(window, cx));
+    }
+
     /// Keeps a text field for each waiting question that asks for text, and
     /// redraws when the soonest card expires.
     fn sync_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
