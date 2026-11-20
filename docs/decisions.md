@@ -3,6 +3,23 @@
 The choices that shape Panoptes, and why. Each one is cheap to keep and
 expensive to reverse, so change one only on purpose, and record it here.
 
+## Move the UI to GPUI, and drop Tauri and React
+
+*Decided 2026-11-20. Supersedes the two decisions below on the UI.*
+
+Panoptes becomes one Rust app with a GPUI UI. This is a deliberate choice
+without a measured performance problem: one language, one type system, no
+webview and no IPC layer, accepting a full UI rewrite. The plan and its risks
+are on [#222](https://github.com/fbrg141/panoptes/issues/222).
+
+- The backend lives in `crates/panoptes-core` and has no UI dependency. The
+  Tauri app and the GPUI app (`crates/panoptes-app`) both run on it until the
+  GPUI app reaches parity, then Tauri, React and the JS toolchain are removed.
+- GPUI comes through `gpui-kit` (GPUI, `gpui-base` and `gpui-component`),
+  pinned to an exact version, since it is pre-1.0 and breaks often.
+- The standing rules below still apply: decisions live in Rust outside the
+  views, and design tokens stay data that Rust reads.
+
 ## Tauri v2, not Electron or a pure Rust UI
 
 *Decided 2026-11-04.*
