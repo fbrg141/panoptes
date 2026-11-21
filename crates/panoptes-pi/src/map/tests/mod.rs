@@ -8,6 +8,7 @@ use panoptes_harness::{
     ToolImage, ToolKind, ToolOutput, ToolStatus, Usage,
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 mod dialogs;
 mod history;

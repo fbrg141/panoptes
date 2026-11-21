@@ -1,5 +1,3 @@
-use std::sync::atomic::Ordering;
-
 use panoptes_harness::{Approval, HarnessEvent, NoticeLevel, Question, QuestionKind};
 use serde_json::Value;
 
@@ -24,7 +22,7 @@ impl EventMapper {
     /// dialog, including one a tool asks while it runs, is a question.
     pub fn ui_request(&mut self, request: &Value, now: i64) -> Vec<HarnessEvent> {
         if request["method"] == "setStatus" && request["statusKey"] == PERMISSION_GUARD_STATUS {
-            self.shared.permission_guard.store(true, Ordering::Relaxed);
+            self.shared.set_permission_guard();
             return Vec::new();
         }
         if request["method"] == "setStatus" && request["statusKey"] == APPROVAL_TAG {
@@ -42,11 +40,7 @@ impl EventMapper {
                 _ => None,
             };
             if let Some(reply) = reply {
-                self.shared
-                    .approvals
-                    .lock()
-                    .unwrap()
-                    .insert(question.id.clone(), reply);
+                self.shared.record_approval(&question.id, reply);
                 events = vec![HarnessEvent::Approval {
                     approval: Approval {
                         id: question.id.clone(),

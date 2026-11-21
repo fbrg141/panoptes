@@ -31,11 +31,9 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) 
         .filter(|message| message["role"] == "toolResult")
         .filter_map(|message| Some((message["toolCallId"].as_str()?, message)))
         .collect();
-    let times = shared.tool_times.lock().unwrap();
-    let live_ids = shared.live_ids.lock().unwrap();
-    let ended_at = shared.ended_at.lock().unwrap();
+    let view = shared.history_view();
     let finish = |call: &mut ToolCall| {
-        let seen = times.get(&call.id).copied();
+        let seen = view.tool_time(&call.id);
         if let Some(result) = results.get(call.id.as_str()) {
             let is_error = result["isError"].as_bool().unwrap_or(false);
             set_output(call, result, Some(is_error));
@@ -65,14 +63,13 @@ pub fn history(entries: &[Value], leaf_id: Option<&str>, shared: &SessionState) 
                     let id = message_key(&entry["message"])
                         .and_then(|key| {
                             let nth = seen_keys.entry(key.clone()).or_default();
-                            let live = live_ids.get(&key).and_then(|ids| ids.get(*nth));
+                            let live = view.live_id(&key, *nth);
                             *nth += 1;
                             live.cloned()
                         })
                         .unwrap_or(id);
-                    let ended = ended_at
-                        .get(&id)
-                        .copied()
+                    let ended = view
+                        .ended_at(&id)
                         .or_else(|| entry["timestamp"].as_str().and_then(iso_millis));
                     message(&entry["message"], id, ended)
                 }
