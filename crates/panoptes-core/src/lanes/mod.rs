@@ -10,10 +10,21 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::git::{
-    LANE_GIT_TIMEOUT, checked_stdout, command_failed, git_path, ref_exists, run, run_index,
-};
-use crate::store::{Lane, LaneWorktree, NewLane, NewLaneWorktree, Project};
+use crate::git::{LANE_GIT_TIMEOUT, checked_stdout, git_path, ref_exists, run, run_index};
+use crate::store::{Lane, NewLane, NewLaneWorktree, Project};
+
+mod branch;
+mod copy_files;
+mod inspect;
+mod naming;
+
+pub use branch::create_branch_here;
+use branch::{BranchCheck, Removal, check_lane_branch, current_branch};
+use copy_files::{copy_files, preserve_copy_files, restore_copy_files};
+pub use inspect::{archive_preservation, work};
+use inspect::{sole_worktree, worktree_status};
+pub use naming::slug;
+use naming::{free_name, worktree_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,72 +68,6 @@ pub enum ArchiveResult {
 pub enum DeleteResult {
     Deleted,
     DetachedHead(DetachedHead),
-}
-
-/// Filesystem-safe lane names are also used in branch names and paths.
-pub fn slug(task: &str) -> String {
-    let mut slug = String::new();
-    let mut dash = false;
-    for character in task.chars() {
-        if character.is_ascii_alphanumeric() {
-            if dash && !slug.is_empty() {
-                slug.push('-');
-            }
-            slug.push(character.to_ascii_lowercase());
-            dash = false;
-        } else {
-            dash = true;
-        }
-    }
-    // Truncate first, then trim, so a cut never leaves a trailing dash.
-    let slug = slug.chars().take(48).collect::<String>();
-    let slug = slug.trim_matches('-');
-    if slug.is_empty() {
-        "lane".into()
-    } else {
-        slug.into()
-    }
-}
-
-fn worktree_path(root: &Path, repo: &Path, name: &str) -> PathBuf {
-    root.join(name).join(
-        repo.file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("repo")),
-    )
-}
-
-/// The first of `base`, `base-2`, `base-3`, … that no stored lane of this
-/// project uses and, for a fresh worktree, whose folder and branch are free.
-/// The folder and branch checks matter because other projects (with the
-/// same repository name) and other Panoptes stores share the lanes root and
-/// the repository's branches.
-fn free_name(
-    root: &Path,
-    repo: &Path,
-    base: &str,
-    taken: &[String],
-    main_checkout: bool,
-) -> anyhow::Result<String> {
-    for suffix in 1.. {
-        let name = if suffix == 1 {
-            base.to_string()
-        } else {
-            format!("{base}-{suffix}")
-        };
-        if taken.contains(&name) {
-            continue;
-        }
-        if main_checkout {
-            return Ok(name);
-        }
-        let branch_free = !ref_exists(repo, &format!("refs/heads/panoptes/{name}"))?;
-        // `exists` follows links; a dangling one still occupies the name.
-        let folder_free = std::fs::symlink_metadata(root.join(&name)).is_err();
-        if branch_free && folder_free {
-            return Ok(name);
-        }
-    }
-    unreachable!("an unbounded range always yields a name")
 }
 
 /// Makes a worktree and its branch, copies the project's local files, and
@@ -497,59 +442,6 @@ pub fn delete_detached(
     Ok(DeleteResult::Deleted)
 }
 
-/// Attaches a detached worktree to its lane branch without archiving or
-/// deleting anything. This is also the recovery for unreachable commits.
-pub fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()> {
-    match check_lane_branch(path, lane, Removal::Archive)? {
-        BranchCheck::Ready => return Ok(()),
-        BranchCheck::Detached(_) => {}
-    }
-    let head = run(path, &["rev-parse", "HEAD"])?;
-    let reference = format!("refs/heads/{}", lane.branch);
-    if ref_exists(path, &reference)? {
-        let branch = run(path, &["rev-parse", "--verify", &reference])?;
-        if branch == head {
-            run(path, &["switch", &lane.branch])?;
-        } else if run(path, &["merge-base", "--is-ancestor", &branch, &head]).is_ok() {
-            // The user explicitly chose to recreate the lane branch here.
-            // `-C` is safe only when this advances it to a descendant.
-            run(path, &["switch", "-C", &lane.branch])?;
-        } else {
-            bail!(
-                "The lane branch {} points to {}, which is not an ancestor of HEAD ({}). It was not moved; choose another branch or save the detached commits on a new branch first",
-                lane.branch,
-                branch,
-                head
-            );
-        }
-    } else {
-        run(path, &["switch", "-c", &lane.branch])?;
-    }
-    Ok(())
-}
-
-fn sole_worktree(lane: &Lane) -> anyhow::Result<&LaneWorktree> {
-    if lane.worktrees.len() != 1 {
-        bail!("This operation needs exactly one worktree");
-    }
-    Ok(&lane.worktrees[0])
-}
-
-/// Every change in the tree, whatever the user's status settings say: with
-/// `status.showUntrackedFiles=no` a plain `git status` hides new files, and
-/// removing the worktree would then delete them.
-fn worktree_status(path: &Path) -> anyhow::Result<String> {
-    run(
-        path,
-        &[
-            "status",
-            "--porcelain",
-            "--untracked-files=all",
-            "--ignore-submodules=none",
-        ],
-    )
-}
-
 /// What a lane's worktree holds compared with where it started: the files
 /// changed and not yet committed, and the commits on its branch that the
 /// project's base branch does not have.
@@ -561,261 +453,12 @@ pub struct LaneWork {
     pub commits_ahead: Option<u32>,
 }
 
-/// The work in an active lane's worktree, or `None` when it can't be read.
-pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
-    let path = Path::new(&sole_worktree(lane).ok()?.path);
-    let status = worktree_status(path).ok()?;
-    let changed_files = status.lines().filter(|line| !line.is_empty()).count() as u32;
-    let range = format!("{}..HEAD", project.settings.base_branch);
-    let commits_ahead = run(path, &["rev-list", "--count", &range])
-        .ok()
-        .and_then(|count| count.parse().ok());
-    Some(LaneWork {
-        changed_files,
-        commits_ahead,
-    })
-}
-
 /// What the normal archive path will do with an eligible lane's worktree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArchivePreservation {
     Clean,
     Checkpoint,
-}
-
-/// Read-only preflight for cleanup suggestions. `None` means the lane needs
-/// its individual recovery flow (or cannot be read), so bulk cleanup leaves it
-/// alone. Archiving repeats every check before removing the worktree.
-pub fn archive_preservation(project: &Project, lane: &Lane) -> Option<ArchivePreservation> {
-    let worktree = sole_worktree(lane).ok()?;
-    if worktree.main_checkout {
-        return None;
-    }
-    let path = Path::new(&worktree.path);
-    let repo = Path::new(&project.repo);
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if !repo.is_dir() {
-                return None;
-            }
-            if let Some(reference) = worktree.checkpoint_ref.as_deref()
-                && !ref_exists(repo, reference).ok()?
-            {
-                return None;
-            }
-            return Some(ArchivePreservation::Clean);
-        }
-        Err(_) => return None,
-    }
-    match check_lane_branch(path, lane, Removal::Archive).ok()? {
-        BranchCheck::Ready => {}
-        BranchCheck::Detached(_) => return None,
-    }
-    if worktree_status(path).ok()?.is_empty() {
-        Some(ArchivePreservation::Clean)
-    } else {
-        Some(ArchivePreservation::Checkpoint)
-    }
-}
-
-/// Archiving keeps the lane's branch, so it is only safe when the worktree
-/// is on that branch. Commits made on a detached HEAD or another branch would
-/// otherwise become unreachable once the worktree is removed, and so would a
-/// commit the Commit strategy makes there. A merge, rebase, cherry-pick,
-/// revert or bisect in progress is refused for the same reason.
-/// What the caller is about to do with the worktree, since deletion also
-/// removes the lane branch and archiving keeps it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Removal {
-    Archive,
-    Delete,
-}
-
-enum BranchCheck {
-    Ready,
-    Detached(DetachedHead),
-}
-
-fn check_lane_branch(path: &Path, lane: &Lane, removal: Removal) -> anyhow::Result<BranchCheck> {
-    const IN_PROGRESS: [(&str, &str); 6] = [
-        ("MERGE_HEAD", "a merge"),
-        ("rebase-merge", "a rebase"),
-        ("rebase-apply", "a rebase"),
-        ("CHERRY_PICK_HEAD", "a cherry-pick"),
-        ("REVERT_HEAD", "a revert"),
-        ("BISECT_LOG", "a bisect"),
-    ];
-    for (name, operation) in IN_PROGRESS {
-        if git_path(path, name)?.exists() {
-            bail!(
-                "The lane's worktree is in the middle of {operation}; finish or abort it before archiving or deleting the lane. The worktree was left in place"
-            );
-        }
-    }
-    let expected = format!("refs/heads/{}", lane.branch);
-    match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
-        Ok(head) if head == expected => Ok(BranchCheck::Ready),
-        Ok(head) => bail!(
-            "The lane's worktree is on {} instead of {}; switch back to {} before archiving or deleting the lane so its branch is unambiguous. The worktree was left in place",
-            head.trim_start_matches("refs/heads/"),
-            lane.branch,
-            lane.branch
-        ),
-        Err(_) => Ok(BranchCheck::Detached(detached_head(path, lane, removal)?)),
-    }
-}
-
-/// Lists every commit that would become unreachable from local and remote
-/// branches if this detached worktree were removed. Tags deliberately do not
-/// count: the recovery promise is specifically about branch reachability.
-fn detached_head(path: &Path, lane: &Lane, removal: Removal) -> anyhow::Result<DetachedHead> {
-    let commit = run(path, &["rev-parse", "HEAD"])?;
-    let dirty = !worktree_status(path)?.is_empty();
-    // Deleting a lane also deletes its branch, so that branch cannot be what
-    // keeps a detached commit reachable. Archiving keeps it, so it counts.
-    // `--exclude` before `--branches` matches the short branch name.
-    let exclude = format!("--exclude={}", lane.branch);
-    let mut args = vec!["log", "--format=%H%x09%s", "HEAD", "--not"];
-    if removal == Removal::Delete {
-        args.push(&exclude);
-    }
-    args.extend(["--branches", "--remotes", "--"]);
-    let log = run(path, &args)?;
-    let unreachable_commits = log
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let (hash, subject) = line.split_once('\t').unwrap_or((line, ""));
-            UnreachableCommit {
-                hash: hash.into(),
-                subject: subject.into(),
-            }
-        })
-        .collect();
-    Ok(DetachedHead {
-        commit,
-        dirty,
-        unreachable_commits,
-    })
-}
-
-fn current_branch(repo: &Path) -> Option<String> {
-    run(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok()
-}
-
-fn copy_files_reference(lane: &Lane) -> String {
-    format!("refs/panoptes/lanes/{}/copy-files", lane.name)
-}
-
-/// Saves the lane's current configured copies outside the branch and index.
-/// These files are often ignored, so the tracked checkpoint cannot retain
-/// them. A tree ref keeps them without making them tracked on restore.
-fn preserve_copy_files(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<()> {
-    let repo = Path::new(&project.repo);
-    let reference = copy_files_reference(lane);
-    let index = git_path(path, "index")?;
-    let temporary = index.with_file_name(format!(
-        "panoptes-copy-files-{}-{}",
-        std::process::id(),
-        lane.id
-    ));
-    let _temporary = TemporaryFile(temporary.clone());
-    run_index(path, &temporary, &["read-tree", "--empty"])?;
-    let mut any = false;
-    for relative in &project.settings.copy_files {
-        let source = path.join(relative);
-        match std::fs::metadata(&source) {
-            Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => bail!("{} is not a file", source.display()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("Could not read {}", source.display()));
-            }
-        }
-        run_index(path, &temporary, &["add", "-f", "--", relative])?;
-        any = true;
-    }
-    if !any {
-        if ref_exists(repo, &reference)? {
-            run(repo, &["update-ref", "-d", &reference])?;
-        }
-        return Ok(());
-    }
-    let tree = run_index(path, &temporary, &["write-tree"])?;
-    run(repo, &["update-ref", &reference, &tree])?;
-    Ok(())
-}
-
-/// Restores configured copies without adding them to the new worktree's
-/// index. A tracked file supplied by Git still wins over a preserved copy.
-fn restore_copy_files(project: &Project, lane: &Lane, path: &Path) -> anyhow::Result<()> {
-    let repo = Path::new(&project.repo);
-    let reference = copy_files_reference(lane);
-    if !ref_exists(repo, &reference)? {
-        return Ok(());
-    }
-    let entries = run(repo, &["ls-tree", "-r", "-z", "--name-only", &reference])?;
-    let entries = entries.split('\0').collect::<Vec<_>>();
-    for relative in &project.settings.copy_files {
-        if !entries.contains(&relative.as_str()) {
-            continue;
-        }
-        let target = path.join(relative);
-        if target.exists() {
-            continue;
-        }
-        let object = format!("{reference}:{relative}");
-        let output = crate::git::output_with_timeout(
-            crate::git::command()
-                .arg("-C")
-                .arg(repo)
-                .args(["show", &object]),
-            None,
-            LANE_GIT_TIMEOUT,
-        )?;
-        if !output.status.success() {
-            return Err(command_failed("git show", &output));
-        }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&target, output.stdout)
-            .with_context(|| format!("Could not restore {}", target.display()))?;
-    }
-    Ok(())
-}
-
-fn copy_files(project: &Project, destination: &Path) -> anyhow::Result<()> {
-    let repo = Path::new(&project.repo);
-    for relative in &project.settings.copy_files {
-        let source = repo.join(relative);
-        let target = destination.join(relative);
-        match std::fs::metadata(&source) {
-            Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => bail!("{} is not a file", source.display()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("Could not read {}", source.display()));
-            }
-        }
-        // A tracked file already supplied by Git wins over the local copy.
-        if target.exists() {
-            continue;
-        }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(&source, &target).with_context(|| {
-            format!(
-                "Could not copy {} to {}",
-                source.display(),
-                target.display()
-            )
-        })?;
-    }
-    Ok(())
 }
 
 fn run_setup(project: &Project, path: &Path, cancelled: Option<&AtomicBool>) -> anyhow::Result<()> {

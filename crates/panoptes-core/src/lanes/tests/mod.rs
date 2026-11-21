@@ -1,5 +1,5 @@
 use super::*;
-use crate::store::{LaneState, ProjectSettings};
+use crate::store::{LaneState, LaneWorktree, ProjectSettings};
 
 mod archive;
 mod create;
