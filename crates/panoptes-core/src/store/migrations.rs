@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::Transaction;
 
 use super::legacy::{legacy_pins, retire_legacy_index};
-use super::{DEFAULT_CLEANUP_IDLE_DAYS, MAX_CLEANUP_IDLE_DAYS};
+use super::preferences::{DEFAULT_CLEANUP_IDLE_DAYS, MAX_CLEANUP_IDLE_DAYS};
 
 /// One schema step.
 #[derive(Clone, Copy)]

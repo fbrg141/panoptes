@@ -1,7 +1,9 @@
 use super::legacy::{IMPORTED_INDEX, LEGACY_INDEX};
 use super::migrate::{IN_USE, partial_backup, user_version};
 use super::*;
+use anyhow::bail;
 use rusqlite::ErrorCode;
+use std::collections::BTreeSet;
 
 mod lanes;
 mod migrations;
