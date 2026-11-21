@@ -192,55 +192,55 @@ async fn resuming_a_lane_session_uses_exactly_that_records_locator() {
     assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
 }
 
-    #[tokio::test]
-    async fn previewing_an_earlier_session_keeps_the_live_one_until_resume() {
-        let f = fixture(FakeHarness::default());
-        let (_code, lane) = lane_of(&f).await;
-        let first = f.service.create(lane.id, "fake").await.unwrap();
-        let first_id = panoptes_id(&first.key).unwrap();
-        let second = f.service.replace_lane_session(lane.id).await.unwrap();
+#[tokio::test]
+async fn previewing_an_earlier_session_keeps_the_live_one_until_resume() {
+    let f = fixture(FakeHarness::default());
+    let (_code, lane) = lane_of(&f).await;
+    let first = f.service.create(lane.id, "fake").await.unwrap();
+    let first_id = panoptes_id(&first.key).unwrap();
+    let second = f.service.replace_lane_session(lane.id).await.unwrap();
 
-        let preview = f.service.preview(&first.key).await.unwrap();
-        assert!(preview.preview);
-        assert_eq!(preview.history, first.history);
-        assert!(f.service.history(&second.key).await.is_ok());
-        assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 2);
-        assert_eq!(f.harness.read_only(), [false, false, true]);
+    let preview = f.service.preview(&first.key).await.unwrap();
+    assert!(preview.preview);
+    assert_eq!(preview.history, first.history);
+    assert!(f.service.history(&second.key).await.is_ok());
+    assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 2);
+    assert_eq!(f.harness.read_only(), [false, false, true]);
 
-        let resumed = f
-            .service
-            .resume_lane_session(lane.id, first_id)
-            .await
-            .unwrap();
-        assert!(!resumed.preview);
-        assert!(f.service.history(&second.key).await.is_err());
-        assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
-        assert_eq!(f.harness.read_only(), [false, false, true, false]);
-    }
+    let resumed = f
+        .service
+        .resume_lane_session(lane.id, first_id)
+        .await
+        .unwrap();
+    assert!(!resumed.preview);
+    assert!(f.service.history(&second.key).await.is_err());
+    assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
+    assert_eq!(f.harness.read_only(), [false, false, true, false]);
+}
 
-    #[tokio::test]
-    async fn a_preview_does_not_hold_its_lane() {
-        let f = fixture(FakeHarness::default());
-        let (_code, lane) = lane_of(&f).await;
-        let first = f.service.create(lane.id, "fake").await.unwrap();
-        let second = f.service.replace_lane_session(lane.id).await.unwrap();
-        f.service.preview(&first.key).await.unwrap();
+#[tokio::test]
+async fn a_preview_does_not_hold_its_lane() {
+    let f = fixture(FakeHarness::default());
+    let (_code, lane) = lane_of(&f).await;
+    let first = f.service.create(lane.id, "fake").await.unwrap();
+    let second = f.service.replace_lane_session(lane.id).await.unwrap();
+    f.service.preview(&first.key).await.unwrap();
 
-        // Stopping the live session and opening it again keeps the preview.
-        f.service.close(&second.key).await;
-        let reopened = f
-            .service
-            .open("fake", &second.key, String::new(), String::new())
-            .await
-            .unwrap();
-        assert!(!reopened.preview);
-        assert!(f.service.history(&first.key).await.is_ok());
+    // Stopping the live session and opening it again keeps the preview.
+    f.service.close(&second.key).await;
+    let reopened = f
+        .service
+        .open("fake", &second.key, String::new(), String::new())
+        .await
+        .unwrap();
+    assert!(!reopened.preview);
+    assert!(f.service.history(&first.key).await.is_ok());
 
-        // Archiving needs only the live session closed; the preview goes too.
-        f.service.close(&second.key).await;
-        f.service.archive_lane(lane.id, None).await.unwrap();
-        assert!(f.service.history(&first.key).await.is_err());
-    }
+    // Archiving needs only the live session closed; the preview goes too.
+    f.service.close(&second.key).await;
+    f.service.archive_lane(lane.id, None).await.unwrap();
+    assert!(f.service.history(&first.key).await.is_err());
+}
 
 #[tokio::test]
 async fn an_archived_lane_session_cannot_be_resumed() {

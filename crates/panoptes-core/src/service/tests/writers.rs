@@ -100,5 +100,5 @@ async fn a_writer_that_stops_no_longer_holds_a_lane_back() {
     eventually(&f, |l| entry(l, b.id).busy_writer.is_some()).await;
     f.service.close("panoptes:1").await;
     eventually(&f, |l| entry(l, b.id).busy_writer.is_none()).await;
-    assert!(f.service.lane_writers.is_empty());
+    assert!(f.service.registry.lane_writers().is_empty());
 }

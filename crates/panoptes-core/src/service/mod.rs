@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use panoptes_harness::{
@@ -14,7 +14,6 @@ use panoptes_harness::{
     StartSession,
 };
 use serde::Serialize;
-use tokio::sync::Mutex;
 
 use crate::changes::{self, Changes, DiffOptions, Hunk, TreeRange};
 use crate::cleanup::{self, IdleLane, LaneCleanup};
@@ -28,6 +27,7 @@ mod error;
 mod events;
 mod forward;
 mod key;
+mod registry;
 mod status;
 mod store;
 mod writers;
@@ -39,6 +39,7 @@ pub use key::{harness_key, panoptes_key};
 use error::{err, not_open, only_in_a_lane};
 use forward::{Forwarder, WriteWatch};
 use key::{SessionKey, panoptes_id};
+use registry::{EarlyExit, Launch, OpenSession, Registry};
 use status::{Tracker, now_ms};
 use store::SharedStore;
 use writers::LaneWriters;
@@ -172,77 +173,18 @@ pub struct OpenedSession {
     pub replay: Vec<HarnessEvent>,
 }
 
-type EarlyExit = Arc<std::sync::Mutex<Option<String>>>;
-
-struct OpenSession {
-    /// Distinguishes this process from earlier ones for the same session, so
-    /// a late exit from a replaced process cannot close its successor.
-    generation: u64,
-    session: Arc<dyn AgentSession>,
-    status: Tracker,
-    /// Lane membership, used to keep an open lane from being archived.
-    lane: Option<i64>,
-    /// Read-only history alongside the lane's live session.
-    preview: bool,
-}
-
-/// What a session's process is started with.
-struct Launch {
-    harness: String,
-    cwd: PathBuf,
-    resume: Option<String>,
-    /// Lane membership, not a lock.
-    lane: Option<i64>,
-    /// Read-only for archived lanes, previews or a missing-folder resume.
-    read_only: bool,
-    /// History alongside the lane's live session; a prompt replaces both.
-    preview: bool,
-    /// Extra system-prompt instructions stored by a newly created session.
-    instructions: Option<String>,
-}
-
-/// Lists a session as starting for as long as it lives.
-struct Starting {
-    starting: Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
-    key: String,
-}
-
-impl Starting {
-    fn new(
-        starting: &Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
-        key: &str,
-        lane: Option<i64>,
-    ) -> Self {
-        starting.lock().unwrap().insert(key.to_string(), lane);
-        Self {
-            starting: starting.clone(),
-            key: key.to_string(),
-        }
-    }
-}
-
-impl Drop for Starting {
-    fn drop(&mut self) {
-        self.starting.lock().unwrap().remove(&self.key);
-    }
-}
-
 pub struct Service {
+    registry: Registry,
     harnesses: HashMap<String, Arc<dyn Harness>>,
-    open: Arc<Mutex<HashMap<String, OpenSession>>>,
     /// One lifecycle lock per session key, held by every step that starts,
     /// stops or re-homes its process: open, create, close and adopt. So a
     /// session never gets a second process while its first one is starting
     /// or shutting down. Entries are never removed, so two callers can never
     /// hold different locks for one key.
-    lifecycle: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// A second process for a lane never starts while another start or stop
     /// is in flight. Session records persist; only their processes are exclusive.
-    lane_lifecycle: std::sync::Mutex<HashMap<i64, Arc<Mutex<()>>>>,
     /// Sessions whose process is starting, with their lane. They are not in
     /// `open` yet, and a lane must not be archived or deleted under them.
-    starting: Arc<std::sync::Mutex<HashMap<String, Option<i64>>>>,
-    generations: AtomicU64,
     /// Shared with the blocking threads that run every store call.
     store: SharedStore,
     /// Central folder for lane worktrees, normally `~/Panoptes/lanes`.
@@ -252,7 +194,6 @@ pub struct Service {
     /// Lanes with an archive, restore or delete in progress.
     busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
     /// Open sessions seen editing a lane that is not their own.
-    lane_writers: LaneWriters,
     /// Panoptes' own record of what happened; disabled unless given one.
     log: EventLog,
     /// Where each working directory sits in git, so each is looked up once.
@@ -268,35 +209,19 @@ impl Service {
         emit: Emit,
     ) -> Self {
         Self {
+            registry: Registry::new(),
             harnesses: harnesses
                 .into_iter()
                 .map(|harness| (harness.id().to_string(), harness))
                 .collect(),
-            open: Arc::default(),
-            lifecycle: std::sync::Mutex::default(),
-            lane_lifecycle: std::sync::Mutex::default(),
-            starting: Arc::default(),
-            generations: AtomicU64::new(1),
             store: SharedStore::new(store),
             lanes_root,
             lane_cancellations: Arc::default(),
             busy_lanes: Arc::default(),
-            lane_writers: LaneWriters::default(),
             log: EventLog::default(),
             locations: std::sync::Mutex::default(),
             emit,
         }
-    }
-
-    async fn lane_lifecycle(&self, id: i64) -> tokio::sync::OwnedMutexGuard<()> {
-        let lock = self
-            .lane_lifecycle
-            .lock()
-            .unwrap()
-            .entry(id)
-            .or_default()
-            .clone();
-        lock.lock_owned().await
     }
 
     /// Records what happens from now on into `log`.
@@ -320,42 +245,6 @@ impl Service {
                 format!("The {id} harness is not available"),
             )
         })
-    }
-
-    /// Waits for, and holds, the lifecycle lock of `key`.
-    async fn lifecycle(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let lock = self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .entry(key.to_string())
-            .or_default()
-            .clone();
-        lock.lock_owned().await
-    }
-
-    /// Whether a session in lane `id` is open or starting.
-    async fn lane_in_use(&self, id: i64) -> bool {
-        self.starting
-            .lock()
-            .unwrap()
-            .values()
-            .any(|lane| *lane == Some(id))
-            || self
-                .open
-                .lock()
-                .await
-                .values()
-                .any(|open| open.lane == Some(id))
-    }
-
-    async fn session(&self, key: &str) -> ServiceResult<Arc<dyn AgentSession>> {
-        self.open
-            .lock()
-            .await
-            .get(key)
-            .map(|open| open.session.clone())
-            .ok_or_else(not_open)
     }
 
     pub async fn list(&self) -> Listing {
@@ -436,10 +325,15 @@ impl Service {
             })
             .collect();
         let mut adopted = vec![false; discovered.len()];
-        let open = self.open.lock().await;
+        let open = self.registry.open().await;
         let busy_writers: HashMap<i64, String> = lanes
             .iter()
-            .filter_map(|lane| Some((lane.id, busy_writer(&open, &self.lane_writers, lane.id)?)))
+            .filter_map(|lane| {
+                Some((
+                    lane.id,
+                    busy_writer(&open, &self.registry.lane_writers(), lane.id)?,
+                ))
+            })
             .collect();
         let mut locations = self.locations.lock().unwrap();
         let mut sessions = Vec::new();
@@ -596,7 +490,7 @@ impl Service {
         locator: String,
         cwd: String,
     ) -> ServiceResult<OpenedSession> {
-        let mut guard = self.lifecycle(key).await;
+        let mut guard = self.registry.lifecycle(key).await;
         let key = match SessionKey::parse(harness, key) {
             SessionKey::Panoptes(id) => panoptes_key(id),
             SessionKey::Harness { id: harness_id } => {
@@ -614,7 +508,7 @@ impl Service {
                     Some(id) => {
                         drop(guard);
                         let key = panoptes_key(id);
-                        guard = self.lifecycle(&key).await;
+                        guard = self.registry.lifecycle(&key).await;
                         key
                     }
                     None => key.to_string(),
@@ -623,8 +517,8 @@ impl Service {
         };
 
         let existing = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .get(&key)
             .map(|o| (o.session.clone(), o.status.clone(), o.preview));
@@ -672,10 +566,10 @@ impl Service {
     /// session. The preview has no writing tools; sending a message resumes it.
     pub async fn preview(&self, key: &str) -> ServiceResult<OpenedSession> {
         let id = panoptes_id(key).ok_or_else(|| only_in_a_lane("previewed"))?;
-        let guard = self.lifecycle(key).await;
+        let guard = self.registry.lifecycle(key).await;
         let existing = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .get(key)
             .map(|o| (o.session.clone(), o.status.clone(), o.preview));
@@ -731,32 +625,26 @@ impl Service {
     /// so a prompt arriving meanwhile finds no session instead of being lost
     /// to the shutdown. Returns the key that was stopped.
     async fn stop_for_lane_change(&self, lane_id: i64) -> ServiceResult<Option<String>> {
-        if self
-            .starting
-            .lock()
-            .unwrap()
-            .values()
-            .any(|lane| *lane == Some(lane_id))
-        {
+        if self.registry.is_starting_in_lane(lane_id) {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Wait for the current session to finish starting before changing sessions",
             ));
         }
         let current = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .iter()
             .find(|(_, session)| session.lane == Some(lane_id) && !session.preview)
             .map(|(key, _)| key.clone());
         let _guard = match &current {
-            Some(key) => Some(self.lifecycle(key).await),
+            Some(key) => Some(self.registry.lifecycle(key).await),
             None => None,
         };
         let removed = {
-            let mut open = self.open.lock().await;
-            if busy_writer(&open, &self.lane_writers, lane_id).is_some() {
+            let mut open = self.registry.open().await;
+            if busy_writer(&open, &self.registry.lane_writers(), lane_id).is_some() {
                 return Err(ServiceError::new(
                     ErrorKind::Rejected,
                     "Another session is still changing this lane. Change sessions once it is Done",
@@ -804,8 +692,8 @@ impl Service {
     /// needs the lane to itself waits for the user to close them.
     async fn close_lane_previews(&self, lane_id: i64) {
         let previews: Vec<String> = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .iter()
             .filter(|(_, session)| session.lane == Some(lane_id) && session.preview)
@@ -820,8 +708,8 @@ impl Service {
     /// in the same worktree, retaining its harness and saved instructions.
     pub async fn replace_lane_session(&self, lane_id: i64) -> ServiceResult<OpenedSession> {
         let current_id = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .iter()
             .find(|(_, session)| session.lane == Some(lane_id) && !session.preview)
@@ -870,8 +758,8 @@ impl Service {
             .map_err(err)?;
         let key = panoptes_key(session_id);
         let already_open = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .get(&key)
             .is_some_and(|session| !session.preview);
@@ -900,8 +788,8 @@ impl Service {
     ) -> ServiceResult<OpenedSession> {
         self.harness(harness)?;
         let busy = {
-            let open = self.open.lock().await;
-            busy_writer(&open, &self.lane_writers, lane_id)
+            let open = self.registry.open().await;
+            busy_writer(&open, &self.registry.lane_writers(), lane_id)
         };
         if busy.is_some() {
             return Err(ServiceError::new(
@@ -919,7 +807,7 @@ impl Service {
             })
             .await
             .map_err(err)?;
-        let _guard = self.lifecycle(&panoptes_key(record.id)).await;
+        let _guard = self.registry.lifecycle(&panoptes_key(record.id)).await;
         self.start_recorded(record.id, &lane, harness, instructions)
             .await
     }
@@ -954,7 +842,7 @@ impl Service {
         let harness_id = harness_id.to_string();
         // Held until the adoption is recorded, so no open of this
         // conversation can start a raw process in between.
-        let _guard = self.lifecycle(key).await;
+        let _guard = self.registry.lifecycle(key).await;
         let name = harness.to_string();
         let id_for_lookup = harness_id.clone();
         if let Some(id) = self
@@ -967,7 +855,7 @@ impl Service {
                 key: panoptes_key(id),
             });
         }
-        if self.open.lock().await.contains_key(key) {
+        if self.registry.open().await.contains_key(key) {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Stop this session before adopting it into a lane",
@@ -1057,15 +945,15 @@ impl Service {
         // delete mark the lane busy before checking for sessions: whichever
         // comes second sees the other.
         let _lane_guard = match launch.lane {
-            Some(lane) => Some(self.lane_lifecycle(lane).await),
+            Some(lane) => Some(self.registry.lane_lifecycle(lane).await),
             None => None,
         };
         if launch.preview {
             // Keep one preview per lane, alongside its one live session. The
             // lane start lock keeps two quick preview clicks from overlapping.
             let previous: Vec<String> = self
-                .open
-                .lock()
+                .registry
+                .open()
                 .await
                 .iter()
                 .filter(|(other, session)| {
@@ -1080,8 +968,8 @@ impl Service {
         if let Some(lane) = launch.lane
             && !launch.preview
             && self
-                .open
-                .lock()
+                .registry
+                .open()
                 .await
                 .iter()
                 // A preview of another session sits beside the live one; a
@@ -1095,7 +983,7 @@ impl Service {
                 "Another session is already open in this lane",
             ));
         }
-        let _starting = Starting::new(&self.starting, key, launch.lane);
+        let _starting = self.registry.starting(key, launch.lane);
         if let Some(lane) = launch.lane
             && self.busy_lanes.lock().unwrap().contains(&lane)
         {
@@ -1104,7 +992,7 @@ impl Service {
                 "This lane is being archived, restored or deleted",
             ));
         }
-        let generation = self.generations.fetch_add(1, Ordering::Relaxed);
+        let generation = self.registry.next_generation();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HarnessEvent>();
         let fresh = status.is_none();
         let status = status.unwrap_or_default();
@@ -1121,11 +1009,11 @@ impl Service {
             Forwarder {
                 key: key.to_string(),
                 generation,
-                open: self.open.clone(),
+                open: self.registry.open_handle(),
                 status: status.clone(),
                 emit: self.emit.clone(),
                 writes: WriteWatch {
-                    writers: self.lane_writers.clone(),
+                    writers: self.registry.lane_writers(),
                     store: self.store.clone(),
                     own: launch.lane,
                     cwd: launch.cwd.clone(),
@@ -1175,7 +1063,7 @@ impl Service {
         };
         let unguarded_tools = session.unguarded_tools();
         let (now, replay) = {
-            let mut open = self.open.lock().await;
+            let mut open = self.registry.open().await;
             let died = early_exit.lock().unwrap().take();
             if let Some(stderr_tail) = died {
                 drop(open);
@@ -1224,7 +1112,12 @@ impl Service {
     }
 
     pub async fn history(&self, key: &str) -> ServiceResult<Vec<Message>> {
-        self.session(key).await?.history().await.map_err(err)
+        self.registry
+            .session(key)
+            .await?
+            .history()
+            .await
+            .map_err(err)
     }
 
     /// Sends a prompt to the addressed session.
@@ -1235,7 +1128,8 @@ impl Service {
         images: Vec<ImageAttachment>,
         mode: PromptMode,
     ) -> ServiceResult<PromptOutcome> {
-        self.session(key)
+        self.registry
+            .session(key)
             .await?
             .prompt(text, images, mode)
             .await
@@ -1243,15 +1137,30 @@ impl Service {
     }
 
     pub async fn settings(&self, key: &str) -> ServiceResult<SessionSettings> {
-        self.session(key).await?.settings().await.map_err(err)
+        self.registry
+            .session(key)
+            .await?
+            .settings()
+            .await
+            .map_err(err)
     }
 
     pub async fn models(&self, key: &str) -> ServiceResult<Vec<ModelInfo>> {
-        self.session(key).await?.models().await.map_err(err)
+        self.registry
+            .session(key)
+            .await?
+            .models()
+            .await
+            .map_err(err)
     }
 
     pub async fn commands(&self, key: &str) -> ServiceResult<Vec<CommandInfo>> {
-        self.session(key).await?.commands().await.map_err(err)
+        self.registry
+            .session(key)
+            .await?
+            .commands()
+            .await
+            .map_err(err)
     }
 
     pub async fn preferences(&self) -> ServiceResult<Preferences> {
@@ -1364,7 +1273,7 @@ impl Service {
     /// Switches the session's model and returns its settings after the
     /// switch, since the thinking levels on offer depend on the model.
     pub async fn set_model(&self, key: &str, model_id: String) -> ServiceResult<SessionSettings> {
-        let session = self.session(key).await?;
+        let session = self.registry.session(key).await?;
         session.set_model(model_id).await.map_err(err)?;
         session.settings().await.map_err(err)
     }
@@ -1374,13 +1283,13 @@ impl Service {
         key: &str,
         level: String,
     ) -> ServiceResult<SessionSettings> {
-        let session = self.session(key).await?;
+        let session = self.registry.session(key).await?;
         session.set_thinking_level(level).await.map_err(err)?;
         session.settings().await.map_err(err)
     }
 
     pub async fn abort(&self, key: &str) -> ServiceResult<()> {
-        self.session(key).await?.abort().await.map_err(err)
+        self.registry.session(key).await?.abort().await.map_err(err)
     }
 
     pub async fn answer(
@@ -1390,8 +1299,8 @@ impl Service {
         answer: Answer,
     ) -> ServiceResult<()> {
         let (session, status) = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .get(key)
             .map(|open| (open.session.clone(), open.status.clone()))
@@ -1418,8 +1327,8 @@ impl Service {
     /// finish, so that process is stopped too, and holds the session's lock
     /// until the process has gone, so a reopen never overlaps it.
     pub async fn close(&self, key: &str) {
-        let _guard = self.lifecycle(key).await;
-        let open = self.open.lock().await.remove(key);
+        let _guard = self.registry.lifecycle(key).await;
+        let open = self.registry.open().await.remove(key);
         if let Some(open) = open {
             self.log.record("sessionClosed", json!({"key": key}));
             open.session.shutdown().await;
@@ -1429,8 +1338,8 @@ impl Service {
     /// Ends every open session's process, all at once.
     pub async fn close_all(&self) {
         let sessions: Vec<_> = self
-            .open
-            .lock()
+            .registry
+            .open()
             .await
             .drain()
             .map(|(_, o)| o.session)
@@ -1640,20 +1549,7 @@ impl Service {
 
         // Starting sessions are not listed as open yet. Include both sets so
         // cleanup can never archive a lane under a process that is starting.
-        let mut in_use: HashSet<i64> = self
-            .starting
-            .lock()
-            .unwrap()
-            .values()
-            .filter_map(|lane| *lane)
-            .collect();
-        in_use.extend(
-            self.open
-                .lock()
-                .await
-                .values()
-                .filter_map(|session| session.lane),
-        );
+        let in_use = self.registry.lanes_in_use().await;
         let busy_lanes = self.busy_lanes.lock().unwrap().clone();
         let busy_writers: HashSet<i64> = listing
             .navigation
@@ -1739,7 +1635,7 @@ impl Service {
     ) -> ServiceResult<ArchiveLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         self.close_lane_previews(id).await;
-        if self.lane_in_use(id).await {
+        if self.registry.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Close this lane's sessions before archiving it",
@@ -1792,7 +1688,7 @@ impl Service {
     pub async fn create_lane_branch(&self, id: i64) -> ServiceResult<()> {
         let _busy = self.lane_busy(id)?;
         self.close_lane_previews(id).await;
-        if self.lane_in_use(id).await {
+        if self.registry.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Close this lane's sessions before recovering its branch",
@@ -1865,7 +1761,7 @@ impl Service {
     ) -> ServiceResult<DeleteLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         self.close_lane_previews(id).await;
-        if self.lane_in_use(id).await {
+        if self.registry.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "Close this lane's session before deleting it",
