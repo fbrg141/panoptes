@@ -83,6 +83,8 @@ impl ChatPane {
                 this.sent_turn = None;
                 cx.notify();
             }
+            // Only the New lane dialog's composer creates lanes.
+            ComposerEvent::CreateLane(_) => {}
         })
         .detach();
         let scroll = ScrollHandle::new();
