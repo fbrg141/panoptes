@@ -113,7 +113,7 @@ fn a_call_with_no_end_is_closed_when_its_run_settles() {
     let (mut mapper, shared) = started();
     tag(&mut mapper, "c1");
     mapper.ui_request(&json!({"id":"q1","method":"confirm","title":"Run?"}), 0);
-    assert_eq!(shared.approvals.lock().unwrap().len(), 1);
+    assert_eq!(shared.approvals().len(), 1);
 
     let events = mapper.map(json!({"type":"agent_settled","aborted":true}), 4_000);
     let [
@@ -127,7 +127,7 @@ fn a_call_with_no_end_is_closed_when_its_run_settles() {
         (call.status, call.started_at, call.ended_at),
         (ToolStatus::Failed, Some(0), Some(4_000))
     );
-    assert!(shared.approvals.lock().unwrap().is_empty());
+    assert!(shared.approvals().is_empty());
     // A second settle has nothing left to close.
     assert_eq!(
         mapper

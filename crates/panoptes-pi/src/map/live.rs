@@ -70,15 +70,9 @@ impl EventMapper {
                     format!("live-{}", self.counter)
                 });
                 if let Some(key) = message_key(&event["message"]) {
-                    self.shared
-                        .live_ids
-                        .lock()
-                        .unwrap()
-                        .entry(key)
-                        .or_default()
-                        .push(id.clone());
+                    self.shared.record_live_id(key, id.clone());
                 }
-                self.shared.ended_at.lock().unwrap().insert(id.clone(), now);
+                self.shared.record_end(id.clone(), now);
                 message(&event["message"], id, Some(now))
                     .map(|mut message| {
                         // A call that already started keeps what is known of it.
@@ -146,7 +140,7 @@ impl EventMapper {
     /// as failed, so it does not show as running forever. Approvals nobody
     /// answered are moot for the same reason.
     fn end_unfinished_calls(&mut self, now: i64) -> Vec<HarnessEvent> {
-        self.shared.approvals.lock().unwrap().clear();
+        self.shared.clear_approvals();
         let mut calls: Vec<ToolCall> = self.calls.drain().map(|(_, call)| call).collect();
         calls.sort_by_key(|call| call.started_at);
         calls
@@ -156,10 +150,7 @@ impl EventMapper {
                 call.ended_at = Some(now);
                 if let Some(started) = call.started_at {
                     self.shared
-                        .tool_times
-                        .lock()
-                        .unwrap()
-                        .insert(call.id.clone(), (started, call.ended_at));
+                        .record_tool_time(&call.id, started, call.ended_at);
                 }
                 HarnessEvent::ToolCallUpdated {
                     call: Box::new(call),
@@ -222,10 +213,7 @@ impl EventMapper {
         }
         if let Some(started) = call.started_at {
             self.shared
-                .tool_times
-                .lock()
-                .unwrap()
-                .insert(call.id.clone(), (started, call.ended_at));
+                .record_tool_time(&call.id, started, call.ended_at);
         }
         if call.ended_at.is_none() {
             self.calls.insert(call.id.clone(), call.clone());
