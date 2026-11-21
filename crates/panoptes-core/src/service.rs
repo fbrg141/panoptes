@@ -1165,6 +1165,13 @@ impl Service {
             }
             None => None,
         };
+        self.close_lane_previews(lane_id).await;
+        Ok(stopped)
+    }
+
+    /// Closes a lane's read-only previews. They hold no work, so nothing that
+    /// needs the lane to itself waits for the user to close them.
+    async fn close_lane_previews(&self, lane_id: i64) {
         let previews: Vec<String> = self
             .open
             .lock()
@@ -1176,7 +1183,6 @@ impl Service {
         for key in previews {
             self.close(&key).await;
         }
-        Ok(stopped)
     }
 
     /// Stops the lane's current process and starts a fresh conversation record
@@ -1433,8 +1439,12 @@ impl Service {
                 .open
                 .lock()
                 .await
-                .values()
-                .any(|session| session.lane == Some(lane))
+                .iter()
+                // A preview of another session sits beside the live one; a
+                // preview of this one would be a second process for it.
+                .any(|(other, session)| {
+                    session.lane == Some(lane) && (!session.preview || other.as_str() == key)
+                })
         {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
@@ -2066,6 +2076,7 @@ impl Service {
         recreate_branch: bool,
     ) -> ServiceResult<ArchiveLaneOutcome> {
         let _busy = self.lane_busy(id)?;
+        self.close_lane_previews(id).await;
         if self.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
@@ -2122,6 +2133,7 @@ impl Service {
     /// worktree, so the user can then choose how to archive its changes.
     pub async fn create_lane_branch(&self, id: i64) -> ServiceResult<()> {
         let _busy = self.lane_busy(id)?;
+        self.close_lane_previews(id).await;
         if self.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
@@ -2194,6 +2206,7 @@ impl Service {
         allow_detached: bool,
     ) -> ServiceResult<DeleteLaneOutcome> {
         let _busy = self.lane_busy(id)?;
+        self.close_lane_previews(id).await;
         if self.lane_in_use(id).await {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
@@ -3027,6 +3040,30 @@ mod tests {
         assert!(f.service.history(&second.key).await.is_err());
         assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
         assert_eq!(f.harness.read_only(), [false, false, true, false]);
+    }
+
+    #[tokio::test]
+    async fn a_preview_does_not_hold_its_lane() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let first = f.service.create(lane.id, "fake").await.unwrap();
+        let second = f.service.replace_lane_session(lane.id).await.unwrap();
+        f.service.preview(&first.key).await.unwrap();
+
+        // Stopping the live session and opening it again keeps the preview.
+        f.service.close(&second.key).await;
+        let reopened = f
+            .service
+            .open("fake", &second.key, String::new(), String::new())
+            .await
+            .unwrap();
+        assert!(!reopened.preview);
+        assert!(f.service.history(&first.key).await.is_ok());
+
+        // Archiving needs only the live session closed; the preview goes too.
+        f.service.close(&second.key).await;
+        f.service.archive_lane(lane.id, None).await.unwrap();
+        assert!(f.service.history(&first.key).await.is_err());
     }
 
     #[tokio::test]

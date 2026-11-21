@@ -333,7 +333,8 @@ unnecessary.
   question or approval, or has queued steering or follow-up messages.
 - Pi's own subagents appear nested under their parent and are read-only (#227).
 - The store schema does not forbid multiple records; the service enforces one
-  live session and at most one read-only preview per lane.
+  live session and at most one read-only preview per lane. A preview never
+  holds its lane: starting, archiving or deleting closes or ignores it.
 
 This supersedes #22's write-lock decision and the earlier subsession proposal.
 It is intentionally simpler than worker fan-out: Panoptes observes one agent's
