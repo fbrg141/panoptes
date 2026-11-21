@@ -8,7 +8,7 @@ use super::{LaneState, Store, now_ms};
 /// harness conversation it wraps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionRecord {
+pub(crate) struct SessionRecord {
     pub id: i64,
     pub lane_id: i64,
     pub harness: String,
@@ -29,7 +29,7 @@ impl Store {
     /// are not touched. A project with lanes stays registered so their records
     /// and recovery refs cannot silently lose the repository they refer to.
     /// Every Panoptes session, oldest first, archived ones included.
-    pub fn sessions(&self) -> anyhow::Result<Vec<SessionRecord>> {
+    pub(crate) fn sessions(&self) -> anyhow::Result<Vec<SessionRecord>> {
         let mut statement = self.conn.prepare_cached(&format!(
             "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY created_at, id"
         ))?;
@@ -42,7 +42,7 @@ impl Store {
             .collect()
     }
 
-    pub fn session(&self, id: i64) -> anyhow::Result<SessionRecord> {
+    pub(crate) fn session(&self, id: i64) -> anyhow::Result<SessionRecord> {
         let record = self
             .conn
             .query_row(
@@ -56,7 +56,11 @@ impl Store {
     }
 
     /// The Panoptes session wrapping a harness conversation, if any.
-    pub fn session_for(&self, harness: &str, harness_id: &str) -> anyhow::Result<Option<i64>> {
+    pub(crate) fn session_for(
+        &self,
+        harness: &str,
+        harness_id: &str,
+    ) -> anyhow::Result<Option<i64>> {
         Ok(self
             .conn
             .query_row(
@@ -80,11 +84,11 @@ impl Store {
     /// Gives a session its Panoptes id before any harness process exists.
     /// Records accumulate; the service permits only one live process per lane.
     #[cfg(test)]
-    pub fn add_session(&self, lane_id: i64, harness: &str) -> anyhow::Result<SessionRecord> {
+    pub(crate) fn add_session(&self, lane_id: i64, harness: &str) -> anyhow::Result<SessionRecord> {
         self.add_session_configured(lane_id, harness, None)
     }
 
-    pub fn add_session_configured(
+    pub(crate) fn add_session_configured(
         &self,
         lane_id: i64,
         harness: &str,
@@ -108,7 +112,7 @@ impl Store {
     /// Adopts an existing harness conversation into a lane without starting
     /// a process or touching the harness's files. A legacy pin follows the
     /// conversation into its new Panoptes record.
-    pub fn adopt_session(
+    pub(crate) fn adopt_session(
         &self,
         lane_id: i64,
         harness: &str,
@@ -142,7 +146,12 @@ impl Store {
 
     /// Records which harness conversation a session wraps, once the harness
     /// has reported it.
-    pub fn set_harness_ref(&self, id: i64, harness_id: &str, locator: &str) -> anyhow::Result<()> {
+    pub(crate) fn set_harness_ref(
+        &self,
+        id: i64,
+        harness_id: &str,
+        locator: &str,
+    ) -> anyhow::Result<()> {
         let locator = (!locator.is_empty()).then_some(locator);
         self.conn.execute(
             "UPDATE sessions SET harness_id = ?2, locator = ?3 WHERE id = ?1",
@@ -151,17 +160,17 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_session_title(&self, id: i64, title: Option<&str>) -> anyhow::Result<()> {
+    pub(crate) fn set_session_title(&self, id: i64, title: Option<&str>) -> anyhow::Result<()> {
         let title = title.map(str::trim).filter(|title| !title.is_empty());
         self.update_session(id, "UPDATE sessions SET title = ?2 WHERE id = ?1", title)
     }
 
-    pub fn set_session_pinned(&self, id: i64, pinned: bool) -> anyhow::Result<()> {
+    pub(crate) fn set_session_pinned(&self, id: i64, pinned: bool) -> anyhow::Result<()> {
         self.update_session(id, "UPDATE sessions SET pinned = ?2 WHERE id = ?1", pinned)
     }
 
     /// Archiving a session hides it; its lane is untouched.
-    pub fn set_session_archived(&self, id: i64, archived: bool) -> anyhow::Result<()> {
+    pub(crate) fn set_session_archived(&self, id: i64, archived: bool) -> anyhow::Result<()> {
         self.update_session(
             id,
             "UPDATE sessions SET archived = ?2 WHERE id = ?1",
@@ -169,7 +178,7 @@ impl Store {
         )
     }
 
-    pub fn set_session_tags(&self, id: i64, tags: &[String]) -> anyhow::Result<()> {
+    pub(crate) fn set_session_tags(&self, id: i64, tags: &[String]) -> anyhow::Result<()> {
         let tx = self.write()?;
         if tx.execute("DELETE FROM session_tags WHERE session_id = ?1", [id])? == 0
             && !tx.query_row(
@@ -197,7 +206,7 @@ impl Store {
 
     /// Forgets a session whose harness never started, so no record points
     /// at nothing.
-    pub fn discard_session(&self, id: i64) -> anyhow::Result<()> {
+    pub(crate) fn discard_session(&self, id: i64) -> anyhow::Result<()> {
         self.conn.execute(
             "DELETE FROM sessions WHERE id = ?1 AND harness_id IS NULL",
             [id],

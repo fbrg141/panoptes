@@ -60,7 +60,7 @@ pub struct NewLane {
 }
 
 impl Store {
-    pub fn lanes(&self) -> anyhow::Result<Vec<Lane>> {
+    pub(crate) fn lanes(&self) -> anyhow::Result<Vec<Lane>> {
         let mut statement = self.conn.prepare_cached(
             "SELECT id, project_id, name, task, branch, state
              FROM lanes ORDER BY created_at, id",
@@ -77,7 +77,7 @@ impl Store {
             .collect()
     }
 
-    pub fn lane(&self, id: i64) -> anyhow::Result<Lane> {
+    pub(crate) fn lane(&self, id: i64) -> anyhow::Result<Lane> {
         let mut lane = self
             .conn
             .query_row(
@@ -92,7 +92,7 @@ impl Store {
     }
 
     /// Creation is the activity baseline for a lane that has no session yet.
-    pub fn lane_creation_times(&self) -> anyhow::Result<Vec<(i64, i64)>> {
+    pub(crate) fn lane_creation_times(&self) -> anyhow::Result<Vec<(i64, i64)>> {
         let mut statement = self
             .conn
             .prepare_cached("SELECT id, created_at FROM lanes")?;
@@ -101,7 +101,7 @@ impl Store {
     }
 
     #[cfg(test)]
-    pub fn set_lane_created_at(&self, id: i64, created_at: i64) -> anyhow::Result<()> {
+    pub(crate) fn set_lane_created_at(&self, id: i64, created_at: i64) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE lanes SET created_at = ?2 WHERE id = ?1",
             rusqlite::params![id, created_at],
@@ -127,7 +127,7 @@ impl Store {
 
     /// Saves a lane only after its worktree and setup have succeeded. The
     /// schema accepts several worktrees; the service currently supplies one.
-    pub fn add_lane(&self, new: &NewLane) -> anyhow::Result<Lane> {
+    pub(crate) fn add_lane(&self, new: &NewLane) -> anyhow::Result<Lane> {
         let tx = self.write()?;
         for worktree in &new.worktrees {
             ensure_path_free(&tx, &worktree.path, None)?;
@@ -158,7 +158,11 @@ impl Store {
         self.lane(id)
     }
 
-    pub fn archive_lane(&self, id: i64, checkpoint_ref: Option<&str>) -> anyhow::Result<Lane> {
+    pub(crate) fn archive_lane(
+        &self,
+        id: i64,
+        checkpoint_ref: Option<&str>,
+    ) -> anyhow::Result<Lane> {
         let tx = self.write()?;
         let changed = tx.execute(
             "UPDATE lanes SET state = 'archived' WHERE id = ?1 AND state = 'active'",
@@ -179,7 +183,11 @@ impl Store {
     /// in progress has saved its work to (or forgets it). If that archive is
     /// interrupted after removing the folder, the next one finds the ref
     /// here.
-    pub fn set_lane_checkpoint(&self, id: i64, checkpoint_ref: Option<&str>) -> anyhow::Result<()> {
+    pub(crate) fn set_lane_checkpoint(
+        &self,
+        id: i64,
+        checkpoint_ref: Option<&str>,
+    ) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE lane_worktrees SET checkpoint_ref = ?2 WHERE lane_id = ?1",
             rusqlite::params![id, checkpoint_ref],
@@ -187,7 +195,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn restore_lane(&self, id: i64) -> anyhow::Result<Lane> {
+    pub(crate) fn restore_lane(&self, id: i64) -> anyhow::Result<Lane> {
         let tx = self.write()?;
         for worktree in self.lane_worktrees(id)? {
             ensure_path_free(&tx, &worktree.path, Some(id))?;
@@ -212,7 +220,7 @@ impl Store {
     /// Permanently forgets a lane and its Panoptes session records. The
     /// harness conversations remain in the harness's own files. Git cleanup
     /// is completed by the service before this transaction starts.
-    pub fn delete_lane(&self, id: i64) -> anyhow::Result<()> {
+    pub(crate) fn delete_lane(&self, id: i64) -> anyhow::Result<()> {
         let tx = self.write()?;
         let exists: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM lanes WHERE id = ?1)",

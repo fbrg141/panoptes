@@ -7,7 +7,7 @@ use super::{Store, now_ms};
 
 pub(super) const DEFAULT_CLEANUP_IDLE_DAYS: u32 = 4;
 
-pub const MAX_CLEANUP_IDLE_DAYS: u32 = 365;
+pub(super) const MAX_CLEANUP_IDLE_DAYS: u32 = 365;
 
 /// A reusable choice for a new session. Empty fields keep harness defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -46,13 +46,13 @@ pub struct Preferences {
 }
 
 impl Store {
-    pub fn pinned(&self) -> anyhow::Result<BTreeSet<String>> {
+    pub(crate) fn pinned(&self) -> anyhow::Result<BTreeSet<String>> {
         let mut statement = self.conn.prepare_cached("SELECT session_key FROM pins")?;
         let keys = statement.query_map([], |row| row.get(0))?;
         Ok(keys.collect::<Result<_, _>>()?)
     }
 
-    pub fn set_pinned(&self, key: &str, pinned: bool) -> anyhow::Result<()> {
+    pub(crate) fn set_pinned(&self, key: &str, pinned: bool) -> anyhow::Result<()> {
         let sql = if pinned {
             "INSERT OR IGNORE INTO pins (session_key) VALUES (?1)"
         } else {
@@ -62,7 +62,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn preferences(&self) -> anyhow::Result<Preferences> {
+    pub(crate) fn preferences(&self) -> anyhow::Result<Preferences> {
         let mut statement = self.conn.prepare_cached(
             "SELECT id, name, model_id, thinking_level, instructions
              FROM profiles ORDER BY position, id",
@@ -110,7 +110,7 @@ impl Store {
         })
     }
 
-    pub fn save_profile(&self, id: Option<i64>, input: &ProfileInput) -> anyhow::Result<()> {
+    pub(crate) fn save_profile(&self, id: Option<i64>, input: &ProfileInput) -> anyhow::Result<()> {
         let name = input.name.trim();
         if name.is_empty() {
             bail!("A profile needs a name");
@@ -147,13 +147,13 @@ impl Store {
         Ok(())
     }
 
-    pub fn delete_profile(&self, id: i64) -> anyhow::Result<()> {
+    pub(crate) fn delete_profile(&self, id: i64) -> anyhow::Result<()> {
         self.conn
             .execute("DELETE FROM profiles WHERE id = ?1", [id])?;
         Ok(())
     }
 
-    pub fn set_model_favorite(&self, model_id: &str, favorite: bool) -> anyhow::Result<()> {
+    pub(crate) fn set_model_favorite(&self, model_id: &str, favorite: bool) -> anyhow::Result<()> {
         let tx = self.write()?;
         if favorite {
             tx.execute(
@@ -173,7 +173,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_model_hidden(&self, model_id: &str, hidden: bool) -> anyhow::Result<()> {
+    pub(crate) fn set_model_hidden(&self, model_id: &str, hidden: bool) -> anyhow::Result<()> {
         if hidden {
             self.conn.execute(
                 "INSERT INTO model_preferences (model_id, hidden) VALUES (?1, 1)
@@ -189,7 +189,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn dismiss_permission_warning(&self) -> anyhow::Result<()> {
+    pub(crate) fn dismiss_permission_warning(&self) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE ui_preferences SET permission_warning_dismissed = 1 WHERE singleton = 1",
             [],
@@ -197,7 +197,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_cleanup_idle_days(&self, days: u32) -> anyhow::Result<()> {
+    pub(crate) fn set_cleanup_idle_days(&self, days: u32) -> anyhow::Result<()> {
         if !(1..=MAX_CLEANUP_IDLE_DAYS).contains(&days) {
             bail!("Idle lane threshold must be between 1 and {MAX_CLEANUP_IDLE_DAYS} days");
         }

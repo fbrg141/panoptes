@@ -32,7 +32,7 @@ pub struct ProjectSettings {
 
 impl Store {
     /// Every project, by name.
-    pub fn projects(&self) -> anyhow::Result<Vec<Project>> {
+    pub(crate) fn projects(&self) -> anyhow::Result<Vec<Project>> {
         let mut statement = self.conn.prepare_cached(
             "SELECT id, repo, name, base_branch, setup FROM projects ORDER BY name COLLATE NOCASE, id",
         )?;
@@ -65,7 +65,11 @@ impl Store {
 
     /// Registers the repository whose main checkout is `repo`. Fails if it is
     /// already registered.
-    pub fn add_project(&self, repo: &str, settings: &ProjectSettings) -> anyhow::Result<Project> {
+    pub(crate) fn add_project(
+        &self,
+        repo: &str,
+        settings: &ProjectSettings,
+    ) -> anyhow::Result<Project> {
         let tx = self.write()?;
         let existing: Option<String> = tx
             .query_row("SELECT name FROM projects WHERE repo = ?1", [repo], |row| {
@@ -96,7 +100,11 @@ impl Store {
         })
     }
 
-    pub fn update_project(&self, id: i64, settings: &ProjectSettings) -> anyhow::Result<Project> {
+    pub(crate) fn update_project(
+        &self,
+        id: i64,
+        settings: &ProjectSettings,
+    ) -> anyhow::Result<Project> {
         let tx = self.write()?;
         let repo: Option<String> = tx
             .query_row(
@@ -119,14 +127,14 @@ impl Store {
         })
     }
 
-    pub fn project(&self, id: i64) -> anyhow::Result<Project> {
+    pub(crate) fn project(&self, id: i64) -> anyhow::Result<Project> {
         self.projects()?
             .into_iter()
             .find(|project| project.id == id)
             .context("That project is no longer registered")
     }
 
-    pub fn remove_project(&self, id: i64) -> anyhow::Result<()> {
+    pub(crate) fn remove_project(&self, id: i64) -> anyhow::Result<()> {
         let tx = self.write()?;
         let lanes: i64 = tx.query_row(
             "SELECT count(*) FROM lanes WHERE project_id = ?1",

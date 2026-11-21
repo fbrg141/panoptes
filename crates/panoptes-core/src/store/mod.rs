@@ -24,9 +24,8 @@ mod projects;
 mod sessions;
 
 pub use lanes::{Lane, LaneState, LaneWorktree, NewLane, NewLaneWorktree};
-pub use preferences::{AgentProfile, MAX_CLEANUP_IDLE_DAYS, Preferences, ProfileInput};
+pub use preferences::{AgentProfile, Preferences, ProfileInput};
 pub use projects::{Project, ProjectSettings};
-pub use sessions::SessionRecord;
 
 use migrate::{check, explain, migrate};
 use migrations::{MIGRATIONS, Migration};
