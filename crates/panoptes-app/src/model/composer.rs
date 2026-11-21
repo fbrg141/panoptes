@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use panoptes_core::files::Attachment;
-use panoptes_harness::{CommandInfo, ContextUsage, ImageAttachment};
+use panoptes_harness::{CommandInfo, CommandKind, ContextUsage, ImageAttachment};
 
 use crate::model::format::format_tokens;
 use crate::store::Draft;
@@ -57,6 +57,26 @@ pub fn command_at(text: &str, caret: usize) -> Option<Query> {
         start: 0,
         query: query.to_string(),
     })
+}
+
+/// The commands offered: the harness's own, plus lane commands in a lane.
+/// Lane commands are handled by the composer itself, not sent to the agent.
+pub fn available_commands(harness: &[CommandInfo], lane: bool) -> Vec<CommandInfo> {
+    if !lane {
+        return harness.to_vec();
+    }
+    let lane = |name: &str, description: &str| CommandInfo {
+        name: name.into(),
+        description: Some(description.into()),
+        kind: CommandKind::Other,
+    };
+    [
+        lane("new", "Start a new session in this lane"),
+        lane("resume", "Resume a previous session in this lane"),
+    ]
+    .into_iter()
+    .chain(harness.iter().cloned())
+    .collect()
 }
 
 /// Narrows discoverable commands by every word typed, prefix matches first.
@@ -447,6 +467,27 @@ mod tests {
         assert_eq!(
             insert_command("/rev now", 4, &commands[0]),
             edited("/review now", 8)
+        );
+    }
+
+    #[test]
+    fn lane_commands_are_offered_only_in_a_lane() {
+        let commands = commands();
+        let names = |commands: Vec<CommandInfo>| -> Vec<String> {
+            commands.into_iter().map(|c| c.name).collect()
+        };
+        assert_eq!(
+            names(available_commands(&commands, true)),
+            ["new", "resume", "review", "fix-tests", "skill:review"]
+        );
+        assert_eq!(available_commands(&commands, false), commands);
+        let lane = available_commands(&commands, true);
+        assert_eq!(
+            match_commands("re", &lane, 8)
+                .into_iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>(),
+            ["resume", "review", "skill:review"]
         );
     }
 
