@@ -60,13 +60,6 @@ pub use content::user_text;
 pub use message::message;
 pub use models::{context_usage, model, model_ref};
 
-#[cfg(test)]
-use content::MAX_OUTPUT;
-#[cfg(test)]
-use panoptes_harness::{FileEdit, StopReason, ToolImage, ToolKind, ToolOutput, Usage};
-#[cfg(test)]
-use tools::shell_output;
-
 /// Turns the Pi event stream into harness events. Pi does not give
 /// streaming messages an id, so each one gets a live id here; history
 /// reloads later replace them with stable entry ids.
