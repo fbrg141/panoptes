@@ -1,5 +1,6 @@
 use super::super::*;
 use super::fake::*;
+use crate::service::key::panoptes_id;
 use std::time::Duration;
 
 #[tokio::test]

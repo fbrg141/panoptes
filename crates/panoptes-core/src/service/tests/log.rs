@@ -1,5 +1,6 @@
 use super::super::*;
 use super::fake::*;
+use crate::service::error::not_open;
 
 /// Every event line in the fixture's log, in order.
 fn logged(f: &Fixture) -> Vec<serde_json::Value> {

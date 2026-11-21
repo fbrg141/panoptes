@@ -6,12 +6,11 @@ use panoptes_harness::HarnessEvent;
 use serde_json::json;
 use tokio::sync::Mutex;
 
+use super::registry::{EarlyExit, OpenSession};
 use super::status::{Tracker, now_ms};
 use super::store::SharedStore;
 use super::writers::LaneWriters;
-use super::{
-    EarlyExit, Emit, LaneWritesChanged, OpenSession, SessionEvent, SessionUpdate, StatusChanged,
-};
+use super::{Emit, LaneWritesChanged, SessionEvent, SessionUpdate, StatusChanged};
 use crate::eventlog::EventLog;
 use crate::writes;
 

@@ -1,6 +1,6 @@
 use super::super::*;
 use super::fake::*;
-use panoptes_harness::HarnessError;
+use panoptes_harness::{HarnessError, SessionSettings};
 use std::time::Duration;
 
 #[tokio::test]
