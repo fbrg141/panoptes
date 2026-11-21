@@ -169,12 +169,12 @@ run:
 ```bash
 sh scripts/check.sh
 sh scripts/install-app.sh --no-open
-hdiutil create -volname Panoptes -srcfolder target/release/Panoptes.app \
-  -ov -format UDZO "target/release/Panoptes_<version>_aarch64.dmg"
+sh scripts/make-dmg.sh
 ```
 
 The install script leaves the ad hoc signed `Panoptes.app` in
-`target/release/`. Before publishing the .dmg, open a downloaded copy once to
+`target/release/`, and `make-dmg.sh` packs it with an Applications shortcut
+into `target/release/Panoptes_<version>_aarch64.dmg`. Before publishing the .dmg, open a downloaded copy once to
 check the Open Anyway flow, then attach it to a GitHub release tagged
 `v<version>`.
 
