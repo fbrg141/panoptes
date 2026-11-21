@@ -1,4 +1,5 @@
 use super::*;
+use panoptes_harness::ContextUsage;
 
 #[test]
 fn models_round_trip_through_their_id() {
