@@ -76,7 +76,16 @@ OSA
 
 chmod -Rf go-w "$mount" || true
 sync
-hdiutil detach "$mount" >/dev/null
+# Finder can hold the volume for a moment after closing its window.
+detached=0
+for _ in 1 2 3 4 5; do
+	if hdiutil detach "$mount" >/dev/null 2>&1; then
+		detached=1
+		break
+	fi
+	sleep 2
+done
+[ "$detached" = 1 ] || hdiutil detach "$mount" -force >/dev/null
 trap - EXIT
 
 hdiutil convert "$work/rw.dmg" -format UDZO -imagekey zlib-level=9 -ov -o "$dmg" >/dev/null
