@@ -9,13 +9,15 @@ use super::inspect::sole_worktree;
 use crate::git::{ref_exists, run};
 use crate::store::{Lane, Project};
 
-/// Deletion may skip branch recreation only after the user has confirmed the
-/// detached-HEAD dialog. The clean-tree and reachability checks are repeated
-/// here so a change made while that dialog was open cannot be deleted.
-pub(crate) fn delete_detached(
+/// Deletion goes ahead off the lane branch only after the user has confirmed
+/// the detached-HEAD or other-branch dialog (`confirmed`). For a detached
+/// HEAD the clean-tree and reachability checks are repeated here so a change
+/// made while that dialog was open cannot be deleted. Another branch is
+/// never deleted: it keeps its commits, and only the lane branch goes.
+pub(crate) fn delete_confirmed(
     project: &Project,
     lane: &Lane,
-    allow_detached: bool,
+    confirmed: bool,
 ) -> anyhow::Result<DeleteResult> {
     let worktree = sole_worktree(lane)?;
     if worktree.main_checkout {
@@ -36,10 +38,12 @@ pub(crate) fn delete_detached(
     if std::fs::symlink_metadata(&path).is_ok() {
         match check_lane_branch(&path, lane, Removal::Delete)? {
             BranchCheck::Ready => {}
-            BranchCheck::Detached(detached) if allow_detached && detached.is_safe_to_remove() => {}
+            BranchCheck::Detached(detached) if confirmed && detached.is_safe_to_remove() => {}
             BranchCheck::Detached(detached) => {
                 return Ok(DeleteResult::DetachedHead(detached));
             }
+            BranchCheck::OtherBranch(_) if confirmed => {}
+            BranchCheck::OtherBranch(other) => return Ok(DeleteResult::OtherBranch(other)),
         }
         // Deletion is explicitly destructive, including uncommitted files.
         remove_worktree(repo, &path, true)?;

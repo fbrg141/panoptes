@@ -2,22 +2,24 @@ use std::path::{Path, PathBuf};
 
 use anyhow::bail;
 
-use super::branch::{BranchCheck, Removal, check_lane_branch, create_branch_here};
+use super::branch::{BranchCheck, Removal, check_lane_branch, create_branch_here, switch_back};
 use super::checkpoint::{checkpoint, reject_new_gitlinks, snapshot_tree};
 use super::copy_files::preserve_copy_files;
 use super::inspect::{sole_worktree, worktree_status};
-use super::{ArchiveResult, ArchiveStrategy};
+use super::{ArchiveResult, ArchiveStrategy, BranchRecovery};
 use crate::git::{ref_exists, run};
 use crate::store::{Lane, Project};
 
-/// `recreate_branch` is the user's explicit choice in the detached-HEAD
-/// dialog. It attaches the lane branch to HEAD before the normal archive
-/// checks, without ever resetting a branch that is ahead or has diverged.
+/// `recovery` is the user's explicit choice in the detached-HEAD or
+/// other-branch dialog. Recreating attaches the lane branch to HEAD without
+/// ever resetting a branch that is ahead or has diverged; switching back
+/// first commits any changes on the branch the worktree is on. Either runs
+/// before the normal archive checks.
 pub(crate) fn archive_recovering(
     project: &Project,
     lane: &Lane,
     strategy: Option<ArchiveStrategy>,
-    recreate_branch: bool,
+    recovery: BranchRecovery,
     record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<ArchiveResult> {
     let worktree = sole_worktree(lane)?;
@@ -43,8 +45,14 @@ pub(crate) fn archive_recovering(
     }
     match check_lane_branch(&path, lane, Removal::Archive)? {
         BranchCheck::Ready => {}
-        BranchCheck::Detached(_) if recreate_branch => create_branch_here(&path, lane)?,
+        BranchCheck::Detached(_) if recovery == BranchRecovery::RecreateBranch => {
+            create_branch_here(&path, lane)?
+        }
         BranchCheck::Detached(detached) => return Ok(ArchiveResult::DetachedHead(detached)),
+        BranchCheck::OtherBranch(other) if recovery == BranchRecovery::SwitchBack => {
+            switch_back(&path, lane, &other)?
+        }
+        BranchCheck::OtherBranch(other) => return Ok(ArchiveResult::OtherBranch(other)),
     }
     let before = worktree_status(&path)?;
     let is_dirty = !before.is_empty();

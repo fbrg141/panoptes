@@ -78,19 +78,48 @@ fn deleting_a_main_checkout_lane_leaves_the_checkout_and_branch_alone() {
 }
 
 #[test]
-fn deleting_a_lane_on_another_branch_leaves_everything_in_place() {
+fn deleting_a_lane_on_another_branch_asks_first() {
     let f = fixture(None);
     let new = create_lane(&f);
     let lane = lane(&f, 1, &new);
     let path = PathBuf::from(&new.worktrees[0].path);
     git(&path, &["checkout", "--quiet", "-b", "somewhere-else"]);
 
-    let error = delete(&f.project, &lane).unwrap_err();
+    let DeleteResult::OtherBranch(other) = delete(&f.project, &lane).unwrap() else {
+        panic!("another branch should need confirmation");
+    };
 
-    assert!(format!("{error:#}").contains("somewhere-else"), "{error:#}");
+    assert_eq!(
+        other,
+        OtherBranch {
+            branch: "somewhere-else".into(),
+            dirty: false
+        }
+    );
     assert!(path.exists());
     assert!(ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
     assert!(ref_exists(&f.repo, "refs/heads/somewhere-else").unwrap());
+}
+
+#[test]
+fn a_confirmed_delete_on_another_branch_keeps_that_branch() {
+    let f = fixture(None);
+    let new = create_lane(&f);
+    let lane = lane(&f, 1, &new);
+    let path = PathBuf::from(&new.worktrees[0].path);
+    git(&path, &["checkout", "--quiet", "-b", "somewhere-else"]);
+    std::fs::write(path.join("tracked.txt"), "side work\n").unwrap();
+    git(&path, &["commit", "--quiet", "-am", "side work"]);
+    let side = git(&path, &["rev-parse", "HEAD"]);
+
+    assert!(matches!(
+        delete_confirmed(&f.project, &lane, true).unwrap(),
+        DeleteResult::Deleted
+    ));
+
+    assert!(!path.exists());
+    assert!(!ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
+    assert_eq!(git(&f.repo, &["rev-parse", "somewhere-else"]), side);
 }
 
 #[test]
@@ -110,7 +139,7 @@ fn deleting_never_counts_the_lane_branch_it_is_about_to_delete() {
         panic!("a detached HEAD should need recovery");
     };
     assert!(archived.is_safe_to_remove());
-    let DeleteResult::DetachedHead(deleted) = delete_detached(&f.project, &lane, true).unwrap()
+    let DeleteResult::DetachedHead(deleted) = delete_confirmed(&f.project, &lane, true).unwrap()
     else {
         panic!("deleting must not treat the lane branch as a safe home");
     };
@@ -135,7 +164,7 @@ fn deleting_a_safe_detached_head_needs_the_explicit_recovery_choice() {
     assert!(detached.is_safe_to_remove());
     assert!(path.exists());
     std::fs::write(path.join("untracked.txt"), "new work\n").unwrap();
-    let DeleteResult::DetachedHead(detached) = delete_detached(&f.project, &lane, true).unwrap()
+    let DeleteResult::DetachedHead(detached) = delete_confirmed(&f.project, &lane, true).unwrap()
     else {
         panic!("new work must be refused again");
     };
@@ -144,7 +173,7 @@ fn deleting_a_safe_detached_head_needs_the_explicit_recovery_choice() {
     std::fs::remove_file(path.join("untracked.txt")).unwrap();
 
     assert!(matches!(
-        delete_detached(&f.project, &lane, true).unwrap(),
+        delete_confirmed(&f.project, &lane, true).unwrap(),
         DeleteResult::Deleted
     ));
     assert!(!path.exists());

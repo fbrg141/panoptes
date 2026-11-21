@@ -38,14 +38,14 @@ pub(super) fn archive_recording(
     strategy: Option<ArchiveStrategy>,
     record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<ArchiveResult> {
-    archive_recovering(project, lane, strategy, false, record)
+    archive_recovering(project, lane, strategy, BranchRecovery::None, record)
 }
 
 /// Permanently removes a lane's worktree, local branch and recovery refs.
 /// The caller has already obtained explicit confirmation. A main-checkout
 /// lane owns none of those things, so deletion only removes its store row.
 pub(super) fn delete(project: &Project, lane: &Lane) -> anyhow::Result<DeleteResult> {
-    delete_detached(project, lane, false)
+    delete_confirmed(project, lane, false)
 }
 
 struct Fixture {

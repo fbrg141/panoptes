@@ -71,7 +71,7 @@ pub(crate) fn archive_preservation(project: &Project, lane: &Lane) -> Option<Arc
     }
     match check_lane_branch(path, lane, Removal::Archive).ok()? {
         BranchCheck::Ready => {}
-        BranchCheck::Detached(_) => return None,
+        BranchCheck::Detached(_) | BranchCheck::OtherBranch(_) => return None,
     }
     if worktree_status(path).ok()?.is_empty() {
         Some(ArchivePreservation::Clean)

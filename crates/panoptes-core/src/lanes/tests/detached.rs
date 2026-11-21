@@ -59,7 +59,14 @@ fn a_clean_detached_head_on_a_pushed_commit_can_recreate_its_branch_and_archive(
     assert_eq!(detached.commit, commit);
     assert!(path.exists());
 
-    let result = archive_recovering(&f.project, &lane, None, true, &|_| Ok(())).unwrap();
+    let result = archive_recovering(
+        &f.project,
+        &lane,
+        None,
+        BranchRecovery::RecreateBranch,
+        &|_| Ok(()),
+    )
+    .unwrap();
     assert!(matches!(result, ArchiveResult::Archived { .. }));
     assert!(!path.exists());
     assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), commit);
@@ -129,17 +136,77 @@ fn recovery_advances_an_existing_lane_branch_but_never_resets_a_diverged_one() {
 }
 
 #[test]
-fn another_branch_is_refused_so_its_commits_are_kept() {
+fn archiving_on_another_branch_asks_first_and_keeps_its_commits() {
     let f = fixture(None);
     let new = create_lane(&f);
     let path = PathBuf::from(&new.worktrees[0].path);
     git(&path, &["checkout", "--quiet", "-b", "side"]);
     std::fs::write(path.join("tracked.txt"), "side work\n").unwrap();
     git(&path, &["commit", "--quiet", "-am", "side work"]);
+    std::fs::write(path.join("tracked.txt"), "more\n").unwrap();
 
-    let error = archive(&f.project, &lane(&f, 1, &new), None).unwrap_err();
-    assert!(format!("{error:#}").contains("is on side instead of panoptes/fix-login"));
+    let ArchiveResult::OtherBranch(other) = archive(&f.project, &lane(&f, 1, &new), None).unwrap()
+    else {
+        panic!("another branch should need a choice");
+    };
+    assert_eq!(
+        other,
+        OtherBranch {
+            branch: "side".into(),
+            dirty: true
+        }
+    );
     assert!(path.exists());
+    assert_eq!(git(&path, &["status", "--porcelain"]), "M tracked.txt");
+}
+
+#[test]
+fn switching_back_commits_on_the_other_branch_then_archives() {
+    let f = fixture(None);
+    let new = create_lane(&f);
+    let lane = lane(&f, 1, &new);
+    let path = PathBuf::from(&new.worktrees[0].path);
+    let start = git(&f.repo, &["rev-parse", "trunk"]);
+    git(&path, &["checkout", "--quiet", "-b", "side"]);
+    std::fs::write(path.join("tracked.txt"), "side work\n").unwrap();
+
+    let result = archive_recovering(&f.project, &lane, None, BranchRecovery::SwitchBack, &|_| {
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(matches!(
+        result,
+        ArchiveResult::Archived {
+            checkpoint_ref: None
+        }
+    ));
+    assert!(!path.exists());
+    assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), start);
+    assert_eq!(
+        git(&f.repo, &["show", "side:tracked.txt"]),
+        "side work",
+        "the change is committed on the branch it was made on"
+    );
+}
+
+#[test]
+fn switching_back_recreates_a_lane_branch_that_is_gone() {
+    let f = fixture(None);
+    let new = create_lane(&f);
+    let lane = lane(&f, 1, &new);
+    let path = PathBuf::from(&new.worktrees[0].path);
+    git(&path, &["checkout", "--quiet", "-b", "side"]);
+    git(&f.repo, &["branch", "-D", "panoptes/fix-login"]);
+    let side = git(&path, &["rev-parse", "HEAD"]);
+
+    let result = archive_recovering(&f.project, &lane, None, BranchRecovery::SwitchBack, &|_| {
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(matches!(result, ArchiveResult::Archived { .. }));
+    assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), side);
 }
 
 #[test]

@@ -2,8 +2,9 @@ use std::path::Path;
 
 use anyhow::bail;
 
+use super::checkpoint::reject_new_gitlinks;
 use super::inspect::worktree_status;
-use super::{DetachedHead, UnreachableCommit};
+use super::{DetachedHead, OtherBranch, UnreachableCommit};
 use crate::git::{git_path, ref_exists, run};
 use crate::store::Lane;
 
@@ -13,6 +14,11 @@ pub(crate) fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()>
     match check_lane_branch(path, lane, Removal::Archive)? {
         BranchCheck::Ready => return Ok(()),
         BranchCheck::Detached(_) => {}
+        BranchCheck::OtherBranch(other) => bail!(
+            "The lane's worktree is on {} instead of {}, not at a detached HEAD",
+            other.branch,
+            lane.branch
+        ),
     }
     let head = run(path, &["rev-parse", "HEAD"])?;
     let reference = format!("refs/heads/{}", lane.branch);
@@ -38,11 +44,35 @@ pub(crate) fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Puts a worktree that is on another branch back on its lane branch, the
+/// user's explicit choice in the other-branch dialog. Uncommitted changes
+/// are first committed on the branch they were made on, so switching never
+/// carries them onto the lane branch or drops them. A lane branch that is
+/// gone is recreated at HEAD.
+pub(super) fn switch_back(path: &Path, lane: &Lane, other: &OtherBranch) -> anyhow::Result<()> {
+    if other.dirty {
+        run(path, &["add", "-A"])?;
+        reject_new_gitlinks(path, None)?;
+        run(
+            path,
+            &["commit", "-m", &format!("Panoptes: archive {}", lane.name)],
+        )?;
+    }
+    if ref_exists(path, &format!("refs/heads/{}", lane.branch))? {
+        run(path, &["switch", &lane.branch])?;
+    } else {
+        run(path, &["switch", "-c", &lane.branch])?;
+    }
+    Ok(())
+}
+
 /// Archiving keeps the lane's branch, so it is only safe when the worktree
-/// is on that branch. Commits made on a detached HEAD or another branch would
-/// otherwise become unreachable once the worktree is removed, and so would a
-/// commit the Commit strategy makes there. A merge, rebase, cherry-pick,
-/// revert or bisect in progress is refused for the same reason.
+/// is on that branch. Commits made on a detached HEAD would otherwise become
+/// unreachable once the worktree is removed, and so would a commit the
+/// Commit strategy makes there. Another branch keeps its own commits, but
+/// the user is asked first so the lane's branch stays the one they expect.
+/// A merge, rebase, cherry-pick, revert or bisect in progress is refused for
+/// the same reason.
 /// What the caller is about to do with the worktree, since deletion also
 /// removes the lane branch and archiving keeps it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +84,7 @@ pub(super) enum Removal {
 pub(super) enum BranchCheck {
     Ready,
     Detached(DetachedHead),
+    OtherBranch(OtherBranch),
 }
 
 pub(super) fn check_lane_branch(
@@ -79,12 +110,10 @@ pub(super) fn check_lane_branch(
     let expected = format!("refs/heads/{}", lane.branch);
     match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
         Ok(head) if head == expected => Ok(BranchCheck::Ready),
-        Ok(head) => bail!(
-            "The lane's worktree is on {} instead of {}; switch back to {} before archiving or deleting the lane so its branch is unambiguous. The worktree was left in place",
-            head.trim_start_matches("refs/heads/"),
-            lane.branch,
-            lane.branch
-        ),
+        Ok(head) => Ok(BranchCheck::OtherBranch(OtherBranch {
+            branch: head.trim_start_matches("refs/heads/").to_string(),
+            dirty: !worktree_status(path)?.is_empty(),
+        })),
         Err(_) => Ok(BranchCheck::Detached(detached_head(path, lane, removal)?)),
     }
 }

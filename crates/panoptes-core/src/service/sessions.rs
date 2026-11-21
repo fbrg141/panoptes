@@ -9,7 +9,7 @@ use serde_json::json;
 use super::error::{ServiceError, ServiceResult, err, only_in_a_lane};
 use super::forward::{Forwarder, WriteWatch};
 use super::key::{SessionKey, panoptes_id, panoptes_key};
-use super::lanes::lane_cwd;
+use super::lanes::{is_busy, lane_cwd, lane_session_busy};
 use super::registry::{EarlyExit, Launch, OpenSession, busy_writer};
 use super::status::{Tracker, now_ms};
 use super::{ErrorKind, Service, SessionEvent, SessionUpdate, StatusChanged};
@@ -679,6 +679,52 @@ impl Service {
             self.log.record("sessionClosed", json!({"key": key}));
             open.session.shutdown().await;
         }
+    }
+
+    /// Closes lane `id`'s open sessions so the lane can be archived or
+    /// deleted, and returns their keys. A session that is starting, Running
+    /// or Waiting is refused rather than stopped underneath its user. Any
+    /// other holds nothing to lose, since its conversation stays in the
+    /// harness's files. A session that starts running while the others are
+    /// being closed is left open, and the archive or delete then refuses it.
+    pub async fn close_lane_sessions(&self, id: i64) -> ServiceResult<Vec<String>> {
+        if self.registry.is_starting_in_lane(id) {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "A session in this lane is still starting; try again once it has opened",
+            ));
+        }
+        let keys: Vec<String> = {
+            let open = self.registry.open().await;
+            let in_lane = || open.iter().filter(|(_, o)| o.lane == Some(id));
+            if let Some(status) = in_lane()
+                .map(|(_, o)| o.status.lock().unwrap().status())
+                .find(|status| is_busy(*status))
+            {
+                return Err(lane_session_busy(status));
+            }
+            in_lane().map(|(key, _)| key.clone()).collect()
+        };
+        let mut closed = Vec::new();
+        for key in keys {
+            let _guard = self.registry.lifecycle(&key).await;
+            let session = {
+                let mut open = self.registry.open().await;
+                let idle = open
+                    .get(&key)
+                    .is_some_and(|o| !is_busy(o.status.lock().unwrap().status()));
+                if !idle {
+                    continue;
+                }
+                open.remove(&key)
+            };
+            if let Some(session) = session {
+                self.log.record("sessionClosed", json!({"key": key}));
+                session.session.shutdown().await;
+                closed.push(key);
+            }
+        }
+        Ok(closed)
     }
 
     /// Ends every open session's process, all at once.

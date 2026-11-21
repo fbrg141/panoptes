@@ -19,7 +19,7 @@ pub(crate) use archive::archive_recovering;
 pub(crate) use branch::create_branch_here;
 pub(crate) use checkpoint::snapshot_tree;
 pub(crate) use create::{create, discard_created};
-pub(crate) use delete::delete_detached;
+pub(crate) use delete::delete_confirmed;
 pub(crate) use inspect::{archive_preservation, work};
 pub(crate) use naming::slug;
 pub(crate) use restore::restore;
@@ -55,10 +55,33 @@ impl DetachedHead {
     }
 }
 
+/// The worktree is on a branch other than the lane's. That branch keeps its
+/// commits whatever happens to the worktree; only uncommitted changes (when
+/// `dirty`) live in the worktree alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherBranch {
+    pub branch: String,
+    pub dirty: bool,
+}
+
+/// The branch fix the user chose in a dialog before archiving again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BranchRecovery {
+    #[default]
+    None,
+    /// Attach the lane branch to a detached HEAD.
+    RecreateBranch,
+    /// Commit any changes on the other branch, then switch back to the lane's.
+    SwitchBack,
+}
+
 #[derive(Debug)]
 pub(crate) enum ArchiveResult {
     Dirty,
     DetachedHead(DetachedHead),
+    OtherBranch(OtherBranch),
     Archived { checkpoint_ref: Option<String> },
 }
 
@@ -66,6 +89,7 @@ pub(crate) enum ArchiveResult {
 pub(crate) enum DeleteResult {
     Deleted,
     DetachedHead(DetachedHead),
+    OtherBranch(OtherBranch),
 }
 
 /// What a lane's worktree holds compared with where it started: the files

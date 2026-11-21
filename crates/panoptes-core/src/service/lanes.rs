@@ -4,12 +4,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
+use panoptes_harness::SessionStatus;
 use serde::Serialize;
 use serde_json::json;
 
 use super::error::err;
 use super::{ErrorKind, Service, ServiceError, ServiceResult};
-use crate::lanes::{self, ArchiveResult, ArchiveStrategy, DeleteResult, DetachedHead};
+use crate::lanes::{
+    self, ArchiveResult, ArchiveStrategy, BranchRecovery, DeleteResult, DetachedHead, OtherBranch,
+};
 use crate::store::{Lane, LaneState};
 
 #[derive(Debug, Serialize)]
@@ -23,6 +26,10 @@ pub enum ArchiveLaneOutcome {
         lane: Lane,
         detached_head: DetachedHead,
     },
+    OtherBranch {
+        lane: Lane,
+        other_branch: OtherBranch,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +39,10 @@ pub enum DeleteLaneOutcome {
     DetachedHead {
         lane: Lane,
         detached_head: DetachedHead,
+    },
+    OtherBranch {
+        lane: Lane,
+        other_branch: OtherBranch,
     },
 }
 
@@ -134,16 +145,17 @@ impl Service {
         id: i64,
         strategy: Option<ArchiveStrategy>,
     ) -> ServiceResult<ArchiveLaneOutcome> {
-        self.archive_lane_recovering(id, strategy, false).await
+        self.archive_lane_recovering(id, strategy, BranchRecovery::None)
+            .await
     }
 
     /// Archives after optionally performing the branch recovery the user
-    /// explicitly chose in the detached-HEAD dialog.
+    /// explicitly chose in the detached-HEAD or other-branch dialog.
     pub async fn archive_lane_recovering(
         &self,
         id: i64,
         strategy: Option<ArchiveStrategy>,
-        recreate_branch: bool,
+        recovery: BranchRecovery,
     ) -> ServiceResult<ArchiveLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         self.close_lane_previews(id).await;
@@ -169,13 +181,16 @@ impl Service {
             // The checkpoint ref is stored before the folder goes, so an
             // archive that stops in between can be finished later.
             let record = |reference: Option<&str>| store.lock().set_lane_checkpoint(id, reference);
-            match lanes::archive_recovering(&project, &lane, strategy, recreate_branch, &record)? {
+            match lanes::archive_recovering(&project, &lane, strategy, recovery, &record)? {
                 ArchiveResult::Dirty => Ok(ArchiveLaneOutcome::Dirty { lane }),
                 ArchiveResult::DetachedHead(detached_head) => {
                     Ok(ArchiveLaneOutcome::DetachedHead {
                         lane,
                         detached_head,
                     })
+                }
+                ArchiveResult::OtherBranch(other_branch) => {
+                    Ok(ArchiveLaneOutcome::OtherBranch { lane, other_branch })
                 }
                 ArchiveResult::Archived { checkpoint_ref } => {
                     store.lock().archive_lane(id, checkpoint_ref.as_deref())?;
@@ -261,15 +276,16 @@ impl Service {
     /// Open sessions are refused rather than killed underneath their user.
     #[cfg(test)]
     pub async fn delete_lane(&self, id: i64) -> ServiceResult<DeleteLaneOutcome> {
-        self.delete_lane_detached(id, false).await
+        self.delete_lane_confirmed(id, false).await
     }
 
-    /// `allow_detached` is accepted only for a clean, reachable detached HEAD
-    /// and is checked again by the lane operation.
-    pub async fn delete_lane_detached(
+    /// `confirmed` is the user's go-ahead in the detached-HEAD or
+    /// other-branch dialog. For a detached HEAD it is accepted only while
+    /// HEAD is clean and reachable, which the lane operation checks again.
+    pub async fn delete_lane_confirmed(
         &self,
         id: i64,
-        allow_detached: bool,
+        confirmed: bool,
     ) -> ServiceResult<DeleteLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         self.close_lane_previews(id).await;
@@ -287,7 +303,7 @@ impl Service {
                 let project = store.project(lane.project_id)?;
                 (lane, project)
             };
-            match lanes::delete_detached(&project, &lane, allow_detached)? {
+            match lanes::delete_confirmed(&project, &lane, confirmed)? {
                 DeleteResult::Deleted => {
                     store.lock().delete_lane(id)?;
                     Ok(DeleteLaneOutcome::Deleted)
@@ -296,6 +312,9 @@ impl Service {
                     lane,
                     detached_head,
                 }),
+                DeleteResult::OtherBranch(other_branch) => {
+                    Ok(DeleteLaneOutcome::OtherBranch { lane, other_branch })
+                }
             }
         })
         .await
@@ -333,6 +352,19 @@ impl Drop for LaneBusy {
     fn drop(&mut self) {
         self.lanes.lock().unwrap().remove(&self.id);
     }
+}
+
+pub(super) fn is_busy(status: SessionStatus) -> bool {
+    matches!(status, SessionStatus::Running | SessionStatus::Waiting)
+}
+
+pub(super) fn lane_session_busy(status: SessionStatus) -> ServiceError {
+    let message = if status == SessionStatus::Waiting {
+        "A session in this lane is Waiting for an answer; answer or stop it first"
+    } else {
+        "A session in this lane is Running; stop it or let it finish first"
+    };
+    ServiceError::new(ErrorKind::Rejected, message)
 }
 
 /// Whether another active lane of `project_id` already uses the main checkout.

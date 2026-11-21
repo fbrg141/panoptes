@@ -498,6 +498,42 @@ async fn a_project_whose_repository_moved_can_still_be_cleared_away() {
 }
 
 #[tokio::test]
+async fn closing_a_lane_closes_idle_sessions_but_refuses_running_ones() {
+    let f = fixture(FakeHarness::default());
+    let (_code, lane) = lane_of(&f).await;
+    let opened = f.service.create(lane.id, "fake").await.unwrap();
+    let sink = f.harness.sinks.lock().unwrap()[0].clone();
+
+    sink.send(HarnessEvent::RunStarted).unwrap();
+    settle().await;
+    let error = f.service.close_lane_sessions(lane.id).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Rejected);
+    assert!(error.message.contains("is Running"), "{error}");
+    sink.send(question("q1", None)).unwrap();
+    settle().await;
+    let error = f.service.close_lane_sessions(lane.id).await.unwrap_err();
+    assert!(error.message.contains("is Waiting"), "{error}");
+    assert_eq!(exits(&f), 0, "a busy session is never stopped");
+
+    sink.send(HarnessEvent::RunSettled { aborted: false })
+        .unwrap();
+    settle().await;
+    let closed = f.service.close_lane_sessions(lane.id).await.unwrap();
+    assert_eq!(closed, std::slice::from_ref(&opened.key));
+    let listing = f.service.list().await;
+    let session = listing.sessions.iter().find(|s| s.key == opened.key);
+    assert!(session.is_some_and(|s| !s.open));
+    assert!(
+        f.service
+            .close_lane_sessions(lane.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    f.service.delete_lane(lane.id).await.unwrap();
+}
+
+#[tokio::test]
 async fn deleting_a_lane_requires_a_closed_session_and_frees_the_project() {
     let f = fixture(FakeHarness::default());
     let (_code, lane) = lane_of(&f).await;
