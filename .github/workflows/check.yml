@@ -1,0 +1,35 @@
+# Runs `scripts/check.sh`, the same script the pre-push hook runs, on every
+# pull request and every push to main. Panoptes is a macOS app, so the job
+# runs on macOS. A real Pi is not needed: the adapter tests use
+# crates/panoptes-pi/tests/fixtures/fake_pi.py.
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same PR cancels the run it replaces.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check (fmt, clippy, tests)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # The Pi extension's own tests run on Node, which Pi needs anyway.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sh scripts/check.sh
