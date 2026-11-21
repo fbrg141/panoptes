@@ -248,6 +248,25 @@ pub fn session_menu_items(
     items
 }
 
+/// A session row's menu. A lane card archives the whole lane, so it does not
+/// also offer to archive just its current session.
+pub fn session_row_menu_items(
+    session: &Session,
+    adoptable: bool,
+    lane_actions: bool,
+    lane: Option<&Lane>,
+) -> Vec<MenuEntry> {
+    let mut items = session_menu_items(session, adoptable, lane_actions && lane.is_none());
+    if let Some(lane) = lane {
+        let extra = lane_menu_items(lane);
+        if !items.is_empty() && !extra.is_empty() {
+            items.push(MenuEntry::Separator);
+        }
+        items.extend(extra);
+    }
+    items
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -403,6 +422,22 @@ pub(crate) mod tests {
         assert_eq!(
             ids(session_menu_items(&s, true, true)),
             ["adopt", "stop", "archive"]
+        );
+        assert_eq!(
+            ids(session_row_menu_items(
+                &s,
+                true,
+                true,
+                Some(&lane(LaneState::Active))
+            )),
+            [
+                "adopt",
+                "stop",
+                "new-session",
+                "resume-session",
+                "archive-lane",
+                "delete-lane"
+            ]
         );
     }
 }
