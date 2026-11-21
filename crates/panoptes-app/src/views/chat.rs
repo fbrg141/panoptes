@@ -12,7 +12,7 @@ use panoptes_harness::{Answer, Approval, NoticeLevel, SessionStatus};
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark, status_pill};
 use crate::model::format::now_ms;
 use crate::model::panes::SplitDirection;
-use crate::model::turns::{build_turns, loose_approvals};
+use crate::model::turns::{build_turns, loose_approvals, prompt_count, sent_turn};
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::Ui;
@@ -40,7 +40,7 @@ pub struct ChatPane {
     seen: usize,
     /// The text fields of questions waiting for an answer, by question id.
     fields: HashMap<String, QuestionField>,
-    /// Message count when a send started; its first new turn animates in.
+    /// Prompt count when a send started; the next prompt's turn animates in.
     send_from: Option<usize>,
     /// The turn whose prompt is entering from the composer.
     sent_turn: Option<String>,
@@ -74,7 +74,7 @@ impl ChatPane {
                         .state
                         .conversations
                         .get(&this.key)
-                        .map_or(0, |c| c.messages.len()),
+                        .map_or(0, |c| prompt_count(&c.messages)),
                 );
                 this.scroll_to_end(cx);
             }
@@ -336,8 +336,8 @@ impl Render for ChatPane {
             .map(|c| c.args_text.clone())
             .unwrap_or_default();
         let messages = conversation.map_or(0, |c| c.messages.len());
-        if self.send_from.is_some_and(|before| messages > before) {
-            self.sent_turn = turns.last().map(|turn| turn.key.clone());
+        if let Some(turn) = self.send_from.and_then(|before| sent_turn(&turns, before)) {
+            self.sent_turn = Some(turn.key.clone());
             self.send_from = None;
         }
         let behind = !self.pinned && messages > self.seen;
