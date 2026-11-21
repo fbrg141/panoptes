@@ -19,7 +19,10 @@ use tokio::sync::Mutex;
 use crate::changes::{self, Changes, DiffOptions, Hunk, TreeRange};
 use crate::cleanup::{self, IdleLane, LaneCleanup};
 use crate::eventlog::EventLog;
-use crate::lanes::{self, ArchiveResult, ArchiveStrategy, DeleteResult, DetachedHead, LaneWork};
+use crate::lanes::{
+    self, ArchiveResult, ArchiveStrategy, BranchRecovery, DeleteResult, DetachedHead, LaneWork,
+    OtherBranch,
+};
 use crate::projects::{self, Location};
 use crate::store::{Lane, LaneState, Preferences, ProfileInput, Project, ProjectSettings, Store};
 use crate::writes;
@@ -382,6 +385,10 @@ pub enum ArchiveLaneOutcome {
         lane: Lane,
         detached_head: DetachedHead,
     },
+    OtherBranch {
+        lane: Lane,
+        other_branch: OtherBranch,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -391,6 +398,10 @@ pub enum DeleteLaneOutcome {
     DetachedHead {
         lane: Lane,
         detached_head: DetachedHead,
+    },
+    OtherBranch {
+        lane: Lane,
+        other_branch: OtherBranch,
     },
 }
 
@@ -1682,6 +1693,58 @@ impl Service {
         }
     }
 
+    /// Closes lane `id`'s open sessions so the lane can be archived or
+    /// deleted, and returns their keys. A session that is starting, Running
+    /// or Waiting is refused rather than stopped underneath its user. Any
+    /// other holds nothing to lose, since its conversation stays in the
+    /// harness's files. A session that starts running while the others are
+    /// being closed is left open, and the archive or delete then refuses it.
+    pub async fn close_lane_sessions(&self, id: i64) -> ServiceResult<Vec<String>> {
+        if self
+            .starting
+            .lock()
+            .unwrap()
+            .values()
+            .any(|lane| *lane == Some(id))
+        {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "A session in this lane is still starting; try again once it has opened",
+            ));
+        }
+        let keys: Vec<String> = {
+            let open = self.open.lock().await;
+            let in_lane = || open.iter().filter(|(_, o)| o.lane == Some(id));
+            if let Some(status) = in_lane()
+                .map(|(_, o)| o.status.lock().unwrap().status)
+                .find(|status| is_busy(*status))
+            {
+                return Err(lane_session_busy(status));
+            }
+            in_lane().map(|(key, _)| key.clone()).collect()
+        };
+        let mut closed = Vec::new();
+        for key in keys {
+            let _guard = self.lifecycle(&key).await;
+            let session = {
+                let mut open = self.open.lock().await;
+                let idle = open
+                    .get(&key)
+                    .is_some_and(|o| !is_busy(o.status.lock().unwrap().status));
+                if !idle {
+                    continue;
+                }
+                open.remove(&key)
+            };
+            if let Some(session) = session {
+                self.log.record("sessionClosed", json!({"key": key}));
+                session.session.shutdown().await;
+                closed.push(key);
+            }
+        }
+        Ok(closed)
+    }
+
     /// Ends every open session's process, all at once.
     pub async fn close_all(&self) {
         let sessions: Vec<_> = self
@@ -1974,16 +2037,17 @@ impl Service {
         id: i64,
         strategy: Option<ArchiveStrategy>,
     ) -> ServiceResult<ArchiveLaneOutcome> {
-        self.archive_lane_recovering(id, strategy, false).await
+        self.archive_lane_recovering(id, strategy, BranchRecovery::None)
+            .await
     }
 
     /// Archives after optionally performing the branch recovery the user
-    /// explicitly chose in the detached-HEAD dialog.
+    /// explicitly chose in the detached-HEAD or other-branch dialog.
     pub async fn archive_lane_recovering(
         &self,
         id: i64,
         strategy: Option<ArchiveStrategy>,
-        recreate_branch: bool,
+        recovery: BranchRecovery,
     ) -> ServiceResult<ArchiveLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         if self.lane_in_use(id).await {
@@ -2009,13 +2073,16 @@ impl Service {
             // archive that stops in between can be finished later.
             let record =
                 |reference: Option<&str>| store.lock().unwrap().set_lane_checkpoint(id, reference);
-            match lanes::archive_recovering(&project, &lane, strategy, recreate_branch, &record)? {
+            match lanes::archive_recovering(&project, &lane, strategy, recovery, &record)? {
                 ArchiveResult::Dirty => Ok(ArchiveLaneOutcome::Dirty { lane }),
                 ArchiveResult::DetachedHead(detached_head) => {
                     Ok(ArchiveLaneOutcome::DetachedHead {
                         lane,
                         detached_head,
                     })
+                }
+                ArchiveResult::OtherBranch(other_branch) => {
+                    Ok(ArchiveLaneOutcome::OtherBranch { lane, other_branch })
                 }
                 ArchiveResult::Archived { checkpoint_ref } => {
                     store
@@ -2103,15 +2170,16 @@ impl Service {
     /// Open sessions are refused rather than killed underneath their user.
     #[cfg(test)]
     pub async fn delete_lane(&self, id: i64) -> ServiceResult<DeleteLaneOutcome> {
-        self.delete_lane_detached(id, false).await
+        self.delete_lane_confirmed(id, false).await
     }
 
-    /// `allow_detached` is accepted only for a clean, reachable detached HEAD
-    /// and is checked again by the lane operation.
-    pub async fn delete_lane_detached(
+    /// `confirmed` is the user's go-ahead in the detached-HEAD or
+    /// other-branch dialog. For a detached HEAD it is accepted only while
+    /// HEAD is clean and reachable, which the lane operation checks again.
+    pub async fn delete_lane_confirmed(
         &self,
         id: i64,
-        allow_detached: bool,
+        confirmed: bool,
     ) -> ServiceResult<DeleteLaneOutcome> {
         let _busy = self.lane_busy(id)?;
         if self.lane_in_use(id).await {
@@ -2128,7 +2196,7 @@ impl Service {
                 let project = store.project(lane.project_id)?;
                 (lane, project)
             };
-            match lanes::delete_detached(&project, &lane, allow_detached)? {
+            match lanes::delete_confirmed(&project, &lane, confirmed)? {
                 DeleteResult::Deleted => {
                     store.lock().unwrap().delete_lane(id)?;
                     Ok(DeleteLaneOutcome::Deleted)
@@ -2137,6 +2205,9 @@ impl Service {
                     lane,
                     detached_head,
                 }),
+                DeleteResult::OtherBranch(other_branch) => {
+                    Ok(DeleteLaneOutcome::OtherBranch { lane, other_branch })
+                }
             }
         })
         .await
@@ -2210,6 +2281,19 @@ fn busy_writer(
             })
         })
         .cloned()
+}
+
+fn is_busy(status: SessionStatus) -> bool {
+    matches!(status, SessionStatus::Running | SessionStatus::Waiting)
+}
+
+fn lane_session_busy(status: SessionStatus) -> ServiceError {
+    let message = if status == SessionStatus::Waiting {
+        "A session in this lane is Waiting for an answer; answer or stop it first"
+    } else {
+        "A session in this lane is Running; stop it or let it finish first"
+    };
+    ServiceError::new(ErrorKind::Rejected, message)
 }
 
 /// Whether another active lane of `project_id` already uses the main checkout.
@@ -3985,6 +4069,42 @@ mod tests {
         f.service.delete_lane(lane.id).await.unwrap();
         f.service.remove_project(lane.project_id).await.unwrap();
         assert!(f.service.list().await.projects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn closing_a_lane_closes_idle_sessions_but_refuses_running_ones() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let opened = f.service.create(lane.id, "fake").await.unwrap();
+        let sink = f.harness.sinks.lock().unwrap()[0].clone();
+
+        sink.send(HarnessEvent::RunStarted).unwrap();
+        settle().await;
+        let error = f.service.close_lane_sessions(lane.id).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Rejected);
+        assert!(error.message.contains("is Running"), "{error}");
+        sink.send(question("q1", None)).unwrap();
+        settle().await;
+        let error = f.service.close_lane_sessions(lane.id).await.unwrap_err();
+        assert!(error.message.contains("is Waiting"), "{error}");
+        assert_eq!(exits(&f), 0, "a busy session is never stopped");
+
+        sink.send(HarnessEvent::RunSettled { aborted: false })
+            .unwrap();
+        settle().await;
+        let closed = f.service.close_lane_sessions(lane.id).await.unwrap();
+        assert_eq!(closed, std::slice::from_ref(&opened.key));
+        let listing = f.service.list().await;
+        let session = listing.sessions.iter().find(|s| s.key == opened.key);
+        assert!(session.is_some_and(|s| !s.open));
+        assert!(
+            f.service
+                .close_lane_sessions(lane.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        f.service.delete_lane(lane.id).await.unwrap();
     }
 
     #[tokio::test]

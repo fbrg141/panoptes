@@ -1,10 +1,11 @@
 //! The confirmations a lane or project action can need: removing a project,
-//! deleting a lane, preserving a dirty lane, recovering a detached HEAD and
-//! choosing a lane to adopt a conversation into.
+//! deleting a lane, preserving a dirty lane, recovering a detached HEAD or
+//! a worktree on another branch, and choosing a lane to adopt a conversation
+//! into.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use panoptes_core::lanes::{ArchiveStrategy, DetachedHead};
+use panoptes_core::lanes::{ArchiveStrategy, BranchRecovery, DetachedHead, OtherBranch};
 use panoptes_core::service::{AdoptionOutcome, ArchiveLaneOutcome, DeleteLaneOutcome, Session};
 use panoptes_core::store::{Lane, LaneState, Project};
 
@@ -27,6 +28,12 @@ pub enum LaneDialog {
     Detached {
         lane: Lane,
         head: DetachedHead,
+        removal: Removal,
+    },
+    /// The worktree is on a branch other than the lane's.
+    OtherBranch {
+        lane: Lane,
+        other: OtherBranch,
         removal: Removal,
     },
     Adopt(Box<Session>),
@@ -91,19 +98,22 @@ impl LaneDialogs {
         &mut self,
         id: i64,
         strategy: Option<ArchiveStrategy>,
-        recreate_branch: bool,
+        recovery: BranchRecovery,
         cx: &mut Context<Self>,
     ) {
         self.busy = true;
         cx.notify();
         let task = self.store.update(cx, |store, cx| {
-            store.archive_lane(id, strategy, recreate_branch, cx)
+            store.archive_lane(id, strategy, recovery, cx)
         });
         cx.spawn(async move |this, cx| {
             let outcome = task.await.flatten();
             let _ = this.update(cx, |this, cx| {
                 let removal = match &this.current {
-                    Some(LaneDialog::Detached { removal, .. }) => *removal,
+                    Some(
+                        LaneDialog::Detached { removal, .. }
+                        | LaneDialog::OtherBranch { removal, .. },
+                    ) => *removal,
                     _ => Removal::Archive,
                 };
                 match outcome {
@@ -122,6 +132,14 @@ impl LaneDialogs {
                         }),
                         cx,
                     ),
+                    Some(ArchiveLaneOutcome::OtherBranch { lane, other_branch }) => this.show(
+                        Some(LaneDialog::OtherBranch {
+                            lane,
+                            other: other_branch,
+                            removal,
+                        }),
+                        cx,
+                    ),
                     None => {
                         this.busy = false;
                         cx.notify();
@@ -132,12 +150,14 @@ impl LaneDialogs {
         .detach();
     }
 
-    fn delete(&mut self, id: i64, allow_detached: bool, cx: &mut Context<Self>) {
+    /// `confirmed` is the user's go-ahead in a detached-HEAD or
+    /// other-branch dialog.
+    fn delete(&mut self, id: i64, confirmed: bool, cx: &mut Context<Self>) {
         self.busy = true;
         cx.notify();
         let task = self
             .store
-            .update(cx, |store, cx| store.delete_lane(id, allow_detached, cx));
+            .update(cx, |store, cx| store.delete_lane(id, confirmed, cx));
         cx.spawn(async move |this, cx| {
             let outcome = task.await.flatten();
             let _ = this.update(cx, |this, cx| match outcome {
@@ -149,6 +169,14 @@ impl LaneDialogs {
                     Some(LaneDialog::Detached {
                         lane,
                         head: detached_head,
+                        removal: Removal::Delete,
+                    }),
+                    cx,
+                ),
+                Some(DeleteLaneOutcome::OtherBranch { lane, other_branch }) => this.show(
+                    Some(LaneDialog::OtherBranch {
+                        lane,
+                        other: other_branch,
                         removal: Removal::Delete,
                     }),
                     cx,
@@ -301,14 +329,14 @@ impl Render for LaneDialogs {
                     let main = lane.worktrees.iter().any(|w| w.main_checkout);
                     let body = if main {
                         prose(words(
-                            "This removes the lane and its Panoptes session records. The main checkout, its branch and your files are not changed. Pi conversation files are kept.",
+                            "This closes the lane's sessions and removes the lane and its Panoptes session records. The main checkout, its branch and your files are not changed. Pi conversation files are kept.",
                         ))
                     } else {
                         prose(
                             [
                                 words("This permanently deletes the local worktree, including uncommitted changes, the local branch "),
                                 vec![code(lane.branch.clone(), &p).into_any_element()],
-                                words(", and this lane's recovery refs. Commits that exist only on this branch will be lost. The main repository, remote branches and Pi conversation files are kept."),
+                                words(", and this lane's recovery refs, after closing its sessions. Commits that exist only on this branch will be lost. The main repository, remote branches and Pi conversation files are kept."),
                             ]
                             .into_iter()
                             .flatten()
@@ -342,7 +370,7 @@ impl Render for LaneDialogs {
                             .disabled(busy)
                             .on_click(move |_, _, cx| {
                                 let _ = this.update(cx, |this, cx| {
-                                    this.archive(id, Some(strategy), false, cx)
+                                    this.archive(id, Some(strategy), BranchRecovery::None, cx)
                                 });
                             });
                         if primary { button.primary() } else { button }
@@ -373,6 +401,11 @@ impl Render for LaneDialogs {
                     head,
                     removal,
                 } => self.detached(lane, head, *removal, busy, &p, &this, actions),
+                LaneDialog::OtherBranch {
+                    lane,
+                    other,
+                    removal,
+                } => other_branch(lane, other, *removal, busy, &p, &this, actions),
                 LaneDialog::Adopt(session) => {
                     let state = &self.store.read(cx).state;
                     let free: Vec<(i64, String)> = state
@@ -483,7 +516,9 @@ impl LaneDialogs {
                     .label("Recreate branch and archive")
                     .disabled(busy)
                     .on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |this, cx| this.archive(id, None, true, cx));
+                        let _ = this.update(cx, |this, cx| {
+                            this.archive(id, None, BranchRecovery::RecreateBranch, cx)
+                        });
                     }),
             );
         }
@@ -583,4 +618,96 @@ impl LaneDialogs {
         body = body.child(advice);
         (title, 560., body.into_any_element(), Some(actions(buttons)))
     }
+}
+
+/// A worktree on a branch other than the lane's. Nothing on that branch is
+/// lost either way: archiving switches back first, committing any changes on
+/// the branch they were made on, and deleting keeps that branch.
+fn other_branch(
+    lane: &Lane,
+    other: &OtherBranch,
+    removal: Removal,
+    busy: bool,
+    p: &Palette,
+    this: &WeakEntity<LaneDialogs>,
+    actions: impl Fn(Vec<Button>) -> AnyElement,
+) -> (String, f32, AnyElement, Option<AnyElement>) {
+    let id = lane.id;
+    let this = this.clone();
+    let on = [
+        words("The worktree is on "),
+        vec![code(other.branch.clone(), p).into_any_element()],
+        words(" instead of the lane's branch "),
+        vec![code(lane.branch.clone(), p).into_any_element()],
+        words(". Nothing has been changed or removed yet."),
+    ];
+    let (title, advice, button) = match removal {
+        Removal::Archive => {
+            let advice = if other.dirty {
+                vec![
+                    words("Its uncommitted changes are committed on "),
+                    vec![code(other.branch.clone(), p).into_any_element()],
+                    words(" first. Then the worktree switches back to "),
+                    vec![code(lane.branch.clone(), p).into_any_element()],
+                    words(" and the lane is archived. Both branches are kept."),
+                ]
+            } else {
+                vec![
+                    words("The worktree switches back to "),
+                    vec![code(lane.branch.clone(), p).into_any_element()],
+                    words(" and the lane is archived. Both branches are kept."),
+                ]
+            };
+            let label = if other.dirty {
+                "Commit, switch back and archive"
+            } else {
+                "Switch back and archive"
+            };
+            let button = Button::new("switch-back-archive")
+                .primary()
+                .label(label)
+                .disabled(busy)
+                .on_click(move |_, _, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.archive(id, None, BranchRecovery::SwitchBack, cx)
+                    });
+                });
+            (
+                format!("Switch {} back before archiving", lane.name),
+                advice,
+                button,
+            )
+        }
+        Removal::Delete => {
+            let mut advice = vec![
+                words("Deleting removes the worktree and the lane's branch "),
+                vec![code(lane.branch.clone(), p).into_any_element()],
+                words(". "),
+                vec![code(other.branch.clone(), p).into_any_element()],
+                words(" and its commits are kept."),
+            ];
+            if other.dirty {
+                advice.push(words(
+                    " The worktree's uncommitted changes are deleted too.",
+                ));
+            }
+            let button = Button::new("delete-other-branch")
+                .danger()
+                .label("Delete permanently")
+                .disabled(busy)
+                .on_click(move |_, _, cx| {
+                    let _ = this.update(cx, |this, cx| this.delete(id, true, cx));
+                });
+            (format!("Delete {}?", lane.name), advice, button)
+        }
+    };
+    let body = v_flex_gap(12.)
+        .child(prose(on.into_iter().flatten().collect()))
+        .child(prose(advice.into_iter().flatten().collect()));
+    (
+        title,
+        540.,
+        body.into_any_element(),
+        Some(actions(vec![button])),
+    )
 }

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use gpui_kit::*;
 use panoptes_core::cleanup::LaneCleanup;
 use panoptes_core::files::Attachment;
-use panoptes_core::lanes::ArchiveStrategy;
+use panoptes_core::lanes::{ArchiveStrategy, BranchRecovery};
 use panoptes_core::service::{
     AdoptionOutcome, ArchiveLaneOutcome, DeleteLaneOutcome, ErrorKind, LaneNavigation, Listing,
     OpenedSession, Service, ServiceError, Session, SessionEvent, SessionUpdate,
@@ -1090,25 +1090,66 @@ impl AppStore {
         &mut self,
         id: i64,
         strategy: Option<ArchiveStrategy>,
-        recreate_branch: bool,
+        recovery: BranchRecovery,
         cx: &mut Context<Self>,
     ) -> Task<Option<Option<ArchiveLaneOutcome>>> {
-        let work = self.backend.run("archive_lane", move |s| async move {
-            s.archive_lane_recovering(id, strategy, recreate_branch)
-                .await
+        let work = self.closing_lane_sessions(id, "archive_lane", move |s| async move {
+            s.archive_lane_recovering(id, strategy, recovery).await
         });
-        self.spawn(cx, work, |this, outcome, cx| match outcome {
-            Ok(outcome) => {
-                if matches!(outcome, ArchiveLaneOutcome::Archived) {
-                    this.refresh(cx).detach();
+        self.spawn(cx, work, |this, (closed, outcome), cx| {
+            this.forget_closed(&closed, cx);
+            match outcome {
+                Ok(outcome) => {
+                    if matches!(outcome, ArchiveLaneOutcome::Archived) {
+                        this.refresh(cx).detach();
+                    }
+                    Some(outcome)
                 }
-                Some(outcome)
-            }
-            Err(error) => {
-                this.fail(error, cx);
-                None
+                Err(error) => {
+                    this.fail(error, cx);
+                    None
+                }
             }
         })
+    }
+
+    /// Closes lane `id`'s idle sessions, then runs `then`. Archiving or
+    /// deleting a lane implies closing them; the service refuses a session
+    /// that is starting, Running or Waiting. Answers with the closed keys,
+    /// which the caller forgets whether or not `then` worked.
+    fn closing_lane_sessions<F, Fut, T>(
+        &self,
+        id: i64,
+        command: &'static str,
+        then: F,
+    ) -> impl Future<Output = (Vec<String>, Result<T, ServiceError>)> + use<F, Fut, T>
+    where
+        F: FnOnce(Arc<Service>) -> Fut,
+        Fut: Future<Output = Result<T, ServiceError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let backend = self.backend.clone();
+        async move {
+            let closed = backend
+                .run(
+                    command,
+                    move |s| async move { s.close_lane_sessions(id).await },
+                )
+                .await;
+            match closed {
+                Ok(closed) => (closed, backend.run(command, then).await),
+                Err(error) => (Vec::new(), Err(error)),
+            }
+        }
+    }
+
+    fn forget_closed(&mut self, closed: &[String], cx: &mut Context<Self>) {
+        for key in closed {
+            self.state.forget(key);
+        }
+        if !closed.is_empty() {
+            self.refresh(cx).detach();
+        }
     }
 
     /// Worktree usage and safe idle lanes for one project, measured now.
@@ -1136,8 +1177,12 @@ impl AppStore {
             for lane_id in ids {
                 let outcome = backend
                     .run("archive_lane", move |s| async move {
-                        s.archive_lane_recovering(lane_id, Some(ArchiveStrategy::Checkpoint), false)
-                            .await
+                        s.archive_lane_recovering(
+                            lane_id,
+                            Some(ArchiveStrategy::Checkpoint),
+                            BranchRecovery::None,
+                        )
+                        .await
                     })
                     .await;
                 match outcome {
@@ -1145,6 +1190,10 @@ impl AppStore {
                     Ok(ArchiveLaneOutcome::DetachedHead { .. }) => result.failed.push((
                         lane_id,
                         "Needs branch recovery; archive it from its lane menu.".into(),
+                    )),
+                    Ok(ArchiveLaneOutcome::OtherBranch { .. }) => result.failed.push((
+                        lane_id,
+                        "Is on another branch; archive it from its lane menu.".into(),
                     )),
                     Ok(ArchiveLaneOutcome::Dirty { .. }) => result.failed.push((
                         lane_id,
@@ -1193,32 +1242,35 @@ impl AppStore {
     pub fn delete_lane(
         &mut self,
         id: i64,
-        allow_detached: bool,
+        confirmed: bool,
         cx: &mut Context<Self>,
     ) -> Task<Option<Option<DeleteLaneOutcome>>> {
-        let work = self.backend.run("delete_lane", move |s| async move {
-            s.delete_lane_detached(id, allow_detached).await
+        let work = self.closing_lane_sessions(id, "delete_lane", move |s| async move {
+            s.delete_lane_confirmed(id, confirmed).await
         });
-        self.spawn(cx, work, move |this, outcome, cx| match outcome {
-            Ok(outcome) => {
-                if matches!(outcome, DeleteLaneOutcome::Deleted) {
-                    let keys: Vec<String> = this
-                        .state
-                        .sessions
-                        .iter()
-                        .filter(|s| s.lane_id == Some(id))
-                        .map(|s| s.key.clone())
-                        .collect();
-                    for key in keys {
-                        this.state.forget(&key);
+        self.spawn(cx, work, move |this, (closed, outcome), cx| {
+            this.forget_closed(&closed, cx);
+            match outcome {
+                Ok(outcome) => {
+                    if matches!(outcome, DeleteLaneOutcome::Deleted) {
+                        let keys: Vec<String> = this
+                            .state
+                            .sessions
+                            .iter()
+                            .filter(|s| s.lane_id == Some(id))
+                            .map(|s| s.key.clone())
+                            .collect();
+                        for key in keys {
+                            this.state.forget(&key);
+                        }
+                        this.refresh(cx).detach();
                     }
-                    this.refresh(cx).detach();
+                    Some(outcome)
                 }
-                Some(outcome)
-            }
-            Err(error) => {
-                this.fail(error, cx);
-                None
+                Err(error) => {
+                    this.fail(error, cx);
+                    None
+                }
             }
         })
     }

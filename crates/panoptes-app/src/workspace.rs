@@ -222,7 +222,9 @@ impl Workspace {
 
     fn on_sidebar(&mut self, event: SidebarEvent, cx: &mut Context<Self>) {
         self.dialogs.update(cx, |dialogs, cx| match event {
-            SidebarEvent::ArchiveLane(id) => dialogs.archive(id, None, false, cx),
+            SidebarEvent::ArchiveLane(id) => {
+                dialogs.archive(id, None, panoptes_core::lanes::BranchRecovery::None, cx)
+            }
             SidebarEvent::Adopt(session) => dialogs.adopt(*session, None, cx),
             SidebarEvent::RemoveProject(id) => dialogs.remove_project(id, cx),
             SidebarEvent::DeleteLane(id) => dialogs.delete_lane(id, cx),

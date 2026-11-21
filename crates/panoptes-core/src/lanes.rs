@@ -47,10 +47,33 @@ impl DetachedHead {
     }
 }
 
+/// The worktree is on a branch other than the lane's. That branch keeps its
+/// commits whatever happens to the worktree; only uncommitted changes (when
+/// `dirty`) live in the worktree alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherBranch {
+    pub branch: String,
+    pub dirty: bool,
+}
+
+/// The branch fix the user chose in a dialog before archiving again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BranchRecovery {
+    #[default]
+    None,
+    /// Attach the lane branch to a detached HEAD.
+    RecreateBranch,
+    /// Commit any changes on the other branch, then switch back to the lane's.
+    SwitchBack,
+}
+
 #[derive(Debug)]
 pub enum ArchiveResult {
     Dirty,
     DetachedHead(DetachedHead),
+    OtherBranch(OtherBranch),
     Archived { checkpoint_ref: Option<String> },
 }
 
@@ -58,6 +81,7 @@ pub enum ArchiveResult {
 pub enum DeleteResult {
     Deleted,
     DetachedHead(DetachedHead),
+    OtherBranch(OtherBranch),
 }
 
 /// Filesystem-safe lane names are also used in branch names and paths.
@@ -245,17 +269,19 @@ pub fn archive_recording(
     strategy: Option<ArchiveStrategy>,
     record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<ArchiveResult> {
-    archive_recovering(project, lane, strategy, false, record)
+    archive_recovering(project, lane, strategy, BranchRecovery::None, record)
 }
 
-/// `recreate_branch` is the user's explicit choice in the detached-HEAD
-/// dialog. It attaches the lane branch to HEAD before the normal archive
-/// checks, without ever resetting a branch that is ahead or has diverged.
+/// `recovery` is the user's explicit choice in the detached-HEAD or
+/// other-branch dialog. Recreating attaches the lane branch to HEAD without
+/// ever resetting a branch that is ahead or has diverged; switching back
+/// first commits any changes on the branch the worktree is on. Either runs
+/// before the normal archive checks.
 pub fn archive_recovering(
     project: &Project,
     lane: &Lane,
     strategy: Option<ArchiveStrategy>,
-    recreate_branch: bool,
+    recovery: BranchRecovery,
     record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<ArchiveResult> {
     let worktree = sole_worktree(lane)?;
@@ -281,8 +307,14 @@ pub fn archive_recovering(
     }
     match check_lane_branch(&path, lane, Removal::Archive)? {
         BranchCheck::Ready => {}
-        BranchCheck::Detached(_) if recreate_branch => create_branch_here(&path, lane)?,
+        BranchCheck::Detached(_) if recovery == BranchRecovery::RecreateBranch => {
+            create_branch_here(&path, lane)?
+        }
         BranchCheck::Detached(detached) => return Ok(ArchiveResult::DetachedHead(detached)),
+        BranchCheck::OtherBranch(other) if recovery == BranchRecovery::SwitchBack => {
+            switch_back(&path, lane, &other)?
+        }
+        BranchCheck::OtherBranch(other) => return Ok(ArchiveResult::OtherBranch(other)),
     }
     let before = worktree_status(&path)?;
     let is_dirty = !before.is_empty();
@@ -445,16 +477,18 @@ pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
 /// lane owns none of those things, so deletion only removes its store row.
 #[cfg(test)]
 pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<DeleteResult> {
-    delete_detached(project, lane, false)
+    delete_confirmed(project, lane, false)
 }
 
-/// Deletion may skip branch recreation only after the user has confirmed the
-/// detached-HEAD dialog. The clean-tree and reachability checks are repeated
-/// here so a change made while that dialog was open cannot be deleted.
-pub fn delete_detached(
+/// Deletion goes ahead off the lane branch only after the user has confirmed
+/// the detached-HEAD or other-branch dialog (`confirmed`). For a detached
+/// HEAD the clean-tree and reachability checks are repeated here so a change
+/// made while that dialog was open cannot be deleted. Another branch is
+/// never deleted: it keeps its commits, and only the lane branch goes.
+pub fn delete_confirmed(
     project: &Project,
     lane: &Lane,
-    allow_detached: bool,
+    confirmed: bool,
 ) -> anyhow::Result<DeleteResult> {
     let worktree = sole_worktree(lane)?;
     if worktree.main_checkout {
@@ -475,10 +509,12 @@ pub fn delete_detached(
     if std::fs::symlink_metadata(&path).is_ok() {
         match check_lane_branch(&path, lane, Removal::Delete)? {
             BranchCheck::Ready => {}
-            BranchCheck::Detached(detached) if allow_detached && detached.is_safe_to_remove() => {}
+            BranchCheck::Detached(detached) if confirmed && detached.is_safe_to_remove() => {}
             BranchCheck::Detached(detached) => {
                 return Ok(DeleteResult::DetachedHead(detached));
             }
+            BranchCheck::OtherBranch(_) if confirmed => {}
+            BranchCheck::OtherBranch(other) => return Ok(DeleteResult::OtherBranch(other)),
         }
         // Deletion is explicitly destructive, including uncommitted files.
         remove_worktree(repo, &path, true)?;
@@ -504,6 +540,11 @@ pub fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()> {
     match check_lane_branch(path, lane, Removal::Archive)? {
         BranchCheck::Ready => return Ok(()),
         BranchCheck::Detached(_) => {}
+        BranchCheck::OtherBranch(other) => bail!(
+            "The lane's worktree is on {} instead of {}, not at a detached HEAD",
+            other.branch,
+            lane.branch
+        ),
     }
     let head = run(path, &["rev-parse", "HEAD"])?;
     let reference = format!("refs/heads/{}", lane.branch);
@@ -523,6 +564,28 @@ pub fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()> {
                 head
             );
         }
+    } else {
+        run(path, &["switch", "-c", &lane.branch])?;
+    }
+    Ok(())
+}
+
+/// Puts a worktree that is on another branch back on its lane branch, the
+/// user's explicit choice in the other-branch dialog. Uncommitted changes
+/// are first committed on the branch they were made on, so switching never
+/// carries them onto the lane branch or drops them. A lane branch that is
+/// gone is recreated at HEAD.
+fn switch_back(path: &Path, lane: &Lane, other: &OtherBranch) -> anyhow::Result<()> {
+    if other.dirty {
+        run(path, &["add", "-A"])?;
+        reject_new_gitlinks(path, None)?;
+        run(
+            path,
+            &["commit", "-m", &format!("Panoptes: archive {}", lane.name)],
+        )?;
+    }
+    if ref_exists(path, &format!("refs/heads/{}", lane.branch))? {
+        run(path, &["switch", &lane.branch])?;
     } else {
         run(path, &["switch", "-c", &lane.branch])?;
     }
@@ -612,7 +675,7 @@ pub fn archive_preservation(project: &Project, lane: &Lane) -> Option<ArchivePre
     }
     match check_lane_branch(path, lane, Removal::Archive).ok()? {
         BranchCheck::Ready => {}
-        BranchCheck::Detached(_) => return None,
+        BranchCheck::Detached(_) | BranchCheck::OtherBranch(_) => return None,
     }
     if worktree_status(path).ok()?.is_empty() {
         Some(ArchivePreservation::Clean)
@@ -622,9 +685,10 @@ pub fn archive_preservation(project: &Project, lane: &Lane) -> Option<ArchivePre
 }
 
 /// Archiving keeps the lane's branch, so it is only safe when the worktree
-/// is on that branch. Commits made on a detached HEAD or another branch would
-/// otherwise become unreachable once the worktree is removed, and so would a
-/// commit the Commit strategy makes there. A merge, rebase, cherry-pick,
+/// is on that branch. Commits made on a detached HEAD would otherwise become
+/// unreachable once the worktree is removed, and so would a commit the
+/// Commit strategy makes there. Another branch keeps its own commits, but
+/// the user is asked first so the lane's branch stays the one they expect. A merge, rebase, cherry-pick,
 /// revert or bisect in progress is refused for the same reason.
 /// What the caller is about to do with the worktree, since deletion also
 /// removes the lane branch and archiving keeps it.
@@ -637,6 +701,7 @@ enum Removal {
 enum BranchCheck {
     Ready,
     Detached(DetachedHead),
+    OtherBranch(OtherBranch),
 }
 
 fn check_lane_branch(path: &Path, lane: &Lane, removal: Removal) -> anyhow::Result<BranchCheck> {
@@ -658,12 +723,10 @@ fn check_lane_branch(path: &Path, lane: &Lane, removal: Removal) -> anyhow::Resu
     let expected = format!("refs/heads/{}", lane.branch);
     match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
         Ok(head) if head == expected => Ok(BranchCheck::Ready),
-        Ok(head) => bail!(
-            "The lane's worktree is on {} instead of {}; switch back to {} before archiving or deleting the lane so its branch is unambiguous. The worktree was left in place",
-            head.trim_start_matches("refs/heads/"),
-            lane.branch,
-            lane.branch
-        ),
+        Ok(head) => Ok(BranchCheck::OtherBranch(OtherBranch {
+            branch: head.trim_start_matches("refs/heads/").to_string(),
+            dirty: !worktree_status(path)?.is_empty(),
+        })),
         Err(_) => Ok(BranchCheck::Detached(detached_head(path, lane, removal)?)),
     }
 }
@@ -1571,19 +1634,48 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_lane_on_another_branch_leaves_everything_in_place() {
+    fn deleting_a_lane_on_another_branch_asks_first() {
         let f = fixture(None);
         let new = create_lane(&f);
         let lane = lane(&f, 1, &new);
         let path = PathBuf::from(&new.worktrees[0].path);
         git(&path, &["checkout", "--quiet", "-b", "somewhere-else"]);
 
-        let error = delete(&f.project, &lane).unwrap_err();
+        let DeleteResult::OtherBranch(other) = delete(&f.project, &lane).unwrap() else {
+            panic!("another branch should need confirmation");
+        };
 
-        assert!(format!("{error:#}").contains("somewhere-else"), "{error:#}");
+        assert_eq!(
+            other,
+            OtherBranch {
+                branch: "somewhere-else".into(),
+                dirty: false
+            }
+        );
         assert!(path.exists());
         assert!(ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
         assert!(ref_exists(&f.repo, "refs/heads/somewhere-else").unwrap());
+    }
+
+    #[test]
+    fn a_confirmed_delete_on_another_branch_keeps_that_branch() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "-b", "somewhere-else"]);
+        std::fs::write(path.join("tracked.txt"), "side work\n").unwrap();
+        git(&path, &["commit", "--quiet", "-am", "side work"]);
+        let side = git(&path, &["rev-parse", "HEAD"]);
+
+        assert!(matches!(
+            delete_confirmed(&f.project, &lane, true).unwrap(),
+            DeleteResult::Deleted
+        ));
+
+        assert!(!path.exists());
+        assert!(!ref_exists(&f.repo, "refs/heads/panoptes/fix-login").unwrap());
+        assert_eq!(git(&f.repo, &["rev-parse", "somewhere-else"]), side);
     }
 
     #[test]
@@ -1720,7 +1812,14 @@ mod tests {
         assert_eq!(detached.commit, commit);
         assert!(path.exists());
 
-        let result = archive_recovering(&f.project, &lane, None, true, &|_| Ok(())).unwrap();
+        let result = archive_recovering(
+            &f.project,
+            &lane,
+            None,
+            BranchRecovery::RecreateBranch,
+            &|_| Ok(()),
+        )
+        .unwrap();
         assert!(matches!(result, ArchiveResult::Archived { .. }));
         assert!(!path.exists());
         assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), commit);
@@ -1808,7 +1907,8 @@ mod tests {
             panic!("a detached HEAD should need recovery");
         };
         assert!(archived.is_safe_to_remove());
-        let DeleteResult::DetachedHead(deleted) = delete_detached(&f.project, &lane, true).unwrap()
+        let DeleteResult::DetachedHead(deleted) =
+            delete_confirmed(&f.project, &lane, true).unwrap()
         else {
             panic!("deleting must not treat the lane branch as a safe home");
         };
@@ -1834,7 +1934,7 @@ mod tests {
         assert!(path.exists());
         std::fs::write(path.join("untracked.txt"), "new work\n").unwrap();
         let DeleteResult::DetachedHead(detached) =
-            delete_detached(&f.project, &lane, true).unwrap()
+            delete_confirmed(&f.project, &lane, true).unwrap()
         else {
             panic!("new work must be refused again");
         };
@@ -1843,7 +1943,7 @@ mod tests {
         std::fs::remove_file(path.join("untracked.txt")).unwrap();
 
         assert!(matches!(
-            delete_detached(&f.project, &lane, true).unwrap(),
+            delete_confirmed(&f.project, &lane, true).unwrap(),
             DeleteResult::Deleted
         ));
         assert!(!path.exists());
@@ -1852,17 +1952,80 @@ mod tests {
     }
 
     #[test]
-    fn another_branch_is_refused_so_its_commits_are_kept() {
+    fn archiving_on_another_branch_asks_first_and_keeps_its_commits() {
         let f = fixture(None);
         let new = create_lane(&f);
         let path = PathBuf::from(&new.worktrees[0].path);
         git(&path, &["checkout", "--quiet", "-b", "side"]);
         std::fs::write(path.join("tracked.txt"), "side work\n").unwrap();
         git(&path, &["commit", "--quiet", "-am", "side work"]);
+        std::fs::write(path.join("tracked.txt"), "more\n").unwrap();
 
-        let error = archive(&f.project, &lane(&f, 1, &new), None).unwrap_err();
-        assert!(format!("{error:#}").contains("is on side instead of panoptes/fix-login"));
+        let ArchiveResult::OtherBranch(other) =
+            archive(&f.project, &lane(&f, 1, &new), None).unwrap()
+        else {
+            panic!("another branch should need a choice");
+        };
+        assert_eq!(
+            other,
+            OtherBranch {
+                branch: "side".into(),
+                dirty: true
+            }
+        );
         assert!(path.exists());
+        assert_eq!(git(&path, &["status", "--porcelain"]), "M tracked.txt");
+    }
+
+    #[test]
+    fn switching_back_commits_on_the_other_branch_then_archives() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        let start = git(&f.repo, &["rev-parse", "trunk"]);
+        git(&path, &["checkout", "--quiet", "-b", "side"]);
+        std::fs::write(path.join("tracked.txt"), "side work\n").unwrap();
+
+        let result =
+            archive_recovering(&f.project, &lane, None, BranchRecovery::SwitchBack, &|_| {
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            ArchiveResult::Archived {
+                checkpoint_ref: None
+            }
+        ));
+        assert!(!path.exists());
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), start);
+        assert_eq!(
+            git(&f.repo, &["show", "side:tracked.txt"]),
+            "side work",
+            "the change is committed on the branch it was made on"
+        );
+    }
+
+    #[test]
+    fn switching_back_recreates_a_lane_branch_that_is_gone() {
+        let f = fixture(None);
+        let new = create_lane(&f);
+        let lane = lane(&f, 1, &new);
+        let path = PathBuf::from(&new.worktrees[0].path);
+        git(&path, &["checkout", "--quiet", "-b", "side"]);
+        git(&f.repo, &["branch", "-D", "panoptes/fix-login"]);
+        let side = git(&path, &["rev-parse", "HEAD"]);
+
+        let result =
+            archive_recovering(&f.project, &lane, None, BranchRecovery::SwitchBack, &|_| {
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(matches!(result, ArchiveResult::Archived { .. }));
+        assert_eq!(git(&f.repo, &["rev-parse", "panoptes/fix-login"]), side);
     }
 
     #[test]
