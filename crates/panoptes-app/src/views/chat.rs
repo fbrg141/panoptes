@@ -12,7 +12,7 @@ use panoptes_harness::{Answer, Approval, NoticeLevel, SessionStatus};
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark, status_pill};
 use crate::model::format::now_ms;
 use crate::model::panes::SplitDirection;
-use crate::model::turns::{build_turns, loose_approvals};
+use crate::model::turns::{build_turns, loose_approvals, prompt_count, sent_turn};
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::Ui;
@@ -40,6 +40,10 @@ pub struct ChatPane {
     seen: usize,
     /// The text fields of questions waiting for an answer, by question id.
     fields: HashMap<String, QuestionField>,
+    /// Prompt count when a send started; the next prompt's turn animates in.
+    send_from: Option<usize>,
+    /// The turn whose prompt is entering from the composer.
+    sent_turn: Option<String>,
     /// The expiry a redraw is already waiting for.
     expiry_timer: Option<i64>,
     /// The title field while the session is being renamed.
@@ -63,7 +67,22 @@ impl ChatPane {
         let composer =
             cx.new(|cx| Composer::new(key.clone(), store.clone(), ui.clone(), window, cx));
         cx.subscribe(&composer, |this, _, event, cx| match event {
-            ComposerEvent::Sent => this.scroll_to_end(cx),
+            ComposerEvent::Sent => {
+                this.send_from = Some(
+                    this.store
+                        .read(cx)
+                        .state
+                        .conversations
+                        .get(&this.key)
+                        .map_or(0, |c| prompt_count(&c.messages)),
+                );
+                this.scroll_to_end(cx);
+            }
+            ComposerEvent::SendFailed => {
+                this.send_from = None;
+                this.sent_turn = None;
+                cx.notify();
+            }
         })
         .detach();
         let scroll = ScrollHandle::new();
@@ -79,6 +98,8 @@ impl ChatPane {
             pinned: true,
             seen: 0,
             fields: HashMap::new(),
+            send_from: None,
+            sent_turn: None,
             expiry_timer: None,
             renaming: None,
         }
@@ -316,6 +337,10 @@ impl Render for ChatPane {
             .map(|c| c.args_text.clone())
             .unwrap_or_default();
         let messages = conversation.map_or(0, |c| c.messages.len());
+        if let Some(turn) = self.send_from.and_then(|before| sent_turn(&turns, before)) {
+            self.sent_turn = Some(turn.key.clone());
+            self.send_from = None;
+        }
         let behind = !self.pinned && messages > self.seen;
         if self.pinned {
             self.seen = messages;
@@ -370,6 +395,7 @@ impl Render for ChatPane {
             on_unclamp,
             on_copy,
             approval: &approval,
+            sent_turn: self.sent_turn.as_deref(),
         };
         let hidden = turns.len().saturating_sub(self.shown);
 

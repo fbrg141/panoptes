@@ -45,6 +45,8 @@ pub fn init(cx: &mut App) {
 pub enum ComposerEvent {
     /// A prompt left for the agent; the transcript follows it.
     Sent,
+    /// The prompt was not accepted and its draft was restored.
+    SendFailed,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -351,6 +353,7 @@ impl Composer {
             // process exited, it may still have arrived, and the error says
             // to check first.
             let _ = this.update_in(cx, |this, window, cx| {
+                cx.emit(ComposerEvent::SendFailed);
                 let current = Draft {
                     text: this.text(cx),
                     attachments: this.attachments.clone(),

@@ -928,7 +928,7 @@ impl Sidebar {
                     Button::new(SharedString::from(format!("stop-{key}")))
                         .ghost()
                         .small()
-                        .glyph(div().size(px(10.)).rounded(px(2.)).bg(p.ink_muted))
+                        .icon("square")
                         .tooltip("Stop")
                         .on_click(move |_, _, cx| {
                             let key = key.clone();
