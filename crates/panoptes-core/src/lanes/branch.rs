@@ -9,7 +9,7 @@ use crate::store::Lane;
 
 /// Attaches a detached worktree to its lane branch without archiving or
 /// deleting anything. This is also the recovery for unreachable commits.
-pub fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()> {
+pub(crate) fn create_branch_here(path: &Path, lane: &Lane) -> anyhow::Result<()> {
     match check_lane_branch(path, lane, Removal::Archive)? {
         BranchCheck::Ready => return Ok(()),
         BranchCheck::Detached(_) => {}

@@ -16,7 +16,7 @@ use crate::store::{Lane, Project};
 /// is changed: the checkpoint describes an older tree, and laying it over
 /// the newer one would undo those commits in the worktree. Any later failure
 /// removes the worktree again; the checkpoint ref stays either way.
-pub fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
+pub(crate) fn restore(project: &Project, lane: &Lane) -> anyhow::Result<()> {
     let worktree = sole_worktree(lane)?;
     if worktree.main_checkout {
         return Ok(());
