@@ -1,0 +1,11 @@
+#!/bin/sh
+# Scan staged changes for secrets before they are committed. Skip once with
+# `git commit --no-verify`.
+set -eu
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "gitleaks is required to commit. Install it with 'brew install gitleaks'." >&2
+    exit 1
+fi
+
+exec gitleaks protect --staged --redact --no-banner
