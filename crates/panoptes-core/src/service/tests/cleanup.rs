@@ -58,14 +58,17 @@ async fn cleanup_measures_worktrees_and_offers_only_safe_idle_lanes() {
         .iter()
         .find(|candidate| candidate.lane.id == b.id)
         .unwrap();
-    assert_eq!(dirty.preservation, lanes::ArchivePreservation::Checkpoint);
+    assert_eq!(
+        dirty.preservation,
+        crate::lanes::ArchivePreservation::Checkpoint
+    );
     assert!(dirty.bytes.unwrap() > 0);
     let clean = cleanup
         .candidates
         .iter()
         .find(|candidate| candidate.lane.id == c.id)
         .unwrap();
-    assert_eq!(clean.preservation, lanes::ArchivePreservation::Clean);
+    assert_eq!(clean.preservation, crate::lanes::ArchivePreservation::Clean);
     // `a` has an open session; the main checkout is not reclaimable.
     assert!(
         cleanup

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use panoptes_harness::AgentSession;
+use panoptes_harness::{AgentSession, SessionStatus};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::error::{ServiceResult, not_open};
@@ -180,4 +180,22 @@ impl Registry {
             .map(|open| open.session.clone())
             .ok_or_else(not_open)
     }
+}
+
+/// The key of a session other than `lane_id`'s own that has edited the lane
+/// and is Running or Waiting, if there is one.
+pub(super) fn busy_writer(
+    open: &HashMap<String, OpenSession>,
+    writers: &LaneWriters,
+    lane_id: i64,
+) -> Option<String> {
+    writers.busy_writer(lane_id, |key| {
+        open.get(key).is_some_and(|session| {
+            session.lane != Some(lane_id)
+                && matches!(
+                    session.status.lock().unwrap().status(),
+                    SessionStatus::Running | SessionStatus::Waiting
+                )
+        })
+    })
 }

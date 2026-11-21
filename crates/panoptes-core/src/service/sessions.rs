@@ -9,12 +9,10 @@ use serde_json::json;
 use super::error::{ServiceError, ServiceResult, err, only_in_a_lane};
 use super::forward::{Forwarder, WriteWatch};
 use super::key::{SessionKey, panoptes_id, panoptes_key};
-use super::registry::{EarlyExit, Launch, OpenSession};
+use super::lanes::lane_cwd;
+use super::registry::{EarlyExit, Launch, OpenSession, busy_writer};
 use super::status::{Tracker, now_ms};
-use super::{
-    ErrorKind, Service, SessionEvent, SessionUpdate, StatusChanged, busy_writer, lane_cwd,
-    same_or_inside,
-};
+use super::{ErrorKind, Service, SessionEvent, SessionUpdate, StatusChanged};
 use crate::store::{Lane, LaneState};
 
 #[derive(Debug, Serialize)]
@@ -199,13 +197,7 @@ impl Service {
                 "Wait for the current session to finish starting before changing sessions",
             ));
         }
-        let current = self
-            .registry
-            .open()
-            .await
-            .iter()
-            .find(|(_, session)| session.lane == Some(lane_id) && !session.preview)
-            .map(|(key, _)| key.clone());
+        let current = self.registry.live_in_lane(lane_id).await;
         let _guard = match &current {
             Some(key) => Some(self.registry.lifecycle(key).await),
             None => None,
@@ -277,11 +269,9 @@ impl Service {
     pub async fn replace_lane_session(&self, lane_id: i64) -> ServiceResult<OpenedSession> {
         let current_id = self
             .registry
-            .open()
+            .live_in_lane(lane_id)
             .await
-            .iter()
-            .find(|(_, session)| session.lane == Some(lane_id) && !session.preview)
-            .and_then(|(key, _)| panoptes_id(key));
+            .and_then(|key| panoptes_id(&key));
         let (harness, instructions) = self
             .store
             .call(move |store| {
@@ -706,4 +696,10 @@ impl Service {
         }
         shutdowns.join_all().await;
     }
+}
+
+fn same_or_inside(path: &Path, root: &Path) -> bool {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    path.starts_with(root)
 }
