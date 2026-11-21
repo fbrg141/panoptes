@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine as _;
 use gpui_kit::component::text::{TextView, TextViewStyle};
@@ -54,6 +55,8 @@ pub struct Ctx<'a> {
     pub on_copy: OnCopy,
     /// Draws an approval card under its tool row.
     pub approval: &'a dyn Fn(&Approval) -> AnyElement,
+    /// The newly sent turn whose prompt rises in from the composer.
+    pub sent_turn: Option<&'a str>,
 }
 
 impl Ctx<'_> {
@@ -119,7 +122,24 @@ pub fn turn_view(turn: &Turn, ctx: &Ctx) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(4.))
-        .children(turn.prompt.as_ref().map(|m| prompt_view(&turn.key, m, ctx)))
+        .children(turn.prompt.as_ref().map(|m| {
+            let prompt = prompt_view(&turn.key, m, ctx);
+            if ctx.sent_turn == Some(turn.key.as_str()) {
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .with_animation(
+                        ElementId::Name(format!("send-{}", turn.key).into()),
+                        Animation::new(Duration::from_millis(220)),
+                        |el, delta| el.top(px(48. * (1. - delta))).opacity(delta),
+                    )
+                    .child(prompt)
+                    .into_any_element()
+            } else {
+                prompt
+            }
+        }))
         .child(reply)
         .children((!turn.live).then(|| footer(turn, group, ctx)).flatten())
         .into_any_element()

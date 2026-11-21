@@ -124,8 +124,8 @@ impl Ui {
     }
 }
 
-/// Shows a session and opens it, unless that would stop the lane's live
-/// session: then it asks first, through the resume confirmation.
+/// Shows a session and opens it. An earlier lane session opens as a read-only
+/// preview; sending its next message stops the live session and resumes it.
 pub fn request_open(
     store: &Entity<AppStore>,
     ui: &Entity<Ui>,
@@ -133,22 +133,15 @@ pub fn request_open(
     pane_id: Option<&str>,
     cx: &mut App,
 ) {
-    if let (Some(lane_id), Some(id)) = (session.lane_id, session.id)
-        && lane_session_to_stop(session, &store.read(cx).state.sessions).is_some()
-    {
-        ui.update(cx, |ui, cx| {
-            ui.open(
-                Overlay::ResumeSession {
-                    lane_id,
-                    session_id: Some(id),
-                },
-                cx,
-            )
-        });
-        return;
-    }
+    let preview = lane_session_to_stop(session, &store.read(cx).state.sessions).is_some();
     ui.update(cx, |ui, cx| ui.show_session(&session.key, pane_id, cx));
-    store.update(cx, |store, cx| store.open(session, cx).detach());
+    store.update(cx, |store, cx| {
+        if preview {
+            store.preview(session, cx).detach();
+        } else {
+            store.open(session, cx).detach();
+        }
+    });
 }
 
 /// A session being dragged from the sidebar or a pane header onto a pane.

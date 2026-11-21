@@ -77,6 +77,19 @@ pub struct Turn {
     pub usage: Option<UsageTotal>,
 }
 
+/// How many prompts a conversation holds; each one opens a turn.
+pub fn prompt_count(messages: &[Message]) -> usize {
+    messages.iter().filter(|m| m.role == Role::User).count()
+}
+
+/// The turn opened by the first prompt after the `before` prompts that
+/// existed when a message was sent. Agent output never opens a turn, so a
+/// reply streaming in is not taken for the prompt just sent, and a queued
+/// prompt is found once it reaches the transcript.
+pub fn sent_turn(turns: &[Turn], before: usize) -> Option<&Turn> {
+    turns.iter().filter(|t| t.prompt.is_some()).nth(before)
+}
+
 const QUIET: [ToolKind; 2] = [ToolKind::Read, ToolKind::Search];
 
 /// Groups a conversation's messages into turns.
@@ -448,6 +461,29 @@ mod tests {
             busy,
             ..Conversation::new(messages)
         })
+    }
+
+    #[test]
+    fn the_sent_turn_is_the_next_prompt_not_streamed_output() {
+        let mut messages = vec![
+            message("a1", Role::Assistant, vec![text("resumed")]),
+            message("u1", Role::User, vec![text("first")]),
+            message("a2", Role::Assistant, vec![text("working")]),
+        ];
+        let before = prompt_count(&messages);
+        assert_eq!(before, 1);
+        // A reply streams in while the sent prompt waits in the queue.
+        messages.push(message("a3", Role::Assistant, vec![text("more")]));
+        assert!(sent_turn(&turns_of(messages.clone(), true), before).is_none());
+        messages.push(message("u2", Role::User, vec![text("second")]));
+        messages.push(message("a4", Role::Assistant, vec![text("ok")]));
+        let turns = turns_of(messages, true);
+        assert_eq!(
+            sent_turn(&turns, before)
+                .and_then(|t| t.prompt.as_ref())
+                .map(|m| m.id.as_str()),
+            Some("u2")
+        );
     }
 
     #[test]

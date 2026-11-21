@@ -143,8 +143,12 @@ Open it with Help → Show Logs in Finder, or ⌘P → Show logs in Finder.
 
 ## Development
 
+Install [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning,
+then enable the repository's Git hooks:
+
 ```bash
-git config core.hooksPath .githooks   # once: run the check before each push
+brew install gitleaks
+git config core.hooksPath .githooks   # once: scan commits and check pushes
 cargo run -p panoptes-app
 ```
 
@@ -156,8 +160,9 @@ sh scripts/check.sh   # formatting, clippy, all tests
 sh scripts/smoke.sh   # one real round trip with your Pi; fails if the contract broke
 ```
 
-CI runs `scripts/check.sh` on every pull request and every push to `main`,
-and the pre-push hook runs it locally. That suite only
+CI runs `scripts/check.sh` on every pull request and every push to `main`.
+Locally, the pre-commit hook scans staged changes for secrets with gitleaks,
+and the pre-push hook runs `scripts/check.sh`. That suite only
 talks to a scripted stand-in for Pi, so run `scripts/smoke.sh` after updating
 Pi or changing the adapter: it needs an installed, logged-in Pi and makes
 one small model call.
@@ -170,12 +175,14 @@ run:
 ```bash
 sh scripts/check.sh
 sh scripts/install-app.sh --no-open
-hdiutil create -volname Panoptes -srcfolder target/release/Panoptes.app \
-  -ov -format UDZO "target/release/Panoptes_<version>_aarch64.dmg"
+sh scripts/make-dmg.sh
 ```
 
 The install script leaves the ad hoc signed `Panoptes.app` in
-`target/release/`. Before publishing the .dmg, open a downloaded copy once to
+`target/release/`, and `make-dmg.sh` packs it into
+`target/release/Panoptes_<version>_aarch64.dmg`: a branded window with the
+app next to an Applications shortcut. It drives Finder to lay the window
+out, so run it from a logged-in desktop session. Before publishing the .dmg, open a downloaded copy once to
 check the Open Anyway flow, then attach it to a GitHub release tagged
 `v<version>`.
 

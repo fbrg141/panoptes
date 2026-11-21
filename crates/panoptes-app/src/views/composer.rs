@@ -19,8 +19,9 @@ use crate::ds::{
     menu_item, panel,
 };
 use crate::model::composer::{
-    Query, command_at, compose_prompt, context_label, continue_list, insert_command,
-    insert_mention, match_commands, match_files, mention_at, next_level, restore_unsent, segments,
+    Query, available_commands, command_at, compose_prompt, context_label, continue_list,
+    insert_command, insert_mention, match_commands, match_files, mention_at, next_level,
+    restore_unsent, segments,
 };
 use crate::model::picker::{model_groups, short_model_id};
 use crate::model::usage::{session_usage_detail, session_usage_label, sum_usage};
@@ -44,6 +45,8 @@ pub fn init(cx: &mut App) {
 pub enum ComposerEvent {
     /// A prompt left for the agent; the transcript follows it.
     Sent,
+    /// The prompt was not accepted and its draft was restored.
+    SendFailed,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -248,7 +251,14 @@ impl Composer {
         let slash = command_at(&text, caret)?;
         match &self.commands {
             Some(list) => {
-                let rows = match_commands(&slash.query, list, 8);
+                let lane = self
+                    .store
+                    .read(cx)
+                    .state
+                    .session(&self.key)
+                    .and_then(|s| s.lane_id)
+                    .is_some();
+                let rows = match_commands(&slash.query, &available_commands(list, lane), 8);
                 Some(Completion::Commands(slash, rows))
             }
             None => {
@@ -343,6 +353,7 @@ impl Composer {
             // process exited, it may still have arrived, and the error says
             // to check first.
             let _ = this.update_in(cx, |this, window, cx| {
+                cx.emit(ComposerEvent::SendFailed);
                 let current = Draft {
                     text: this.text(cx),
                     attachments: this.attachments.clone(),
@@ -458,7 +469,10 @@ impl Render for Composer {
             .is_none_or(|m| m.images);
         let empty = self.text(cx).trim().is_empty() && self.attachments.is_empty();
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
-        let placeholder = if busy {
+        let preview = state.previews.contains(&self.key);
+        let placeholder = if preview {
+            "Send a message to resume this session"
+        } else if busy {
             "Steer the agent, \u{2325}\u{21b5} to queue for after"
         } else {
             "Message the agent, @ for files, / for commands"
