@@ -12,16 +12,16 @@ use gpui_kit::component::input::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_core::files::Attachment;
-use panoptes_harness::{CommandInfo, ImageAttachment, PromptMode};
+use panoptes_harness::{CommandInfo, PromptMode};
 
 use crate::ds::{
     Button, CONTROL, CONTROL_SM, RADIUS_LG, RADIUS_SM, RADIUS_XS, Tooltip, Type as _, icon,
     menu_item, panel,
 };
 use crate::model::composer::{
-    Query, available_commands, command_at, compose_prompt, context_label, continue_list,
-    insert_command, insert_mention, match_commands, match_files, mention_at, mention_label,
-    next_level, restore_unsent, segments,
+    LaneRequest, Query, available_commands, command_at, compose_prompt, context_label,
+    continue_list, insert_command, insert_mention, lane_request, match_commands, match_files,
+    mention_at, mention_label, next_level, restore_unsent, segments,
 };
 use crate::model::picker::{model_groups, short_model_id};
 use crate::model::usage::{session_usage_detail, session_usage_label, sum_usage};
@@ -46,10 +46,7 @@ pub enum ComposerEvent {
     /// A prompt left for the agent; the transcript follows it.
     Sent,
     /// The New lane dialog accepted its first prompt.
-    CreateLane {
-        prompt: String,
-        images: Vec<ImageAttachment>,
-    },
+    CreateLane(LaneRequest),
     /// The prompt was not accepted and its draft was restored.
     SendFailed,
 }
@@ -358,11 +355,9 @@ impl Composer {
             return;
         }
         if self.new_lane {
-            if text.trim().is_empty() {
-                return;
+            if let Some(request) = lane_request(&text, &self.attachments) {
+                cx.emit(ComposerEvent::CreateLane(request));
             }
-            let (prompt, images) = compose_prompt(&text, &self.attachments);
-            cx.emit(ComposerEvent::CreateLane { prompt, images });
             return;
         }
         let state = &self.store.read(cx).state;

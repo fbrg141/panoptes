@@ -1130,7 +1130,8 @@ impl AppStore {
         })
     }
 
-    /// Creates a lane and starts its first session with the task as prompt.
+    /// Creates a lane named after `task` and starts its first session with
+    /// `options.prompt`, or the task itself when there is none.
     pub fn create_from_prompt(
         &mut self,
         project_id: i64,
@@ -1145,7 +1146,7 @@ impl AppStore {
                 return false;
             };
             let options = SessionOptions {
-                prompt: Some(task),
+                prompt: options.prompt.or(Some(task)),
                 ..options
             };
             let Ok(created) = this.update(cx, |this, cx| this.create(lane.id, options, cx)) else {

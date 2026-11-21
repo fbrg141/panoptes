@@ -5,9 +5,9 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use panoptes_harness::ImageAttachment;
 
 use crate::ds::{self, Button, Type as _, icon};
+use crate::model::composer::LaneRequest;
 use crate::model::picker::{
     DEFAULT_CHOICE, borrowed_models, model_groups, profile_groups, short_model_id, thinking_groups,
 };
@@ -55,8 +55,8 @@ impl NewLane {
         let composer =
             cx.new(|cx| Composer::new_lane(cwd, prompt, store.clone(), ui.clone(), window, cx));
         cx.subscribe(&composer, |this, _, event, cx| {
-            if let ComposerEvent::CreateLane { prompt, images } = event {
-                this.submit(prompt.clone(), images.clone(), cx);
+            if let ComposerEvent::CreateLane(request) = event {
+                this.submit(request.clone(), cx);
             }
         })
         .detach();
@@ -154,7 +154,7 @@ impl NewLane {
         cx.notify();
     }
 
-    fn submit(&mut self, text: String, images: Vec<ImageAttachment>, cx: &mut Context<Self>) {
+    fn submit(&mut self, request: LaneRequest, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -166,12 +166,12 @@ impl NewLane {
             model: Some(self.model.clone()).filter(|m| !m.is_empty()),
             thinking: Some(self.thinking.clone()).filter(|t| !t.is_empty()),
             instructions: Some(self.instructions.clone()).filter(|i| !i.is_empty()),
-            prompt: None,
-            images,
+            prompt: Some(request.prompt),
+            images: request.images,
         };
         let (project_id, main_checkout) = (self.project_id, self.main_checkout);
         let created = self.store.update(cx, |store, cx| {
-            store.create_from_prompt(project_id, text, main_checkout, options, cx)
+            store.create_from_prompt(project_id, request.task, main_checkout, options, cx)
         });
         cx.spawn(async move |this, cx| {
             let created = created.await;

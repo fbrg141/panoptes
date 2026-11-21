@@ -356,6 +356,29 @@ pub fn compose_prompt(text: &str, attachments: &[Attachment]) -> (String, Vec<Im
     (parts.join("\n\n"), images)
 }
 
+/// A new lane's first prompt: the lane is named after `task`, what was
+/// typed, while `prompt` also lists the attached files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneRequest {
+    pub task: String,
+    pub prompt: String,
+    pub images: Vec<ImageAttachment>,
+}
+
+/// `None` when nothing was typed: a lane needs a task to be named after.
+pub fn lane_request(text: &str, attachments: &[Attachment]) -> Option<LaneRequest> {
+    let task = text.trim();
+    if task.is_empty() {
+        return None;
+    }
+    let (prompt, images) = compose_prompt(text, attachments);
+    Some(LaneRequest {
+        task: task.to_string(),
+        prompt,
+        images,
+    })
+}
+
 /// The draft to show after a prompt failed to reach the agent: what was sent,
 /// followed by anything typed since, so neither is lost.
 pub fn restore_unsent(unsent: Draft, current: Option<&Draft>) -> Draft {
@@ -588,6 +611,19 @@ mod tests {
         assert_eq!(text, "fix this\n\n@/tmp/log.txt");
         assert_eq!(images.len(), 1);
         assert_eq!(compose_prompt("", &[file("/x", false)]).0, "@/x");
+    }
+
+    #[test]
+    fn names_a_lane_after_the_typed_task_not_its_attachments() {
+        let request = lane_request(
+            " fix login ",
+            &[file("/a.png", true), file("/tmp/log.txt", false)],
+        )
+        .unwrap();
+        assert_eq!(request.task, "fix login");
+        assert_eq!(request.prompt, "fix login\n\n@/tmp/log.txt");
+        assert_eq!(request.images.len(), 1);
+        assert_eq!(lane_request("  ", &[file("/tmp/log.txt", false)]), None);
     }
 
     #[test]
