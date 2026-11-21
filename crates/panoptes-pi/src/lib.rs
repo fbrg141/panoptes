@@ -6,7 +6,6 @@ mod rpc;
 mod sessions;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
@@ -146,7 +145,7 @@ impl AgentSession for PiSession {
     }
 
     fn unguarded_tools(&self) -> bool {
-        !self.read_only && !self.shared.permission_guard.load(Ordering::Relaxed)
+        !self.read_only && !self.shared.has_permission_guard()
     }
 
     async fn history(&self) -> anyhow::Result<Vec<Message>> {
@@ -215,7 +214,7 @@ impl AgentSession for PiSession {
 
     async fn answer(&self, question_id: String, answer: Answer) -> anyhow::Result<()> {
         // An approval is a confirm or a select underneath; answer in kind.
-        let approval = self.shared.approvals.lock().unwrap().remove(&question_id);
+        let approval = self.shared.take_approval(&question_id);
         let mut response = json!({"type": "extension_ui_response", "id": question_id});
         match answer {
             Answer::Value { value } => response["value"] = json!(value),
