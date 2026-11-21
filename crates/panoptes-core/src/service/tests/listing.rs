@@ -6,7 +6,7 @@ async fn an_adopted_conversation_is_listed_once_as_its_lane_session() {
     let f = fixture(FakeHarness::default());
     let (_code, lane) = lane_of(&f).await;
     let id = {
-        let store = f.service.store.lock().unwrap();
+        let store = f.service.store.lock();
         let record = store.add_session(lane.id, "fake").unwrap();
         store.set_harness_ref(record.id, "s1", "s1").unwrap();
         record.id

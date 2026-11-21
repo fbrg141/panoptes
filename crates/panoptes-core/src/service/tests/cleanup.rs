@@ -40,7 +40,6 @@ async fn cleanup_measures_worktrees_and_offers_only_safe_idle_lanes() {
         f.service
             .store
             .lock()
-            .unwrap()
             .set_lane_created_at(lane.id, old)
             .unwrap();
     }
@@ -120,7 +119,6 @@ async fn cleanup_does_not_guess_idle_activity_when_sessions_cannot_be_listed() {
     f.service
         .store
         .lock()
-        .unwrap()
         .set_lane_created_at(b.id, now_ms() - 5 * 24 * 60 * 60 * 1_000)
         .unwrap();
 
