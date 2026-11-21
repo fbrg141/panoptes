@@ -10,8 +10,8 @@ members = [
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-# `if let ... && let ...` chains need Rust 1.88.
-rust-version = "1.88"
+# rusqlite 0.41 bundles the SQLite fix for RUSTSEC-2026-0459 and needs Rust 1.89.
+rust-version = "1.89"
 license = "MIT"
 authors = ["Uros Dimitrijevic"]
 repository = "https://github.com/fbrg141/panoptes"
