@@ -14,7 +14,7 @@ use crate::ds::{Button, LoopState, Tab, Type as _, icon, loop_mark, status_word,
 use crate::model::format::{now_ms, relative_time};
 use crate::model::sidebar::{
     EmptyLane, MenuEntry, empty_lane, is_live, lane_main_session, lane_menu_items, primary_action,
-    project_menu_items, session_detail, session_menu_items, work_label,
+    project_menu_items, session_detail, session_row_menu_items, work_label,
 };
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
@@ -770,14 +770,7 @@ impl Sidebar {
         let key = session.key.clone();
         let status = snap.status(&key);
         let active = snap.active_key.as_deref() == Some(key.as_str());
-        let mut items = session_menu_items(session, row.adoptable, row.lane_actions);
-        if let Some(lane) = row.lane {
-            let extra = lane_menu_items(lane);
-            if !items.is_empty() && !extra.is_empty() {
-                items.push(MenuEntry::Separator);
-            }
-            items.extend(extra);
-        }
+        let items = session_row_menu_items(session, row.adoptable, row.lane_actions, row.lane);
         let primary = primary_action(session, status);
         let has_actions = !items.is_empty() || primary;
         let word = status_word(status);

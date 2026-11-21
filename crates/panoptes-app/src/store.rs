@@ -78,6 +78,8 @@ pub struct State {
     pub conversations: HashMap<String, Conversation>,
     /// Whether each open session's writable tools have no approval guard.
     pub unguarded_tools: HashMap<String, bool>,
+    /// Earlier lane sessions shown read-only until their next prompt.
+    pub previews: HashSet<String>,
     /// A failed first open, shown in its pane instead of loading forever.
     pub open_errors: HashMap<String, String>,
     /// Each open session's status, as the backend reports it.
@@ -109,6 +111,7 @@ impl Default for State {
             navigation: Vec::new(),
             conversations: HashMap::new(),
             unguarded_tools: HashMap::new(),
+            previews: HashSet::new(),
             open_errors: HashMap::new(),
             statuses: HashMap::new(),
             sending: HashSet::new(),
@@ -180,6 +183,11 @@ impl State {
         self.active_key = Some(key.clone());
         self.unguarded_tools
             .insert(key.clone(), opened.unguarded_tools);
+        if opened.preview {
+            self.previews.insert(key.clone());
+        } else {
+            self.previews.remove(&key);
+        }
         let applies = self.history_applies(&key, epoch);
         let now = now_ms();
         let conversation = self.conversation(&key);
@@ -202,6 +210,7 @@ impl State {
     pub fn forget(&mut self, key: &str) {
         self.conversations.remove(key);
         self.unguarded_tools.remove(key);
+        self.previews.remove(key);
         self.open_errors.remove(key);
         self.statuses.remove(key);
         self.settings.remove(key);
@@ -414,11 +423,30 @@ impl AppStore {
     }
 
     pub fn open(&mut self, session: &Session, cx: &mut Context<Self>) -> Task<Option<()>> {
+        let opened = self.backend.run("open_session", open_call(session));
+        self.open_with(session, opened, cx)
+    }
+
+    /// Shows earlier history without replacing the lane's live session.
+    pub fn preview(&mut self, session: &Session, cx: &mut Context<Self>) -> Task<Option<()>> {
+        let key = session.key.clone();
+        let opened = self.backend.run(
+            "preview_session",
+            move |s| async move { s.preview(&key).await },
+        );
+        self.open_with(session, opened, cx)
+    }
+
+    fn open_with(
+        &mut self,
+        session: &Session,
+        opened: impl Future<Output = Result<OpenedSession, ServiceError>> + 'static,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<()>> {
         let key = session.key.clone();
         self.state.open_errors.remove(&key);
         self.state.active_key = Some(key.clone());
         let epoch = self.state.bump(&key);
-        let opened = self.backend.run("open_session", open_call(session));
         cx.notify();
         self.spawn(cx, opened, move |this, opened, cx| match opened {
             Ok(opened) => {
@@ -676,10 +704,58 @@ impl AppStore {
                     s.prompt(&key, text, images, mode).await
                 })
             };
-            let Ok(mode) = this.update(cx, |this, _| this.state.prompt_mode(&key, queue)) else {
-                return false;
+            let preview = this
+                .update(cx, |this, _| this.state.previews.contains(&key))
+                .unwrap_or(false);
+            let resumed = if preview {
+                let session = this
+                    .update(cx, |this, _| this.state.session(&key).cloned())
+                    .ok()
+                    .flatten();
+                match session.and_then(|s| s.lane_id.zip(s.id)) {
+                    None => Err(ServiceError::other(
+                        "This preview is no longer available in its lane.",
+                    )),
+                    Some((lane_id, session_id)) => match backend
+                        .run("resume_lane_session", move |s| async move {
+                            s.resume_lane_session(lane_id, session_id).await
+                        })
+                        .await
+                    {
+                        Err(error) => Err(error),
+                        Ok(opened) => {
+                            let Ok(()) = this.update(cx, |this, cx| {
+                                let previous = this
+                                    .state
+                                    .sessions
+                                    .iter()
+                                    .find(|s| s.lane_id == Some(lane_id) && s.open && s.key != key)
+                                    .map(|s| s.key.clone());
+                                if let Some(previous) = previous {
+                                    this.state.forget(&previous);
+                                }
+                                this.opened(opened, None, cx);
+                                this.refresh(cx).detach();
+                            }) else {
+                                return false;
+                            };
+                            Ok(())
+                        }
+                    },
+                }
+            } else {
+                Ok(())
             };
-            let mut outcome = prompt(mode).await;
+            let mut outcome = match resumed {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    let Ok(mode) = this.update(cx, |this, _| this.state.prompt_mode(&key, queue))
+                    else {
+                        return false;
+                    };
+                    prompt(mode).await
+                }
+            };
             // Retry once only when nothing was sent. If the process exited
             // after receiving the prompt, reopening and resending could
             // duplicate it.
@@ -1247,6 +1323,7 @@ mod tests {
             key: key.into(),
             history,
             unguarded_tools: false,
+            preview: false,
             status: SessionStatus::Done,
             replay: Vec::new(),
         }
@@ -1316,6 +1393,17 @@ mod tests {
         state.forget("k");
         assert!(state.active_key.is_none());
         assert!(state.conversations.is_empty());
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_preview_is_marked_until_the_session_is_resumed() {
+        let mut state = State::default();
+        let mut preview = opened("k", Vec::new());
+        preview.preview = true;
+        state.adopt_opened(preview, None);
+        assert!(state.previews.contains("k"));
+        state.adopt_opened(opened("k", Vec::new()), None);
+        assert!(!state.previews.contains("k"));
     }
 
     #[::core::prelude::v1::test]
