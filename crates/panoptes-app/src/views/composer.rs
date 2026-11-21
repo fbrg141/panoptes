@@ -19,8 +19,9 @@ use crate::ds::{
     menu_item, panel,
 };
 use crate::model::composer::{
-    Query, command_at, compose_prompt, context_label, continue_list, insert_command,
-    insert_mention, match_commands, match_files, mention_at, next_level, restore_unsent, segments,
+    Query, available_commands, command_at, compose_prompt, context_label, continue_list,
+    insert_command, insert_mention, match_commands, match_files, mention_at, next_level,
+    restore_unsent, segments,
 };
 use crate::model::picker::{model_groups, short_model_id};
 use crate::model::usage::{session_usage_detail, session_usage_label, sum_usage};
@@ -248,7 +249,14 @@ impl Composer {
         let slash = command_at(&text, caret)?;
         match &self.commands {
             Some(list) => {
-                let rows = match_commands(&slash.query, list, 8);
+                let lane = self
+                    .store
+                    .read(cx)
+                    .state
+                    .session(&self.key)
+                    .and_then(|s| s.lane_id)
+                    .is_some();
+                let rows = match_commands(&slash.query, &available_commands(list, lane), 8);
                 Some(Completion::Commands(slash, rows))
             }
             None => {
