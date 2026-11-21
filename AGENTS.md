@@ -90,6 +90,23 @@ use that the observation log records ([backlog](docs/backlog.md#intake-until-the
   against `crates/panoptes-pi/tests/fixtures/fake_pi.py`; extend the fake
   rather than needing a real Pi.
 
+## Dependencies
+
+Follow [the dependency policy](docs/dependencies.md) when adding, updating or
+auditing dependencies. Include the resulting `Cargo.lock` change with every
+update and never edit its generated entries by hand. Keep routine updates
+separate from features and review a new direct dependency's maintenance,
+license, features and transitive cost.
+
+Leave advisory auditing in `.github/workflows/audit.yml`; do not make
+`scripts/check.sh` or the pre-push hook download an advisory database. Never
+suppress an advisory without recording its ID, justification, tracking issue,
+owner and expiry date in the workflow.
+
+`gpui-kit` stays exactly pinned between deliberate upgrades. For every update,
+run `sh scripts/check.sh`; run `scripts/smoke.sh` when the Pi adapter could be
+affected, and manually smoke-test GPUI or other high-impact runtime updates.
+
 ## Before you finish
 
 Run `sh scripts/check.sh`. It runs Rust formatting, clippy (warnings are
