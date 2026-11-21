@@ -1,11 +1,22 @@
 // Runs `approvals.js` the way Pi does: Pi calls the default export with its
 // extension API, the extension registers a `tool_call` hook, and that hook
 // runs before the user's own permission hooks with the same `ctx`. Whether a
-// real Pi hands later hooks that same `ctx` is only proven by `pnpm smoke`
+// real Pi hands later hooks that same `ctx` is only proven by `scripts/smoke.sh`
 // and by use; this proves what the file itself does.
 
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 import install from "./approvals.js";
+
+/** The few matchers these tests use, on `node:assert`. */
+function expect(actual) {
+  return {
+    toBe: (expected) => assert.equal(actual, expected),
+    toEqual: (expected) => assert.deepEqual(actual, expected),
+    toBeUndefined: () => assert.equal(actual, undefined),
+    not: { toThrow: () => assert.doesNotThrow(actual) },
+  };
+}
 
 /** A stand-in for Pi's extension API that keeps the registered hooks. */
 function fakePi() {

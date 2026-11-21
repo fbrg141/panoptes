@@ -1,6 +1,7 @@
 //! Translating Pi's messages and RPC events into the neutral harness types.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use panoptes_harness::{
@@ -14,6 +15,8 @@ use serde_json::Value;
 /// shared between the [`EventMapper`] and the session.
 #[derive(Default)]
 pub struct SessionState {
+    /// Set by the permission extension's startup status.
+    pub permission_guard: AtomicBool,
     /// When each tool call started and ended, as seen live. Pi's history has
     /// no such times, so history reloads borrow them from here and give the
     /// same values the live events did.
@@ -43,6 +46,8 @@ const REJECT: &[&str] = &["no", "block", "deny", "reject", "cancel", "skip", "ab
 
 /// The status key `approvals.js` tags `tool_call` hook dialogs with.
 const APPROVAL_TAG: &str = "panoptes.approval";
+/// The permission system publishes this status as soon as the session starts.
+const PERMISSION_GUARD_STATUS: &str = "pi-permission-system";
 
 /// Tool output beyond this many bytes is cut for display.
 const MAX_OUTPUT: usize = 64 * 1024;
@@ -431,6 +436,10 @@ impl EventMapper {
     /// directly follows an approval tag is that call's approval. Any other
     /// dialog, including one a tool asks while it runs, is a question.
     pub fn ui_request(&mut self, request: &Value, now: i64) -> Vec<HarnessEvent> {
+        if request["method"] == "setStatus" && request["statusKey"] == PERMISSION_GUARD_STATUS {
+            self.shared.permission_guard.store(true, Ordering::Relaxed);
+            return Vec::new();
+        }
         if request["method"] == "setStatus" && request["statusKey"] == APPROVAL_TAG {
             self.approval_for = request["statusText"].as_str().map(str::to_string);
             return Vec::new();

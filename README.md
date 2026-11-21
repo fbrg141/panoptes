@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="packages/design-system/assets/logos/panoptes-lockup-bone.svg">
-    <img alt="Panoptes" src="packages/design-system/assets/logos/panoptes-lockup-pupil.svg" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/logo-bone.svg">
+    <img alt="Panoptes" src="docs/media/logo-pupil.svg" width="320">
   </picture>
 </p>
 
@@ -14,7 +14,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Platform: macOS 13+" src="https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey.svg">
   <a href="https://github.com/earendil-works/pi"><img alt="Works with Pi" src="https://img.shields.io/badge/agent-Pi-6f42c1.svg"></a>
-  <img alt="Built with Tauri, Rust and React" src="https://img.shields.io/badge/built%20with-Tauri%20%C2%B7%20Rust%20%C2%B7%20React-orange.svg">
+  <img alt="Built with Rust and GPUI" src="https://img.shields.io/badge/built%20with-Rust%20%C2%B7%20GPUI-orange.svg">
   <img alt="Status: early" src="https://img.shields.io/badge/status-early-yellow.svg">
 </p>
 
@@ -38,7 +38,9 @@ time. ([Why it's built this way](docs/decisions.md#observe-pi-do-not-orchestrate
 
 - **Lanes: one task, one worktree.** Start a task from a prompt and Panoptes
   creates a git worktree and branch for it, copies project files and runs
-  setup. A lane holds exactly one session, so there is only ever one writer.
+  setup. A lane keeps earlier sessions but opens only one at a time, so there
+  is only ever one writer. Use `/new` for a fresh context and `/resume` for an
+  earlier conversation in the same lane.
 - **Every session in one list.** All Pi conversations, including ones you
   started from the terminal, in one reverse-chronological list. Adopt them
   into lanes without copying or rewriting Pi's files. `pi --continue` and
@@ -67,30 +69,53 @@ time. ([Why it's built this way](docs/decisions.md#observe-pi-do-not-orchestrate
   </tr>
 </table>
 
-## Quick start
+## Install
 
-You need macOS 13 or later, [Pi](https://github.com/earendil-works/pi) 1.x
-(`pi --version`), and to build it: Rust (via [rustup](https://rustup.rs)),
-Node 22+, pnpm and the Xcode Command Line Tools.
+You need macOS 13 or later on an Apple Silicon Mac, and
+[Pi](https://github.com/earendil-works/pi) 1.x installed and logged in
+(`pi --version`).
+
+### Download
+
+1. Download `Panoptes_<version>_aarch64.dmg` from the
+   [latest release](https://github.com/fbrg141/panoptes/releases/latest).
+2. Open the .dmg and drag Panoptes to Applications.
+3. Open Panoptes. The app is signed ad hoc, not notarized by Apple, so the
+   first time macOS says it can't check it for malware. Click Done, then go
+   to System Settings → Privacy & Security, scroll to Security and click
+   **Open Anyway** next to Panoptes. You only do this once per version.
+
+If you'd rather skip that dialog, clear the download flag in Terminal
+instead:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Panoptes.app
+```
+
+To update, download the new release and replace the app in Applications.
+
+### Build from source
+
+To build it you also need Rust (via [rustup](https://rustup.rs)) and Xcode
+with its Metal toolchain. This works on Intel Macs too.
 
 ```bash
 git clone https://github.com/fbrg141/panoptes.git
 cd panoptes
-pnpm install
-pnpm app:install
+sh scripts/install-app.sh
 ```
 
-`pnpm app:install` builds a release, signs it ad hoc (no Apple developer
-account needed for a build you made yourself), installs it to
-`/Applications/Panoptes.app` and opens it. Run it again after `git pull` to
-update; it quits a running Panoptes first.
+`scripts/install-app.sh` builds a release, signs it ad hoc, installs it to
+`/Applications/Panoptes.app` and opens it. A build you made yourself never
+gets the download flag, so macOS doesn't ask. Run it again after `git pull`
+to update; it quits a running Panoptes first.
+
+### Finding Pi
 
 Set `PANOPTES_PI` to use a specific `pi` binary. Apps opened from Finder
 don't get your shell's `PATH`, so at startup Panoptes reads it from your
 login shell; that is how it finds `pi`, `node` and whatever a project's
 setup runs.
-
-There is no prebuilt download yet.
 
 ## Status
 
@@ -104,7 +129,7 @@ another agent needs a new adapter crate and nothing else.
 
 ## Where your data lives
 
-| | Installed app | `pnpm tauri dev` |
+| | Installed app | `cargo run -p panoptes-app` |
 |---|---|---|
 | Store | `~/Library/Application Support/dev.panoptes.app/panoptes.db` | `…/dev.panoptes.app/dev/panoptes.db` |
 | Lane worktrees | `~/Panoptes/lanes` | `~/Panoptes/dev/lanes` |
@@ -119,24 +144,40 @@ Open it with Help → Show Logs in Finder, or ⌘P → Show logs in Finder.
 ## Development
 
 ```bash
-pnpm install
-pnpm tauri dev
+git config core.hooksPath .githooks   # once: run the check before each push
+cargo run -p panoptes-app
 ```
 
-Opening http://localhost:1420 in a normal browser while the dev server runs
-shows the UI with fixture data and no agent (`src/dev/mockBackend.ts`). That
-is handy for design work, and it's how the screenshots above were made.
+A debug build keeps its own store and lanes folder, so it never touches the
+installed app's data.
 
 ```bash
-pnpm check   # lint, types, formatting, clippy, all tests
-pnpm smoke   # one real round trip with your Pi; fails if the contract broke
+sh scripts/check.sh   # formatting, clippy, all tests
+sh scripts/smoke.sh   # one real round trip with your Pi; fails if the contract broke
 ```
 
-CI runs the checks in `pnpm check` for every pull request and every push to
-`main` (the Rust half on macOS), and a pre-push hook (installed by
-`pnpm install`) runs it locally. That suite only talks to a scripted stand-in
-for Pi, so run `pnpm smoke` after updating Pi or changing the adapter: it needs
-an installed, logged-in Pi and makes one small model call.
+CI runs `scripts/check.sh` on every pull request and every push to `main`,
+and the pre-push hook runs it locally. That suite only
+talks to a scripted stand-in for Pi, so run `scripts/smoke.sh` after updating
+Pi or changing the adapter: it needs an installed, logged-in Pi and makes
+one small model call.
+
+### Releasing
+
+Bump the version in the workspace `Cargo.toml`, then on an Apple Silicon Mac
+run:
+
+```bash
+sh scripts/check.sh
+sh scripts/install-app.sh --no-open
+hdiutil create -volname Panoptes -srcfolder target/release/Panoptes.app \
+  -ov -format UDZO "target/release/Panoptes_<version>_aarch64.dmg"
+```
+
+The install script leaves the ad hoc signed `Panoptes.app` in
+`target/release/`. Before publishing the .dmg, open a downloaded copy once to
+check the Open Anyway flow, then attach it to a GitHub release tagged
+`v<version>`.
 
 ### Layout
 
@@ -144,9 +185,8 @@ an installed, logged-in Pi and makes one small model call.
 |---|---|
 | `crates/panoptes-harness` | The harness-neutral interface: sessions, messages, events, and the `Harness` / `AgentSession` traits |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `src-tauri` | The app: `service.rs` (open sessions, event forwarding), `store.rs` (Panoptes' own data in SQLite), exposed as Tauri commands in `lib.rs` |
-| `src` | React UI: `conversation.ts` folds events into state, `store.ts` talks to the app, `components/` renders |
-| `packages/design-system` | Tokens, fonts, logos, icons and components |
+| `crates/panoptes-core` | The backend: `service.rs` (open sessions, event forwarding), `store.rs` (Panoptes' own data in SQLite), lanes, changes and cleanup |
+| `crates/panoptes-app` | The GPUI app: `store.rs` holds its state, `model/` the tested logic, `ds.rs` the design system's components, `views/` renders |
 
 More: [AGENTS.md](AGENTS.md) (contributor and agent guide),
 [docs/decisions.md](docs/decisions.md) (design decisions).

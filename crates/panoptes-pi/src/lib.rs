@@ -6,6 +6,7 @@ mod rpc;
 mod sessions;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
@@ -112,6 +113,7 @@ impl Harness for PiHarness {
             harness_ref,
             entries: tokio::sync::Mutex::default(),
             shared,
+            read_only,
         }))
     }
 }
@@ -134,12 +136,17 @@ struct PiSession {
     harness_ref: HarnessRef,
     entries: tokio::sync::Mutex<EntryCache>,
     shared: map::Shared,
+    read_only: bool,
 }
 
 #[async_trait]
 impl AgentSession for PiSession {
     fn harness_ref(&self) -> HarnessRef {
         self.harness_ref.clone()
+    }
+
+    fn unguarded_tools(&self) -> bool {
+        !self.read_only && !self.shared.permission_guard.load(Ordering::Relaxed)
     }
 
     async fn history(&self) -> anyhow::Result<Vec<Message>> {

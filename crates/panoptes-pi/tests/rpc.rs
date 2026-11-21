@@ -133,6 +133,28 @@ async fn profile_instructions_are_appended_at_startup() {
 }
 
 #[tokio::test]
+async fn no_permission_extension_leaves_writable_tools_unguarded() {
+    let (session, _rx) = start().await;
+    assert!(session.unguarded_tools());
+    session.shutdown().await;
+
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.read_only = true;
+    let (session, _rx) = start_with(request).await;
+    assert!(!session.unguarded_tools());
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_permission_extension_is_detected_at_startup() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.instructions = Some("with-permission-extension".into());
+    let (session, _rx) = start_with(request).await;
+    assert!(!session.unguarded_tools());
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_prompt_streams_and_settles() {
     let (session, mut rx) = start().await;
     assert_eq!(session.harness_ref().id, "fake-session");
