@@ -43,6 +43,7 @@ pub struct SessionOptions {
     /// Stored with a new session and appended again when its process resumes.
     pub instructions: Option<String>,
     pub prompt: Option<String>,
+    pub images: Vec<ImageAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -524,9 +525,10 @@ impl AppStore {
             }
             if let Some(prompt) = options.prompt {
                 let k = key.clone();
+                let images = options.images;
                 let outcome = backend
                     .run("send_prompt", move |s| async move {
-                        s.prompt(&k, prompt, Vec::new(), PromptMode::Start).await
+                        s.prompt(&k, prompt, images, PromptMode::Start).await
                     })
                     .await;
                 this.update(cx, |this, cx| match outcome {
@@ -1128,7 +1130,8 @@ impl AppStore {
         })
     }
 
-    /// Creates a lane and starts its first session with the task as prompt.
+    /// Creates a lane named after `task` and starts its first session with
+    /// `options.prompt`, or the task itself when there is none.
     pub fn create_from_prompt(
         &mut self,
         project_id: i64,
@@ -1143,7 +1146,7 @@ impl AppStore {
                 return false;
             };
             let options = SessionOptions {
-                prompt: Some(task),
+                prompt: options.prompt.or(Some(task)),
                 ..options
             };
             let Ok(created) = this.update(cx, |this, cx| this.create(lane.id, options, cx)) else {
