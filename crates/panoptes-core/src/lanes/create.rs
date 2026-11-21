@@ -16,7 +16,7 @@ use crate::store::{NewLane, NewLaneWorktree, Project};
 /// sources (the usual case for `.env`) are simply absent in the new lane.
 /// The lane is named after `base`, with a numeric suffix if `taken` or the
 /// disk already uses that name.
-pub fn create(
+pub(crate) fn create(
     root: &Path,
     project: &Project,
     base: &str,
@@ -91,7 +91,7 @@ pub fn create(
 /// A small explicit rollback helper used by the service when SQLite refuses
 /// the new record. It takes the project's repository separately because a
 /// `NewLane` intentionally contains only what gets persisted.
-pub fn discard_created(project: &Project, new: &NewLane) {
+pub(crate) fn discard_created(project: &Project, new: &NewLane) {
     if new.worktrees.iter().any(|worktree| worktree.main_checkout) {
         return;
     }

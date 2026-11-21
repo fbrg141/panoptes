@@ -30,7 +30,7 @@ pub(super) fn worktree_status(path: &Path) -> anyhow::Result<String> {
 }
 
 /// The work in an active lane's worktree, or `None` when it can't be read.
-pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
+pub(crate) fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
     let path = Path::new(&sole_worktree(lane).ok()?.path);
     let status = worktree_status(path).ok()?;
     let changed_files = status.lines().filter(|line| !line.is_empty()).count() as u32;
@@ -47,7 +47,7 @@ pub fn work(project: &Project, lane: &Lane) -> Option<LaneWork> {
 /// Read-only preflight for cleanup suggestions. `None` means the lane needs
 /// its individual recovery flow (or cannot be read), so bulk cleanup leaves it
 /// alone. Archiving repeats every check before removing the worktree.
-pub fn archive_preservation(project: &Project, lane: &Lane) -> Option<ArchivePreservation> {
+pub(crate) fn archive_preservation(project: &Project, lane: &Lane) -> Option<ArchivePreservation> {
     let worktree = sole_worktree(lane).ok()?;
     if worktree.main_checkout {
         return None;

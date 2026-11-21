@@ -14,6 +14,40 @@ mod detached;
 mod restore;
 mod work;
 
+// The service always archives with recovery and deletes with an explicit
+// detached-HEAD choice; these are the plain calls the tests make.
+
+/// Archives only after inspecting the current tree. A dirty tree with no
+/// strategy is left completely untouched so the UI can offer the three
+/// recovery choices. The branch itself is never deleted.
+pub(super) fn archive(
+    project: &Project,
+    lane: &Lane,
+    strategy: Option<ArchiveStrategy>,
+) -> anyhow::Result<ArchiveResult> {
+    archive_recording(project, lane, strategy, &|_| Ok(()))
+}
+
+/// Archives a lane, telling `record` which checkpoint ref holds its work
+/// before the worktree is removed (and `None` if that checkpoint turned out
+/// stale). The caller stores it, so an archive interrupted between removing
+/// the folder and marking the lane archived can still find the checkpoint.
+pub(super) fn archive_recording(
+    project: &Project,
+    lane: &Lane,
+    strategy: Option<ArchiveStrategy>,
+    record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
+) -> anyhow::Result<ArchiveResult> {
+    archive_recovering(project, lane, strategy, BranchRecovery::None, record)
+}
+
+/// Permanently removes a lane's worktree, local branch and recovery refs.
+/// The caller has already obtained explicit confirmation. A main-checkout
+/// lane owns none of those things, so deletion only removes its store row.
+pub(super) fn delete(project: &Project, lane: &Lane) -> anyhow::Result<DeleteResult> {
+    delete_confirmed(project, lane, false)
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     root: PathBuf,

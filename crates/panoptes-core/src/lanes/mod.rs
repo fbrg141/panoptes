@@ -15,18 +15,14 @@ mod naming;
 mod restore;
 mod setup;
 
-pub use archive::archive_recovering;
-#[cfg(test)]
-pub use archive::{archive, archive_recording};
-pub use branch::create_branch_here;
+pub(crate) use archive::archive_recovering;
+pub(crate) use branch::create_branch_here;
 pub(crate) use checkpoint::snapshot_tree;
-pub use create::{create, discard_created};
-#[cfg(test)]
-pub use delete::delete;
-pub use delete::delete_confirmed;
-pub use inspect::{archive_preservation, work};
-pub use naming::slug;
-pub use restore::restore;
+pub(crate) use create::{create, discard_created};
+pub(crate) use delete::delete_confirmed;
+pub(crate) use inspect::{archive_preservation, work};
+pub(crate) use naming::slug;
+pub(crate) use restore::restore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +78,7 @@ pub enum BranchRecovery {
 }
 
 #[derive(Debug)]
-pub enum ArchiveResult {
+pub(crate) enum ArchiveResult {
     Dirty,
     DetachedHead(DetachedHead),
     OtherBranch(OtherBranch),
@@ -90,7 +86,7 @@ pub enum ArchiveResult {
 }
 
 #[derive(Debug)]
-pub enum DeleteResult {
+pub(crate) enum DeleteResult {
     Deleted,
     DetachedHead(DetachedHead),
     OtherBranch(OtherBranch),

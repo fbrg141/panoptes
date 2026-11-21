@@ -9,20 +9,12 @@ use super::inspect::sole_worktree;
 use crate::git::{ref_exists, run};
 use crate::store::{Lane, Project};
 
-/// Permanently removes a lane's worktree, local branch and recovery refs.
-/// The caller has already obtained explicit confirmation. A main-checkout
-/// lane owns none of those things, so deletion only removes its store row.
-#[cfg(test)]
-pub fn delete(project: &Project, lane: &Lane) -> anyhow::Result<DeleteResult> {
-    delete_confirmed(project, lane, false)
-}
-
 /// Deletion goes ahead off the lane branch only after the user has confirmed
 /// the detached-HEAD or other-branch dialog (`confirmed`). For a detached
 /// HEAD the clean-tree and reachability checks are repeated here so a change
 /// made while that dialog was open cannot be deleted. Another branch is
 /// never deleted: it keeps its commits, and only the lane branch goes.
-pub fn delete_confirmed(
+pub(crate) fn delete_confirmed(
     project: &Project,
     lane: &Lane,
     confirmed: bool,

@@ -10,38 +10,12 @@ use super::{ArchiveResult, ArchiveStrategy, BranchRecovery};
 use crate::git::{ref_exists, run};
 use crate::store::{Lane, Project};
 
-/// Archives only after inspecting the current tree. A dirty tree with no
-/// strategy is left completely untouched so the UI can offer the three
-/// recovery choices. The branch itself is never deleted.
-#[cfg(test)]
-pub fn archive(
-    project: &Project,
-    lane: &Lane,
-    strategy: Option<ArchiveStrategy>,
-) -> anyhow::Result<ArchiveResult> {
-    archive_recording(project, lane, strategy, &|_| Ok(()))
-}
-
-/// Archives a lane, telling `record` which checkpoint ref holds its work
-/// before the worktree is removed (and `None` if that checkpoint turned out
-/// stale). The caller stores it, so an archive interrupted between removing
-/// the folder and marking the lane archived can still find the checkpoint.
-#[cfg(test)]
-pub fn archive_recording(
-    project: &Project,
-    lane: &Lane,
-    strategy: Option<ArchiveStrategy>,
-    record: &dyn Fn(Option<&str>) -> anyhow::Result<()>,
-) -> anyhow::Result<ArchiveResult> {
-    archive_recovering(project, lane, strategy, BranchRecovery::None, record)
-}
-
 /// `recovery` is the user's explicit choice in the detached-HEAD or
 /// other-branch dialog. Recreating attaches the lane branch to HEAD without
 /// ever resetting a branch that is ahead or has diverged; switching back
 /// first commits any changes on the branch the worktree is on. Either runs
 /// before the normal archive checks.
-pub fn archive_recovering(
+pub(crate) fn archive_recovering(
     project: &Project,
     lane: &Lane,
     strategy: Option<ArchiveStrategy>,
