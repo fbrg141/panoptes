@@ -1,5 +1,6 @@
 use super::super::*;
 use super::fake::*;
+use panoptes_harness::HarnessError;
 use std::time::Duration;
 
 #[tokio::test]
@@ -218,41 +219,6 @@ async fn a_run_that_ends_on_an_error_fails() {
     );
 }
 
-#[test]
-fn an_approval_waits_until_decided() {
-    let mut tracker = StatusTracker::default();
-    tracker.apply(&HarnessEvent::RunStarted, 0);
-    let approval = HarnessEvent::Approval {
-        approval: panoptes_harness::Approval {
-            id: "a1".into(),
-            tool_call_id: "c1".into(),
-            title: "Allow?".into(),
-            message: None,
-            expires_at: None,
-        },
-    };
-    assert_eq!(tracker.apply(&approval, 10), Some(SessionStatus::Waiting));
-    assert_eq!(tracker.answered("a1", 20), Some(SessionStatus::Running));
-}
-
-#[test]
-fn a_snapshot_replays_the_run_and_what_still_waits() {
-    let mut tracker = StatusTracker::default();
-    assert_eq!(tracker.snapshot(0), (SessionStatus::Idle, Vec::new()));
-    tracker.apply(&HarnessEvent::RunStarted, 0);
-    tracker.apply(&question("q1", None), 10);
-    tracker.apply(&question("q2", Some(100)), 10);
-    tracker.apply(&question("q3", None), 10);
-    tracker.answered("q3", 20);
-    // q2 has expired by now and q3 was answered: only q1 is shown again.
-    let (status, replay) = tracker.snapshot(200);
-    assert_eq!(status, SessionStatus::Waiting);
-    assert_eq!(replay, vec![HarnessEvent::RunStarted, question("q1", None)]);
-
-    tracker.apply(&HarnessEvent::RunSettled { aborted: false }, 300);
-    assert_eq!(tracker.snapshot(300), (SessionStatus::Done, Vec::new()));
-}
-
 #[tokio::test]
 async fn reopening_an_open_session_brings_back_its_status_and_questions() {
     let f = fixture(FakeHarness::default());
@@ -275,22 +241,6 @@ async fn reopening_an_open_session_brings_back_its_status_and_questions() {
         again.replay,
         vec![HarnessEvent::RunStarted, question("q1", None)]
     );
-}
-
-/// Every event line in the fixture's log, in order.
-#[test]
-fn an_expired_question_stops_waiting() {
-    let mut tracker = StatusTracker::default();
-    tracker.apply(&HarnessEvent::RunStarted, 0);
-    assert_eq!(
-        tracker.apply(&question("q1", Some(100)), 50),
-        Some(SessionStatus::Waiting)
-    );
-    let notice = HarnessEvent::Notice {
-        level: panoptes_harness::NoticeLevel::Info,
-        text: "still going".into(),
-    };
-    assert_eq!(tracker.apply(&notice, 150), Some(SessionStatus::Running));
 }
 
 #[test]

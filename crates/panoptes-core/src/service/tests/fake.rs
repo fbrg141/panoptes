@@ -1,6 +1,6 @@
 use super::super::*;
 use async_trait::async_trait;
-use panoptes_harness::EventSink;
+use panoptes_harness::{EventSink, Role};
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 

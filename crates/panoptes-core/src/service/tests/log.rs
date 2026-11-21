@@ -1,6 +1,7 @@
 use super::super::*;
 use super::fake::*;
 
+/// Every event line in the fixture's log, in order.
 fn logged(f: &Fixture) -> Vec<serde_json::Value> {
     let dir = f._dir.path().join("logs");
     let mut files: Vec<_> = std::fs::read_dir(dir)

@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::Context;
 use panoptes_harness::{
-    AgentSession, Answer, CommandInfo, DiscoveredSession, Harness, HarnessError, HarnessErrorKind,
-    HarnessEvent, HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, Role,
-    SessionSettings, SessionStatus, StartSession,
+    AgentSession, Answer, CommandInfo, DiscoveredSession, Harness, HarnessEvent, HarnessRef,
+    ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome, SessionSettings, SessionStatus,
+    StartSession,
 };
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -25,264 +25,18 @@ use crate::store::{Lane, LaneState, Preferences, ProfileInput, Project, ProjectS
 use crate::writes;
 use serde_json::json;
 
-pub type ServiceResult<T> = Result<T, ServiceError>;
+mod error;
+mod events;
+mod key;
+mod status;
 
-/// An error as the UI receives it: a kind to choose the recovery from, and a
-/// message to show.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ServiceError {
-    pub kind: ErrorKind,
-    pub message: String,
-}
+pub use error::{ErrorKind, ServiceError, ServiceResult};
+pub use events::{Emit, LaneWritesChanged, SessionEvent, SessionUpdate, StatusChanged};
+pub use key::{harness_key, panoptes_key};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ErrorKind {
-    /// The session has no process; open it again.
-    NotOpen,
-    /// The harness it needs is not installed or failed to load.
-    Unavailable,
-    /// The harness refused the command; its message says why.
-    Rejected,
-    /// The harness process ended; reopen the session to restart it.
-    Exited,
-    /// The harness did not answer in time.
-    TimedOut,
-    /// A lane creation was cancelled; its partial worktree was rolled back.
-    Cancelled,
-    /// Anything else (I/O, a harness error with no kind).
-    Other,
-}
-
-impl ServiceError {
-    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
-    }
-
-    pub fn other(message: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Other, message)
-    }
-}
-
-impl std::fmt::Display for ServiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl From<anyhow::Error> for ServiceError {
-    fn from(error: anyhow::Error) -> Self {
-        let kind = match HarnessError::kind_of(&error) {
-            Some(HarnessErrorKind::Rejected) => ErrorKind::Rejected,
-            Some(HarnessErrorKind::NotRunning) => ErrorKind::NotOpen,
-            Some(HarnessErrorKind::Exited) => ErrorKind::Exited,
-            Some(HarnessErrorKind::TimedOut) => ErrorKind::TimedOut,
-            None => ErrorKind::Other,
-        };
-        Self::new(kind, format!("{error:#}"))
-    }
-}
-
-fn err(error: anyhow::Error) -> ServiceError {
-    error.into()
-}
-
-fn not_open() -> ServiceError {
-    ServiceError::new(ErrorKind::NotOpen, "This session is not open")
-}
-
-fn only_in_a_lane(what: &str) -> ServiceError {
-    ServiceError::new(
-        ErrorKind::Rejected,
-        format!("Only a session in a lane can be {what}"),
-    )
-}
-
-const PANOPTES_PREFIX: &str = "panoptes:";
-
-/// The key of a Panoptes session. It is known before the harness starts, so
-/// every event the session sends carries it.
-pub fn panoptes_key(id: i64) -> String {
-    format!("{PANOPTES_PREFIX}{id}")
-}
-
-/// The key of a harness conversation that no lane has adopted.
-pub fn harness_key(harness: &str, id: &str) -> String {
-    format!("{harness}:{id}")
-}
-
-fn panoptes_id(key: &str) -> Option<i64> {
-    key.strip_prefix(PANOPTES_PREFIX)?.parse().ok()
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionEvent {
-    pub key: String,
-    pub event: SessionUpdate,
-}
-
-/// What the UI hears about an open session: the harness's own events, plus
-/// the status the service works out from them.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum SessionUpdate {
-    Harness(HarnessEvent),
-    Status(StatusChanged),
-    LaneWrites(LaneWritesChanged),
-}
-
-/// Sent when an open session is first seen editing another lane's worktree,
-/// so the sidebar can hold back that lane's own session straight away.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename = "laneWritesChanged")]
-pub struct LaneWritesChanged {
-    pub lane_id: i64,
-}
-
-/// Sent when an open session's status changes, and once when it opens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename = "statusChanged")]
-pub struct StatusChanged {
-    pub status: SessionStatus,
-}
-
-/// Works out a session's status from its events. Waiting wins over
-/// Running, so a session that needs the user always says so.
-#[derive(Debug)]
-struct StatusTracker {
-    status: SessionStatus,
-    running: bool,
-    /// Open questions and approvals, with when the harness stops waiting
-    /// (Unix ms).
-    questions: HashMap<String, Option<i64>>,
-    /// Steering or follow-up prompts waiting in the harness.
-    queued: bool,
-    /// The events that asked them, in order, so a reopened window can be
-    /// shown them again. Only those still in `questions` are open.
-    asked: Vec<HarnessEvent>,
-    /// The latest assistant message in this run reported an error.
-    errored: bool,
-    /// How the last run ended: Idle before any, then Done or Failed.
-    settled: SessionStatus,
-}
-
-impl Default for StatusTracker {
-    fn default() -> Self {
-        Self {
-            status: SessionStatus::Idle,
-            running: false,
-            questions: HashMap::new(),
-            queued: false,
-            asked: Vec::new(),
-            errored: false,
-            settled: SessionStatus::Idle,
-        }
-    }
-}
-
-impl StatusTracker {
-    /// Folds in one event; returns the new status if it changed.
-    fn apply(&mut self, event: &HarnessEvent, now: i64) -> Option<SessionStatus> {
-        match event {
-            HarnessEvent::RunStarted => {
-                self.running = true;
-                self.errored = false;
-            }
-            HarnessEvent::MessageCompleted { message } if message.role == Role::Assistant => {
-                // A retried provider error is cleared by the reply that follows.
-                self.errored = message.error.is_some();
-            }
-            HarnessEvent::Question { question } => {
-                self.questions
-                    .insert(question.id.clone(), question.expires_at);
-                self.asked.push(event.clone());
-            }
-            HarnessEvent::Approval { approval } => {
-                self.questions
-                    .insert(approval.id.clone(), approval.expires_at);
-                self.asked.push(event.clone());
-            }
-            HarnessEvent::QueueChanged { queued } => {
-                self.queued = !queued.is_empty();
-            }
-            HarnessEvent::RunSettled { .. } => {
-                self.running = false;
-                self.questions.clear();
-                self.settled = if self.errored {
-                    SessionStatus::Failed
-                } else {
-                    SessionStatus::Done
-                };
-            }
-            HarnessEvent::Exited { .. } => {
-                self.running = false;
-                self.queued = false;
-                self.questions.clear();
-                self.settled = SessionStatus::Failed;
-            }
-            _ => {}
-        }
-        self.update(now)
-    }
-
-    fn answered(&mut self, question_id: &str, now: i64) -> Option<SessionStatus> {
-        self.questions.remove(question_id);
-        self.update(now)
-    }
-
-    /// What a window that opens the session now needs to catch up: its
-    /// status, and the events that put it there (the run's start and the
-    /// questions and approvals still waiting).
-    fn snapshot(&mut self, now: i64) -> (SessionStatus, Vec<HarnessEvent>) {
-        self.update(now);
-        let mut replay = Vec::new();
-        if self.running {
-            replay.push(HarnessEvent::RunStarted);
-        }
-        replay.extend(self.asked.iter().cloned());
-        (self.status, replay)
-    }
-
-    fn update(&mut self, now: i64) -> Option<SessionStatus> {
-        // The harness picks a default once a question expires.
-        self.questions
-            .retain(|_, expires| expires.is_none_or(|at| at > now));
-        let questions = &self.questions;
-        self.asked.retain(|event| {
-            let id = match event {
-                HarnessEvent::Question { question } => &question.id,
-                HarnessEvent::Approval { approval } => &approval.id,
-                _ => return false,
-            };
-            questions.contains_key(id)
-        });
-        let status = if !self.questions.is_empty() {
-            SessionStatus::Waiting
-        } else if self.running {
-            SessionStatus::Running
-        } else {
-            self.settled
-        };
-        (status != self.status).then(|| {
-            self.status = status;
-            status
-        })
-    }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-pub type Emit = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+use error::{err, not_open, only_in_a_lane};
+use key::{SessionKey, panoptes_id};
+use status::{Tracker, now_ms};
 
 /// The one session type the UI sees: a Panoptes session in a lane, or a
 /// harness conversation found on disk that no lane has adopted.
@@ -413,7 +167,6 @@ pub struct OpenedSession {
     pub replay: Vec<HarnessEvent>,
 }
 
-type Tracker = Arc<std::sync::Mutex<StatusTracker>>;
 type EarlyExit = Arc<std::sync::Mutex<Option<String>>>;
 
 struct OpenSession {
@@ -965,16 +718,13 @@ impl Service {
         cwd: String,
     ) -> ServiceResult<OpenedSession> {
         let mut guard = self.lifecycle(key).await;
-        let key = match panoptes_id(key) {
-            Some(_) => key.to_string(),
-            None => {
+        let key = match SessionKey::parse(harness, key) {
+            SessionKey::Panoptes(id) => panoptes_key(id),
+            SessionKey::Harness { id: harness_id } => {
                 // Looked up under the conversation's own lock, which `adopt`
                 // holds while it records an adoption: an open never starts
                 // a raw process on a conversation a lane has just taken.
-                let harness_id = key
-                    .strip_prefix(&format!("{harness}:"))
-                    .unwrap_or_default()
-                    .to_string();
+                let harness_id = harness_id.to_string();
                 let name = harness.to_string();
                 let adopted = self
                     .with_store(move |store| store.session_for(&name, &harness_id))
@@ -1145,7 +895,7 @@ impl Service {
                 Some(key) => {
                     {
                         let status = open[&key].status.lock().unwrap();
-                        if status.running || status.queued || !status.questions.is_empty() {
+                        if !status.is_idle() {
                             return Err(ServiceError::new(
                                 ErrorKind::Rejected,
                                 "Stop the agent, answer its questions and clear queued messages before changing sessions",
@@ -1302,17 +1052,22 @@ impl Service {
         cwd: String,
         lane_id: Option<i64>,
     ) -> ServiceResult<AdoptionOutcome> {
-        if panoptes_id(key).is_some() {
+        if matches!(SessionKey::parse(harness, key), SessionKey::Panoptes(_)) {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "This session already belongs to a lane",
             ));
         }
-        let harness_id = key
-            .strip_prefix(&format!("{harness}:"))
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| ServiceError::new(ErrorKind::Rejected, "Invalid harness session key"))?
-            .to_string();
+        let SessionKey::Harness { id: harness_id } = SessionKey::parse(harness, key) else {
+            unreachable!("Panoptes keys return above")
+        };
+        if harness_id.is_empty() {
+            return Err(ServiceError::new(
+                ErrorKind::Rejected,
+                "Invalid harness session key",
+            ));
+        }
+        let harness_id = harness_id.to_string();
         // Held until the adoption is recorded, so no open of this
         // conversation can start a raw process in between.
         let _guard = self.lifecycle(key).await;
@@ -2297,7 +2052,7 @@ fn busy_writer(
             open.get(*key).is_some_and(|session| {
                 session.lane != Some(lane_id)
                     && matches!(
-                        session.status.lock().unwrap().status,
+                        session.status.lock().unwrap().status(),
                         SessionStatus::Running | SessionStatus::Waiting
                     )
             })
