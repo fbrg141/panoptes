@@ -64,6 +64,7 @@ impl ChatPane {
             cx.new(|cx| Composer::new(key.clone(), store.clone(), ui.clone(), window, cx));
         cx.subscribe(&composer, |this, _, event, cx| match event {
             ComposerEvent::Sent => this.scroll_to_end(cx),
+            ComposerEvent::CreateLane { .. } => {}
         })
         .detach();
         let scroll = ScrollHandle::new();

@@ -43,6 +43,7 @@ pub struct SessionOptions {
     /// Stored with a new session and appended again when its process resumes.
     pub instructions: Option<String>,
     pub prompt: Option<String>,
+    pub images: Vec<ImageAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -496,9 +497,10 @@ impl AppStore {
             }
             if let Some(prompt) = options.prompt {
                 let k = key.clone();
+                let images = options.images;
                 let outcome = backend
                     .run("send_prompt", move |s| async move {
-                        s.prompt(&k, prompt, Vec::new(), PromptMode::Start).await
+                        s.prompt(&k, prompt, images, PromptMode::Start).await
                     })
                     .await;
                 this.update(cx, |this, cx| match outcome {

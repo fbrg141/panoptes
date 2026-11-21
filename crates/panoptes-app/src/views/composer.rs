@@ -12,7 +12,7 @@ use gpui_kit::component::input::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_core::files::Attachment;
-use panoptes_harness::{CommandInfo, PromptMode};
+use panoptes_harness::{CommandInfo, ImageAttachment, PromptMode};
 
 use crate::ds::{
     Button, CONTROL, CONTROL_SM, RADIUS_LG, RADIUS_SM, RADIUS_XS, Tooltip, Type as _, icon,
@@ -20,8 +20,8 @@ use crate::ds::{
 };
 use crate::model::composer::{
     Query, available_commands, command_at, compose_prompt, context_label, continue_list,
-    insert_command, insert_mention, match_commands, match_files, mention_at, next_level,
-    restore_unsent, segments,
+    insert_command, insert_mention, match_commands, match_files, mention_at, mention_label,
+    next_level, restore_unsent, segments,
 };
 use crate::model::picker::{model_groups, short_model_id};
 use crate::model::usage::{session_usage_detail, session_usage_label, sum_usage};
@@ -45,6 +45,11 @@ pub fn init(cx: &mut App) {
 pub enum ComposerEvent {
     /// A prompt left for the agent; the transcript follows it.
     Sent,
+    /// The New lane dialog accepted its first prompt.
+    CreateLane {
+        prompt: String,
+        images: Vec<ImageAttachment>,
+    },
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -88,6 +93,10 @@ pub struct Composer {
     model_picker: Entity<PickerState>,
     thinking_open: bool,
     placeholder_busy: bool,
+    /// A New lane composer lists files from the project's checkout.
+    file_root: Option<String>,
+    new_lane: bool,
+    disabled: bool,
 }
 
 impl Composer {
@@ -151,7 +160,42 @@ impl Composer {
             model_picker,
             thinking_open: false,
             placeholder_busy: false,
+            file_root: None,
+            new_lane: false,
+            disabled: false,
         }
+    }
+
+    /// The same prompt editor before a session exists. Its files come from the
+    /// project, and submitting asks the New lane dialog to create the session.
+    pub fn new_lane(
+        cwd: String,
+        prompt: Option<String>,
+        store: Entity<AppStore>,
+        ui: Entity<Ui>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::new(String::new(), store, ui, window, cx);
+        this.file_root = Some(cwd);
+        this.new_lane = true;
+        this.input.update(cx, |input, cx| {
+            input.set_placeholder("Message the agent, @ for files", window, cx)
+        });
+        if let Some(prompt) = prompt {
+            let caret = prompt.len();
+            this.set_text(&prompt, caret, window, cx);
+        }
+        this
+    }
+
+    pub fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+
+    pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        self.disabled = disabled;
+        cx.notify();
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -177,7 +221,8 @@ impl Composer {
         for segment in segments(text, &self.mentioned) {
             let end = at + segment.text.len();
             if segment.mention {
-                let token = InlineToken::new(segment.text[1..].to_string(), segment.text.clone());
+                let label = mention_label(&segment.text[1..]).to_string();
+                let token = InlineToken::new(label, segment.text.clone());
                 if let Ok(next) = content.clone().with_token(at..end, token) {
                     content = next;
                 }
@@ -225,7 +270,10 @@ impl Composer {
         let text = input.value().to_string();
         let caret = input.cursor();
         if let Some(mention) = mention_at(&text, caret) {
-            let cwd = self.store.read(cx).state.session(&self.key)?.cwd.clone();
+            let cwd = match &self.file_root {
+                Some(cwd) => cwd.clone(),
+                None => self.store.read(cx).state.session(&self.key)?.cwd.clone(),
+            };
             match &self.files {
                 Some((loaded, list)) if *loaded == cwd => {
                     let rows = match_files(&mention.query, list, MENTION_ROWS);
@@ -245,6 +293,9 @@ impl Composer {
                     return None;
                 }
             }
+        }
+        if self.new_lane {
+            return None;
         }
         let slash = command_at(&text, caret)?;
         match &self.commands {
@@ -301,10 +352,19 @@ impl Composer {
 
     fn submit(&mut self, queue: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
+        if self.disabled || (text.trim().is_empty() && self.attachments.is_empty()) {
+            return;
+        }
+        if self.new_lane {
+            if text.trim().is_empty() {
+                return;
+            }
+            let (prompt, images) = compose_prompt(&text, &self.attachments);
+            cx.emit(ComposerEvent::CreateLane { prompt, images });
+            return;
+        }
         let state = &self.store.read(cx).state;
-        if state.sending.contains(&self.key)
-            || (text.trim().is_empty() && self.attachments.is_empty())
-        {
+        if state.sending.contains(&self.key) {
             return;
         }
         let lane_command = text.trim();
@@ -413,6 +473,9 @@ impl Composer {
 
     /// Takes pasted images and copied files; text falls through to the field.
     fn paste(&mut self, item: &ClipboardItem, cx: &mut Context<Self>) -> bool {
+        if self.disabled {
+            return false;
+        }
         let mut taken = false;
         for entry in item.entries() {
             match entry {
@@ -464,7 +527,11 @@ impl Render for Composer {
             .as_ref()
             .and_then(|s| s.model.as_ref())
             .is_none_or(|m| m.images);
-        let empty = self.text(cx).trim().is_empty() && self.attachments.is_empty();
+        let empty = if self.new_lane {
+            self.text(cx).trim().is_empty()
+        } else {
+            self.text(cx).trim().is_empty() && self.attachments.is_empty()
+        };
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let placeholder = if busy {
             "Steer the agent, \u{2325}\u{21b5} to queue for after"
@@ -576,7 +643,9 @@ impl Render for Composer {
             .on_drop(move |paths: &ExternalPaths, _, cx| {
                 let _ = on_drop.update(cx, |this, cx| {
                     this.dragging = false;
-                    this.attach_paths(paths.paths().to_vec(), cx)
+                    if !this.disabled {
+                        this.attach_paths(paths.paths().to_vec(), cx);
+                    }
                 });
             });
 
@@ -650,6 +719,7 @@ impl Render for Composer {
             div().child(
                 Textarea::new(&self.input)
                     .appearance(false)
+                    .disabled(self.disabled)
                     .t_body()
                     .px(px(2.))
                     .pt(px(1.))
@@ -679,7 +749,7 @@ impl Render for Composer {
                 "attach",
                 icon("plus", 16.).into_any_element(),
                 "Attach files",
-                false,
+                self.disabled,
                 false,
                 &p,
                 {
@@ -758,8 +828,12 @@ impl Render for Composer {
                 Button::new("send")
                     .primary()
                     .icon("arrow-up")
-                    .disabled(empty || sending)
-                    .tooltip("Send (Enter)")
+                    .disabled(empty || sending || self.disabled)
+                    .tooltip(if self.new_lane {
+                        "Create lane (Enter)"
+                    } else {
+                        "Send (Enter)"
+                    })
                     .on_click(move |_, window, cx| {
                         let _ = send.update(cx, |this, cx| this.submit(false, window, cx));
                     })

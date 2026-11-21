@@ -265,6 +265,11 @@ pub struct Segment {
     pub mention: bool,
 }
 
+/// The file name shown for a mention, while its full path stays in the text.
+pub fn mention_label(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 /// Splits text into plain runs and the `@path` mentions in `known`, for
 /// drawing mentions as chips.
 pub fn segments(text: &str, known: &HashSet<String>) -> Vec<Segment> {
@@ -407,6 +412,12 @@ mod tests {
             insert_mention("@ap", 3, &q(0, "ap").unwrap(), "src/api.ts"),
             edited("@src/api.ts ", 12)
         );
+    }
+
+    #[test]
+    fn mention_labels_show_only_the_file_name() {
+        assert_eq!(mention_label("src/api.ts"), "api.ts");
+        assert_eq!(mention_label("api.ts"), "api.ts");
     }
 
     #[test]
