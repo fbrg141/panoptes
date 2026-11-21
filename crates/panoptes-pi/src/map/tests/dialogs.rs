@@ -39,7 +39,7 @@ fn tagged_permission_dialogs_are_approvals() {
         ("q1", "c1", Some(1_005))
     );
     assert_eq!(
-        shared.approvals.lock().unwrap()["q1"],
+        shared.approvals()["q1"],
         Some(("Yes".to_string(), "No".to_string()))
     );
 
@@ -53,7 +53,7 @@ fn tagged_permission_dialogs_are_approvals() {
     assert!(
         matches!(&events[..], [HarnessEvent::Approval { approval }] if approval.id == "q2" && approval.tool_call_id == "c1")
     );
-    assert_eq!(shared.approvals.lock().unwrap()["q2"], None);
+    assert_eq!(shared.approvals()["q2"], None);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn untagged_dialogs_stay_questions() {
         0,
     );
     assert!(matches!(&events[..], [HarnessEvent::Question { .. }]));
-    assert!(shared.approvals.lock().unwrap().is_empty());
+    assert!(shared.approvals().is_empty());
 
     // A tag covers only the dialog right after it.
     tag(&mut mapper, "c1");
