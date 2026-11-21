@@ -58,7 +58,7 @@ impl Service {
     ) -> ServiceResult<OpenedSession> {
         let mut guard = self.registry.lifecycle(key).await;
         let key = match SessionKey::parse(harness, key) {
-            SessionKey::Panoptes(id) => panoptes_key(id),
+            SessionKey::Panoptes => key.to_string(),
             SessionKey::Harness { id: harness_id } => {
                 // Looked up under the conversation's own lock, which `adopt`
                 // holds while it records an adoption: an open never starts
@@ -382,7 +382,7 @@ impl Service {
         cwd: String,
         lane_id: Option<i64>,
     ) -> ServiceResult<AdoptionOutcome> {
-        if matches!(SessionKey::parse(harness, key), SessionKey::Panoptes(_)) {
+        if matches!(SessionKey::parse(harness, key), SessionKey::Panoptes) {
             return Err(ServiceError::new(
                 ErrorKind::Rejected,
                 "This session already belongs to a lane",

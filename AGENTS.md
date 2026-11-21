@@ -71,7 +71,8 @@ use that the observation log records ([backlog](docs/backlog.md#intake-until-the
   Debug builds use their own store (`<app data>/dev`) and lanes folder
   (`~/Panoptes/dev/lanes`), so a step can be reworked freely until it ships.
 - **One process per open session.** Open, create, close and adopt each hold
-  the session key's lifecycle lock in `Service`, so a process never starts
+  the session key's lifecycle lock in `service/registry.rs` (whose doc
+  records the lock order), so a process never starts
   while another for the same session is starting or shutting down. Never
   start a second process on a session that is already open.
 - **Style only through the design system.** Use its components in `ds.rs`

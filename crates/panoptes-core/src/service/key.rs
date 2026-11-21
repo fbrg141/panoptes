@@ -18,14 +18,17 @@ pub(super) fn panoptes_id(key: &str) -> Option<i64> {
 /// A session key parsed without letting a harness id get confused with a
 /// Panoptes-owned numeric id.
 pub(super) enum SessionKey<'a> {
-    Panoptes(i64),
-    Harness { id: &'a str },
+    /// A lane session; the key is used as given.
+    Panoptes,
+    Harness {
+        id: &'a str,
+    },
 }
 
 impl<'a> SessionKey<'a> {
     pub(super) fn parse(harness: &str, key: &'a str) -> Self {
         match panoptes_id(key) {
-            Some(id) => Self::Panoptes(id),
+            Some(_) => Self::Panoptes,
             None => Self::Harness {
                 id: key.strip_prefix(&format!("{harness}:")).unwrap_or_default(),
             },

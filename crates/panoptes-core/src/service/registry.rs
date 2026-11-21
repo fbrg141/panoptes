@@ -144,8 +144,14 @@ impl Registry {
             .map(|(key, _)| key.clone())
     }
 
+    /// Whether a session in the lane is starting or open, previews included.
     pub(super) async fn lane_in_use(&self, lane_id: i64) -> bool {
-        self.is_starting_in_lane(lane_id) || self.live_in_lane(lane_id).await.is_some()
+        self.is_starting_in_lane(lane_id)
+            || self
+                .open()
+                .await
+                .values()
+                .any(|session| session.lane == Some(lane_id))
     }
 
     pub(super) async fn lanes_in_use(&self) -> HashSet<i64> {
