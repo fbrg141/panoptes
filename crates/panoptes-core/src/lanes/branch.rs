@@ -2,8 +2,9 @@ use std::path::Path;
 
 use anyhow::bail;
 
+use super::checkpoint::reject_new_gitlinks;
 use super::inspect::worktree_status;
-use super::{DetachedHead, OtherBranch, UnreachableCommit, reject_new_gitlinks};
+use super::{DetachedHead, OtherBranch, UnreachableCommit};
 use crate::git::{git_path, ref_exists, run};
 use crate::store::Lane;
 
