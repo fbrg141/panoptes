@@ -324,13 +324,16 @@ unnecessary.
 - `/new` stops the current process and creates a fresh Panoptes session record
   and Pi conversation in the same lane. `/resume` offers only that lane's own
   earlier records, newest first, and reopens the selected conversation's file.
+- Clicking an earlier session opens a read-only preview without stopping the
+  live one. Sending a message from the preview stops the live session, resumes
+  the previewed conversation with normal tools and delivers that message.
 - Neither flow uses Pi's in-process `new_session` or `switch_session` RPC. A
   record keeps its harness identity, timeline, title and usage permanently.
 - Changing sessions is refused while the current agent streams, waits for a
   question or approval, or has queued steering or follow-up messages.
 - Pi's own subagents appear nested under their parent and are read-only (#227).
-- The store schema does not forbid multiple records; the service enforces at
-  most one open session per lane.
+- The store schema does not forbid multiple records; the service enforces one
+  live session and at most one read-only preview per lane.
 
 This supersedes #22's write-lock decision and the earlier subsession proposal.
 It is intentionally simpler than worker fan-out: Panoptes observes one agent's

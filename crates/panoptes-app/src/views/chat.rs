@@ -301,6 +301,7 @@ impl Render for ChatPane {
             .copied()
             .unwrap_or(false);
         let warning = unguarded && !state.preferences.permission_warning_dismissed;
+        let preview = state.previews.contains(&self.key);
         let status = state.status(&self.key);
         let session = state.session(&self.key).cloned();
         let turns = conversation.map(build_turns).unwrap_or_default();
@@ -614,6 +615,22 @@ impl Render for ChatPane {
                         el.child(icon("circle-alert", 14.))
                     })
                     .child(notice.text.clone())
+            }))
+            .children(preview.then(|| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .border_t_1()
+                    .border_color(p.line)
+                    .bg(p.waiting_soft)
+                    .px(px(16.))
+                    .py(px(4.))
+                    .text_color(p.waiting)
+                    .child(icon("history", 14.))
+                    .child(
+                        "Previewing this session. Send a message to resume it and stop the lane's current session.",
+                    )
             }))
             .children(exited.map(|_| {
                 div()

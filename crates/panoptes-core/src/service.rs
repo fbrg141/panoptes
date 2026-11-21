@@ -403,6 +403,8 @@ pub struct OpenedSession {
     pub history: Vec<Message>,
     /// Writable tools that run without asking for approval.
     pub unguarded_tools: bool,
+    /// A read-only look at an earlier lane session. Sending resumes it.
+    pub preview: bool,
     /// The session's status now, so a reloaded window does not show a
     /// Running or Waiting session as idle until its next change.
     pub status: SessionStatus,
@@ -422,6 +424,8 @@ struct OpenSession {
     status: Tracker,
     /// Lane membership, used to keep an open lane from being archived.
     lane: Option<i64>,
+    /// Read-only history alongside the lane's live session.
+    preview: bool,
 }
 
 /// What a session's process is started with.
@@ -431,8 +435,10 @@ struct Launch {
     resume: Option<String>,
     /// Lane membership, not a lock.
     lane: Option<i64>,
-    /// Read-only for archived lanes or a missing-folder resume.
+    /// Read-only for archived lanes, previews or a missing-folder resume.
     read_only: bool,
+    /// History alongside the lane's live session; a prompt replaces both.
+    preview: bool,
     /// Extra system-prompt instructions stored by a newly created session.
     instructions: Option<String>,
 }
@@ -828,7 +834,9 @@ impl Service {
             let location = cached_location(&mut locations, &cwd);
             let key = panoptes_key(record.id);
             sessions.push(Session {
-                open: open.contains_key(&key),
+                // A preview is open for reading, but is not the lane's live
+                // session for navigation, status or session changes.
+                open: open.get(&key).is_some_and(|session| !session.preview),
                 key,
                 id: Some(record.id),
                 lane_id: Some(record.lane_id),
@@ -989,9 +997,9 @@ impl Service {
             .lock()
             .await
             .get(&key)
-            .map(|o| (o.session.clone(), o.status.clone()));
+            .map(|o| (o.session.clone(), o.status.clone(), o.preview));
         let result = match existing {
-            Some((session, status)) => match session.history().await {
+            Some((session, status, preview)) => match session.history().await {
                 Ok(history) => {
                     // Taken after the history, so nothing asked meanwhile
                     // is missed; the UI drops what it already has by id.
@@ -1000,6 +1008,7 @@ impl Service {
                         key: key.clone(),
                         history,
                         unguarded_tools: session.unguarded_tools(),
+                        preview,
                         status,
                         replay,
                     })
@@ -1018,12 +1027,44 @@ impl Service {
                         resume: Some(locator),
                         lane: None,
                         read_only: false,
+                        preview: false,
                         instructions: None,
                     };
                     self.start(&key, launch, None).await
                 }
             },
         };
+        drop(guard);
+        result
+    }
+
+    /// Opens an earlier lane session's history without stopping its live
+    /// session. The preview has no writing tools; sending a message resumes it.
+    pub async fn preview(&self, key: &str) -> ServiceResult<OpenedSession> {
+        let id = panoptes_id(key).ok_or_else(|| only_in_a_lane("previewed"))?;
+        let guard = self.lifecycle(key).await;
+        let existing = self
+            .open
+            .lock()
+            .await
+            .get(key)
+            .map(|o| (o.session.clone(), o.status.clone(), o.preview));
+        if let Some((session, status, preview)) = existing {
+            let history = session.history().await.map_err(err)?;
+            let (status, replay) = status.lock().unwrap().snapshot(now_ms());
+            return Ok(OpenedSession {
+                key: key.to_string(),
+                history,
+                unguarded_tools: session.unguarded_tools(),
+                preview,
+                status,
+                replay,
+            });
+        }
+        let mut launch = self.recorded_launch(id).await?;
+        launch.read_only = true;
+        launch.preview = true;
+        let result = self.start(key, launch, None).await;
         drop(guard);
         result
     }
@@ -1048,6 +1089,7 @@ impl Service {
             // An archived lane has no worktree to edit; its session stays
             // readable without editing tools.
             read_only: !active,
+            preview: false,
             instructions: record.instructions,
         })
     }
@@ -1075,7 +1117,7 @@ impl Service {
             .lock()
             .await
             .iter()
-            .find(|(_, session)| session.lane == Some(lane_id))
+            .find(|(_, session)| session.lane == Some(lane_id) && !session.preview)
             .map(|(key, _)| key.clone());
         let _guard = match &current {
             Some(key) => Some(self.lifecycle(key).await),
@@ -1091,7 +1133,7 @@ impl Service {
             }
             let now = open
                 .iter()
-                .find(|(_, session)| session.lane == Some(lane_id))
+                .find(|(_, session)| session.lane == Some(lane_id) && !session.preview)
                 .map(|(key, _)| key.clone());
             if now != current {
                 return Err(ServiceError::new(
@@ -1115,14 +1157,26 @@ impl Service {
                 None => None,
             }
         };
-        Ok(match removed {
+        let stopped = match removed {
             Some((key, session)) => {
                 self.log.record("sessionClosed", json!({"key": key}));
                 session.session.shutdown().await;
                 Some(key)
             }
             None => None,
-        })
+        };
+        let previews: Vec<String> = self
+            .open
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, session)| session.lane == Some(lane_id) && session.preview)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in previews {
+            self.close(&key).await;
+        }
+        Ok(stopped)
     }
 
     /// Stops the lane's current process and starts a fresh conversation record
@@ -1133,7 +1187,7 @@ impl Service {
             .lock()
             .await
             .iter()
-            .find(|(_, session)| session.lane == Some(lane_id))
+            .find(|(_, session)| session.lane == Some(lane_id) && !session.preview)
             .and_then(|(key, _)| panoptes_id(key));
         let (harness, instructions) = self
             .with_store(move |store| {
@@ -1176,7 +1230,12 @@ impl Service {
             .await
             .map_err(err)?;
         let key = panoptes_key(session_id);
-        let already_open = self.open.lock().await.contains_key(&key);
+        let already_open = self
+            .open
+            .lock()
+            .await
+            .get(&key)
+            .is_some_and(|session| !session.preview);
         if !already_open {
             self.stop_for_lane_change(lane_id).await?;
         }
@@ -1323,6 +1382,7 @@ impl Service {
             resume: None,
             lane: Some(lane.id),
             read_only: false,
+            preview: false,
             instructions,
         };
         let result = self.start(&panoptes_key(id), launch, None).await;
@@ -1350,7 +1410,25 @@ impl Service {
             Some(lane) => Some(self.lane_lifecycle(lane).await),
             None => None,
         };
+        if launch.preview {
+            // Keep one preview per lane, alongside its one live session. The
+            // lane start lock keeps two quick preview clicks from overlapping.
+            let previous: Vec<String> = self
+                .open
+                .lock()
+                .await
+                .iter()
+                .filter(|(other, session)| {
+                    other.as_str() != key && session.lane == launch.lane && session.preview
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in previous {
+                self.close(&key).await;
+            }
+        }
         if let Some(lane) = launch.lane
+            && !launch.preview
             && self
                 .open
                 .lock()
@@ -1475,6 +1553,7 @@ impl Service {
                     session,
                     status,
                     lane: launch.lane,
+                    preview: launch.preview,
                 },
             );
             (now, replay)
@@ -1483,6 +1562,7 @@ impl Service {
             key: key.to_string(),
             history,
             unguarded_tools,
+            preview: launch.preview,
             status: now,
             replay,
         })
@@ -2921,6 +3001,32 @@ mod tests {
         let requests = f.harness.requests.lock().unwrap().clone();
         assert_eq!(requests.last().unwrap().resume.as_deref(), Some("new-1"));
         assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn previewing_an_earlier_session_keeps_the_live_one_until_resume() {
+        let f = fixture(FakeHarness::default());
+        let (_code, lane) = lane_of(&f).await;
+        let first = f.service.create(lane.id, "fake").await.unwrap();
+        let first_id = panoptes_id(&first.key).unwrap();
+        let second = f.service.replace_lane_session(lane.id).await.unwrap();
+
+        let preview = f.service.preview(&first.key).await.unwrap();
+        assert!(preview.preview);
+        assert_eq!(preview.history, first.history);
+        assert!(f.service.history(&second.key).await.is_ok());
+        assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 2);
+        assert_eq!(f.harness.read_only(), [false, false, true]);
+
+        let resumed = f
+            .service
+            .resume_lane_session(lane.id, first_id)
+            .await
+            .unwrap();
+        assert!(!resumed.preview);
+        assert!(f.service.history(&second.key).await.is_err());
+        assert_eq!(f.harness.live.now.load(Ordering::SeqCst), 1);
+        assert_eq!(f.harness.read_only(), [false, false, true, false]);
     }
 
     #[tokio::test]
