@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 
-use super::TemporaryFile;
+use super::checkpoint::TemporaryFile;
 use crate::git::{LANE_GIT_TIMEOUT, command_failed, git_path, ref_exists, run, run_index};
 use crate::store::{Lane, Project};
 

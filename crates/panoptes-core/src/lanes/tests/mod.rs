@@ -1,5 +1,11 @@
+use super::archive::remove_worktree;
+use super::checkpoint::checkpoint;
+use super::inspect::worktree_status;
 use super::*;
-use crate::store::{LaneState, LaneWorktree, ProjectSettings};
+use crate::git::{git_path, ref_exists};
+use crate::store::{Lane, LaneState, LaneWorktree, NewLane, Project, ProjectSettings};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 mod archive;
 mod create;
