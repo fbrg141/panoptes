@@ -3,18 +3,17 @@
 //! archive choices that keep uncommitted work recoverable.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::git::{
+    LANE_GIT_TIMEOUT, checked_stdout, command_failed, git_path, ref_exists, run, run_index,
+};
 use crate::store::{Lane, LaneWorktree, NewLane, NewLaneWorktree, Project};
-
-/// Large worktrees can legitimately take a while to snapshot or archive.
-/// Keep those operations bounded without applying the diff reader's 30 s limit.
-const LANE_GIT_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1046,66 +1045,6 @@ impl Drop for TemporaryFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
-}
-
-fn git_path(cwd: &Path, name: &str) -> anyhow::Result<PathBuf> {
-    let path = PathBuf::from(run(cwd, &["rev-parse", "--git-path", name])?);
-    Ok(if path.is_absolute() {
-        path
-    } else {
-        cwd.join(path)
-    })
-}
-
-fn ref_exists(repo: &Path, reference: &str) -> anyhow::Result<bool> {
-    let output = git(repo, &["show-ref", "--verify", "--quiet", reference])?;
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(command_failed("git show-ref", &output)),
-    }
-}
-
-fn run(cwd: &Path, args: &[&str]) -> anyhow::Result<String> {
-    checked_stdout("git", git(cwd, args)?)
-}
-
-fn run_index(cwd: &Path, index: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let mut command = crate::git::command();
-    command
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_INDEX_FILE", index);
-    let output = crate::git::output_with_timeout(&mut command, None, LANE_GIT_TIMEOUT)
-        .with_context(|| format!("Could not run git {}", args.join(" ")))?;
-    checked_stdout("git", output)
-}
-
-fn git(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
-    let mut command = crate::git::command();
-    command.arg("-C").arg(cwd).args(args);
-    crate::git::output_with_timeout(&mut command, None, LANE_GIT_TIMEOUT)
-        .with_context(|| format!("Could not run git {}", args.join(" ")))
-}
-
-fn checked_stdout(description: &str, output: Output) -> anyhow::Result<String> {
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(command_failed(description, &output))
-    }
-}
-
-fn command_failed(description: &str, output: &Output) -> anyhow::Error {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = if stderr.trim().is_empty() {
-        stdout.trim()
-    } else {
-        stderr.trim()
-    };
-    anyhow::anyhow!("{description} failed ({}): {detail}", output.status)
 }
 
 #[cfg(test)]
