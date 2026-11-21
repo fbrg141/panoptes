@@ -12,7 +12,7 @@ Read [docs/decisions.md](docs/decisions.md) for why it is built this way.
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
 | `crates/panoptes-core` | The backend with no UI dependency |
 | `crates/panoptes-app` | The GPUI app: `backend.rs` runs the service on tokio, `store.rs` holds the app state, `model/` the pure logic (tested), `ds.rs` the design system's components, and `views/` render |
-| `crates/panoptes-core/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
+| `crates/panoptes-core/src/service/` | The `Service` facade: open sessions (one process each), event forwarding, and the only user of the store |
 | `crates/panoptes-core/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
 | `crates/panoptes-core/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
 | `crates/panoptes-core/src/changes.rs` | Read-only tree diffs: lane file lists, totals and lazily loaded hunks |
@@ -71,7 +71,8 @@ use that the observation log records ([backlog](docs/backlog.md#intake-until-the
   Debug builds use their own store (`<app data>/dev`) and lanes folder
   (`~/Panoptes/dev/lanes`), so a step can be reworked freely until it ships.
 - **One process per open session.** Open, create, close and adopt each hold
-  the session key's lifecycle lock in `Service`, so a process never starts
+  the session key's lifecycle lock in `service/registry.rs` (whose doc
+  records the lock order), so a process never starts
   while another for the same session is starting or shutting down. Never
   start a second process on a session that is already open.
 - **Style only through the design system.** Use its components in `ds.rs`
