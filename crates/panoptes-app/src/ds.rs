@@ -403,7 +403,13 @@ impl RenderOnce for Button {
                     .border_color(hover_border)
             });
             if let Some(handler) = self.on_click {
-                el = el.on_click(move |event, window, cx| handler(event, window, cx));
+                // A button often sits over a clickable row (a lane's or a
+                // session's actions menu). Its click is the button's alone,
+                // so it must not also reach the row underneath and open it.
+                el = el.on_click(move |event, window, cx| {
+                    cx.stop_propagation();
+                    handler(event, window, cx)
+                });
             }
         }
         if let Some(tip) = self.tooltip {
