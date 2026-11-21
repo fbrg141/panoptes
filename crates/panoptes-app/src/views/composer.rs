@@ -50,6 +50,8 @@ pub enum ComposerEvent {
         prompt: String,
         images: Vec<ImageAttachment>,
     },
+    /// The prompt was not accepted and its draft was restored.
+    SendFailed,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -411,6 +413,7 @@ impl Composer {
             // process exited, it may still have arrived, and the error says
             // to check first.
             let _ = this.update_in(cx, |this, window, cx| {
+                cx.emit(ComposerEvent::SendFailed);
                 let current = Draft {
                     text: this.text(cx),
                     attachments: this.attachments.clone(),
@@ -533,7 +536,10 @@ impl Render for Composer {
             self.text(cx).trim().is_empty() && self.attachments.is_empty()
         };
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
-        let placeholder = if busy {
+        let preview = state.previews.contains(&self.key);
+        let placeholder = if preview {
+            "Send a message to resume this session"
+        } else if busy {
             "Steer the agent, \u{2325}\u{21b5} to queue for after"
         } else {
             "Message the agent, @ for files, / for commands"
