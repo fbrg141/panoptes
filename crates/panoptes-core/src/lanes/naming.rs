@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::git::ref_exists;
 
 /// Filesystem-safe lane names are also used in branch names and paths.
-pub fn slug(task: &str) -> String {
+pub(crate) fn slug(task: &str) -> String {
     let mut slug = String::new();
     let mut dash = false;
     for character in task.chars() {
