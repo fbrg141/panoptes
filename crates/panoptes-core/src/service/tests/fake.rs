@@ -165,6 +165,9 @@ pub(super) struct Fixture {
     pub(super) service: Arc<Service>,
     pub(super) harness: Arc<FakeHarness>,
     pub(super) events: Arc<std::sync::Mutex<Vec<SessionEvent>>>,
+    /// Woken whenever an event is emitted, so a test can wait for one
+    /// rather than sleep for how long it usually takes.
+    pub(super) emitted: Arc<tokio::sync::Notify>,
     pub(super) _dir: tempfile::TempDir,
 }
 
@@ -173,23 +176,51 @@ pub(super) fn fixture(harness: FakeHarness) -> Fixture {
     let harness = Arc::new(harness);
     let events: Arc<std::sync::Mutex<Vec<SessionEvent>>> = Arc::default();
     let sink = events.clone();
+    let emitted: Arc<tokio::sync::Notify> = Arc::default();
+    let wake = emitted.clone();
     let service = Service::new(
         vec![harness.clone()],
         Store::open(dir.path()).unwrap(),
         dir.path().join("lanes"),
-        Arc::new(move |event| sink.lock().unwrap().push(event)),
+        Arc::new(move |event| {
+            sink.lock().unwrap().push(event);
+            // `notify_one` keeps a permit when nothing is waiting, so an
+            // event emitted before a test starts waiting is not lost.
+            wake.notify_one();
+        }),
     )
     .with_event_log(EventLog::open(&dir.path().join("logs")));
     Fixture {
         service: Arc::new(service),
         harness,
         events,
+        emitted,
         _dir: dir,
     }
 }
 
 pub(super) async fn settle() {
     tokio::time::sleep(Duration::from_millis(20)).await;
+}
+
+/// Waits until an emitted event matches `wanted`, which is a real sync
+/// point rather than a guess at how long a step takes.
+pub(super) async fn wait_for_event(
+    f: &Fixture,
+    what: &str,
+    wanted: impl Fn(&SessionEvent) -> bool,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let woken = f.emitted.notified();
+        if f.events.lock().unwrap().iter().any(&wanted) {
+            return;
+        }
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::timeout(left, woken)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
 }
 
 pub(super) fn exits(fixture: &Fixture) -> usize {
