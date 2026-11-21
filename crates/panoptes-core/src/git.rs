@@ -1,6 +1,7 @@
 //! Bounded, blocking process execution for Git calls made on worker threads.
 
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -156,6 +157,73 @@ fn stop_group(child: &mut std::process::Child) {
     {
         let _ = child.kill();
     }
+}
+
+// Lane operations: helpers that run git in a worktree with the longer
+// lane timeout.
+
+/// Large worktrees can legitimately take a while to snapshot or archive.
+/// Keep those operations bounded without applying the diff reader's 30 s limit.
+pub(crate) const LANE_GIT_TIMEOUT: Duration = Duration::from_secs(600);
+
+pub(crate) fn git_path(cwd: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    let path = PathBuf::from(run(cwd, &["rev-parse", "--git-path", name])?);
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    })
+}
+
+pub(crate) fn ref_exists(repo: &Path, reference: &str) -> anyhow::Result<bool> {
+    let output = git(repo, &["show-ref", "--verify", "--quiet", reference])?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(command_failed("git show-ref", &output)),
+    }
+}
+
+pub(crate) fn run(cwd: &Path, args: &[&str]) -> anyhow::Result<String> {
+    checked_stdout("git", git(cwd, args)?)
+}
+
+pub(crate) fn run_index(cwd: &Path, index: &Path, args: &[&str]) -> anyhow::Result<String> {
+    let mut command = command();
+    command
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .env("GIT_INDEX_FILE", index);
+    let output = output_with_timeout(&mut command, None, LANE_GIT_TIMEOUT)
+        .with_context(|| format!("Could not run git {}", args.join(" ")))?;
+    checked_stdout("git", output)
+}
+
+pub(crate) fn git(cwd: &Path, args: &[&str]) -> anyhow::Result<Output> {
+    let mut command = command();
+    command.arg("-C").arg(cwd).args(args);
+    output_with_timeout(&mut command, None, LANE_GIT_TIMEOUT)
+        .with_context(|| format!("Could not run git {}", args.join(" ")))
+}
+
+pub(crate) fn checked_stdout(description: &str, output: Output) -> anyhow::Result<String> {
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(command_failed(description, &output))
+    }
+}
+
+pub(crate) fn command_failed(description: &str, output: &Output) -> anyhow::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    anyhow::anyhow!("{description} failed ({}): {detail}", output.status)
 }
 
 #[cfg(test)]

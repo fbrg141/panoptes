@@ -3,19 +3,18 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::input::{Enter, InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::ds::{self, Button, Type as _, icon};
-use crate::model::composer::continue_list;
+use crate::model::composer::LaneRequest;
 use crate::model::picker::{
     DEFAULT_CHOICE, borrowed_models, model_groups, profile_groups, short_model_id, thinking_groups,
 };
 use crate::store::{AppStore, SessionOptions};
 use crate::theme::PaletteExt as _;
 use crate::ui::Ui;
+use crate::views::composer::{Composer, ComposerEvent};
 use crate::views::picker::{Picker, PickerEvent, PickerState};
 use crate::zoom::px;
 
@@ -23,7 +22,7 @@ pub struct NewLane {
     project_id: i64,
     store: Entity<AppStore>,
     ui: Entity<Ui>,
-    task: Entity<TextareaState>,
+    composer: Entity<Composer>,
     main_checkout: bool,
     model: String,
     thinking: String,
@@ -45,22 +44,23 @@ impl NewLane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let task = cx.new(|cx| {
-            let mut state = TextareaState::new(window, cx)
-                .placeholder("What should Pi do? e.g. Fix login redirects")
-                .auto_grow(1, 10);
-            if let Some(prompt) = &prompt {
-                state.set_value(prompt.clone(), window, cx);
-            }
-            state
-        });
-        cx.subscribe(&task, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
+        let cwd = store
+            .read(cx)
+            .state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.repo.clone())
+            .unwrap_or_default();
+        let composer =
+            cx.new(|cx| Composer::new_lane(cwd, prompt, store.clone(), ui.clone(), window, cx));
+        cx.subscribe(&composer, |this, _, event, cx| {
+            if let ComposerEvent::CreateLane(request) = event {
+                this.submit(request.clone(), cx);
             }
         })
         .detach();
-        let focus = task.read(cx).focus_handle(cx);
+        let focus = composer.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let picker = |label: &str, window: &mut Window, cx: &mut Context<Self>| {
             let focus = focus.clone();
@@ -116,7 +116,7 @@ impl NewLane {
             project_id,
             store,
             ui,
-            task,
+            composer,
             main_checkout: false,
             model: DEFAULT_CHOICE.into(),
             thinking: DEFAULT_CHOICE.into(),
@@ -154,26 +154,24 @@ impl NewLane {
         cx.notify();
     }
 
-    fn text(&self, cx: &App) -> String {
-        self.task.read(cx).value().trim().to_string()
-    }
-
-    fn submit(&mut self, cx: &mut Context<Self>) {
-        let text = self.text(cx);
-        if text.is_empty() || self.busy {
+    fn submit(&mut self, request: LaneRequest, cx: &mut Context<Self>) {
+        if self.busy {
             return;
         }
         self.busy = true;
+        self.composer
+            .update(cx, |composer, cx| composer.set_disabled(true, cx));
         cx.notify();
         let options = SessionOptions {
             model: Some(self.model.clone()).filter(|m| !m.is_empty()),
             thinking: Some(self.thinking.clone()).filter(|t| !t.is_empty()),
             instructions: Some(self.instructions.clone()).filter(|i| !i.is_empty()),
-            prompt: None,
+            prompt: Some(request.prompt),
+            images: request.images,
         };
         let (project_id, main_checkout) = (self.project_id, self.main_checkout);
         let created = self.store.update(cx, |store, cx| {
-            store.create_from_prompt(project_id, text, main_checkout, options, cx)
+            store.create_from_prompt(project_id, request.task, main_checkout, options, cx)
         });
         cx.spawn(async move |this, cx| {
             let created = created.await;
@@ -182,6 +180,8 @@ impl NewLane {
                     this.ui.update(cx, |ui, cx| ui.close(cx));
                 } else {
                     this.busy = false;
+                    this.composer
+                        .update(cx, |composer, cx| composer.set_disabled(false, cx));
                     cx.notify();
                 }
             });
@@ -294,7 +294,6 @@ impl Render for NewLane {
             .iter()
             .find(|p| Some(p.id) == self.profile_id)
             .map(|p| p.name.clone());
-        let empty = self.text(cx).is_empty();
 
         let help = if self.main_checkout {
             "Shares the project's own checkout: no worktree, copied files or setup command. \
@@ -346,8 +345,6 @@ impl Render for NewLane {
         }
 
         let toggle = this.clone();
-        let on_enter = this.clone();
-        let task_focus = self.task.read(cx).focus_handle(cx);
         let footer = ds::overlay_footer(&p)
             .child(ds::option_toggle(
                 "main-checkout",
@@ -397,49 +394,9 @@ impl Render for NewLane {
                     .width(200.)
                     .disabled(busy),
                 )
-            })
-            .child({
-                let submit = this.clone();
-                let button = Button::new("create-lane")
-                    .primary()
-                    .label(if busy {
-                        "Creating lane\u{2026}"
-                    } else {
-                        "Create lane"
-                    })
-                    .disabled(busy || empty)
-                    .on_click(move |_, _, cx| {
-                        let _ = submit.update(cx, |this, cx| this.submit(cx));
-                    });
-                div().ml_auto().child(if busy {
-                    button
-                } else {
-                    button.kbd(vec!["↵"])
-                })
             });
 
         let panel = ds::overlay_panel(560., window, &p)
-            .capture_action(move |action: &Enter, window, cx| {
-                if !task_focus.is_focused(window) {
-                    return;
-                }
-                let _ = on_enter.update(cx, |this, cx| {
-                    if action.shift {
-                        let text = this.task.read(cx).value().to_string();
-                        let range = this.task.read(cx).selected_range();
-                        if let Some(next) = continue_list(&text, range.start, range.end) {
-                            cx.stop_propagation();
-                            this.task.update(cx, |task, cx| {
-                                task.set_value(next.text, window, cx);
-                                task.set_selected_range(next.caret..next.caret, cx);
-                            });
-                        }
-                        return;
-                    }
-                    cx.stop_propagation();
-                    this.submit(cx);
-                });
-            })
             .child(ds::overlay_header(
                 div()
                     .flex()
@@ -474,20 +431,7 @@ impl Render for NewLane {
                     .px(px(16.))
                     .pt(px(4.))
                     .pb(px(16.))
-                    .child(
-                        Textarea::new(&self.task)
-                            .appearance(false)
-                            .disabled(busy)
-                            .xsmall()
-                            .t_heading()
-                            .font_weight(if empty {
-                                FontWeight::NORMAL
-                            } else {
-                                FontWeight::MEDIUM
-                            })
-                            .mx(px(-4.))
-                            .p(px(0.)),
-                    )
+                    .child(self.composer.clone())
                     .child(
                         div()
                             .t_label()

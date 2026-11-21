@@ -192,7 +192,7 @@ check the Open Anyway flow, then attach it to a GitHub release tagged
 |---|---|
 | `crates/panoptes-harness` | The harness-neutral interface: sessions, messages, events, and the `Harness` / `AgentSession` traits |
 | `crates/panoptes-pi` | The Pi adapter: finds `pi`, lists sessions from Pi's session folder, drives `pi --mode rpc` |
-| `crates/panoptes-core` | The backend: `service.rs` (open sessions, event forwarding), `store.rs` (Panoptes' own data in SQLite), lanes, changes and cleanup |
+| `crates/panoptes-core` | The backend: `service/` (open sessions, event forwarding), `store/` (Panoptes' own data in SQLite), lanes, changes and cleanup |
 | `crates/panoptes-app` | The GPUI app: `store.rs` holds its state, `model/` the tested logic, `ds.rs` the design system's components, `views/` renders |
 
 More: [AGENTS.md](AGENTS.md) (contributor and agent guide),
