@@ -92,7 +92,7 @@ use that the observation log records ([backlog](docs/backlog.md#intake-until-the
 ## Before you finish
 
 Run `sh scripts/check.sh`. It runs Rust formatting, clippy (warnings are
-errors) and every test, and the pre-push hook runs it too. `cargo fmt --all`
+errors) and every test; the pre-push hook and CI run it too. `cargo fmt --all`
 fixes formatting.
 
 `sh scripts/smoke.sh` does one real round trip with the installed Pi and

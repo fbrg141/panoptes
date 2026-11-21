@@ -156,7 +156,8 @@ sh scripts/check.sh   # formatting, clippy, all tests
 sh scripts/smoke.sh   # one real round trip with your Pi; fails if the contract broke
 ```
 
-There is no CI. The pre-push hook runs `scripts/check.sh`. That suite only
+CI runs `scripts/check.sh` on every pull request and every push to `main`,
+and the pre-push hook runs it locally. That suite only
 talks to a scripted stand-in for Pi, so run `scripts/smoke.sh` after updating
 Pi or changing the adapter: it needs an installed, logged-in Pi and makes
 one small model call.
