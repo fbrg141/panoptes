@@ -33,9 +33,16 @@ type Pending = Arc<Mutex<Option<HashMap<String, oneshot::Sender<Value>>>>>;
 /// `code` is `None` if it was ended by a signal.
 type ExitState = Option<Option<i32>>;
 
+/// Pi's stdin as a channel: `Some` while it is open. Dropping the sender in
+/// it closes stdin. Whoever holds this cell can write, but only dropping the
+/// sender ends the process's input.
+type StdIn = Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>;
+
 pub struct RpcProcess {
-    /// Dropping the sender closes Pi's stdin, its signal to shut down.
-    stdin: std::sync::Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
+    /// Dropping the sender closes Pi's stdin, its signal to shut down. The
+    /// reader holds the same cell so it can answer a dialog the user already
+    /// allowed; holding the cell, never the sender, keeps the close.
+    stdin: StdIn,
     pending: Pending,
     next_id: AtomicU64,
     /// Sending (or dropping) this kills the process.
@@ -135,6 +142,7 @@ impl RpcProcess {
         let mut stderr = child.stderr.take().context("pi stderr")?;
 
         let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let stdin_tx = Arc::new(std::sync::Mutex::new(Some(stdin_tx)));
         tokio::spawn(async move {
             while let Some(record) = stdin_rx.recv().await {
                 if stdin.write_all(&record).await.is_err() || stdin.flush().await.is_err() {
@@ -183,6 +191,7 @@ impl RpcProcess {
         };
 
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
+        let stdin = stdin_tx.clone();
         {
             let pending = pending.clone();
             let mut exit = exit_rx.clone();
@@ -192,7 +201,7 @@ impl RpcProcess {
                 // inherited the pipe can hold it open, so Pi's exit also
                 // ends the reading, after a moment to drain what is left.
                 tokio::select! {
-                    () = read_stdout(stdout, &pending, &events, mapper) => {}
+                    () = read_stdout(stdout, &pending, &events, mapper, &stdin) => {}
                     () = async {
                         let _ = exited.wait_for(Option::is_some).await;
                         tokio::time::sleep(DRAIN_AFTER_EXIT).await;
@@ -209,7 +218,7 @@ impl RpcProcess {
         }
 
         Ok(Self {
-            stdin: std::sync::Mutex::new(Some(stdin_tx)),
+            stdin: stdin_tx,
             pending,
             next_id: AtomicU64::new(1),
             kill: std::sync::Mutex::new(Some(kill_tx)),
@@ -321,6 +330,7 @@ async fn read_stdout(
     pending: &Pending,
     events: &EventSink,
     mut mapper: EventMapper,
+    stdin: &StdIn,
 ) {
     // Split strictly on LF bytes: U+2028 and U+2029 are valid inside JSON
     // strings and must not end a record.
@@ -351,6 +361,13 @@ async fn read_stdout(
         };
         for event in mapped {
             let _ = events.send(event);
+        }
+        // A dialog the user already allowed is answered without asking; the
+        // response never reaches the UI.
+        for answer in mapper.take_auto_answers() {
+            if let Some(stdin) = stdin.lock().unwrap().as_ref() {
+                let _ = stdin.send(encode(&answer));
+            }
         }
     }
 }

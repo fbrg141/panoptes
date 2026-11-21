@@ -19,7 +19,7 @@ use super::tools::{set_output, tool_call};
 pub struct EventMapper {
     counter: u64,
     current: Option<String>,
-    calls: HashMap<String, ToolCall>,
+    pub(super) calls: HashMap<String, ToolCall>,
     pub(super) shared: Shared,
     /// Prompts waiting in Pi's queue, in delivery order.
     queued: Vec<QueuedPrompt>,

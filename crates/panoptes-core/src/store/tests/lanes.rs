@@ -96,6 +96,9 @@ fn deleting_a_lane_drops_its_sessions_and_frees_its_project() {
         .set_session_tags(session.id, &["keep".into(), "local".into()])
         .unwrap();
     assert_eq!(count(&store, "session_tags"), 2);
+    store
+        .allow_action(&lane_scope(lane.id), "execute: rm -rf build")
+        .unwrap();
 
     store.delete_lane(lane.id).unwrap();
 
@@ -103,6 +106,8 @@ fn deleting_a_lane_drops_its_sessions_and_frees_its_project() {
     assert!(store.sessions().unwrap().is_empty());
     assert_eq!(count(&store, "lane_worktrees"), 0);
     assert_eq!(count(&store, "session_tags"), 0);
+    // A new lane may reuse the id, so its allows go with it.
+    assert_eq!(count(&store, "allowed_actions"), 0);
     store.remove_project(lane.project_id).unwrap();
     assert!(store.projects().unwrap().is_empty());
 }

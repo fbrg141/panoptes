@@ -31,6 +31,18 @@ use migrate::{check, explain, migrate};
 use migrations::{MIGRATIONS, Migration};
 
 const DATABASE: &str = "panoptes.db";
+
+/// What the user allowed is remembered per lane, so every session working in
+/// that worktree inherits it, and per session for a conversation with no
+/// lane.
+pub fn lane_scope(lane: i64) -> String {
+    format!("lane:{lane}")
+}
+
+/// The scope of a conversation that no lane owns.
+pub fn session_scope(key: &str) -> String {
+    format!("session:{key}")
+}
 /// How long to wait for another Panoptes that holds the database.
 const BUSY_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_millis(200)
@@ -60,6 +72,28 @@ impl Store {
         result.with_context(|| format!("Could not load Panoptes data from {}", path.display()))?;
         conn.pragma_update(None, "foreign_keys", true)?;
         Ok(Self { conn })
+    }
+
+    /// What the user allowed for a scope ([`lane_scope`] or
+    /// [`session_scope`]), oldest first.
+    pub fn allowed_actions(&self, scope: &str) -> anyhow::Result<Vec<String>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT subject FROM allowed_actions WHERE scope = ?1 ORDER BY rowid",
+        )?;
+        let subjects = statement
+            .query_map([scope], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(subjects)
+    }
+
+    /// Remembers that the user allowed `subject` in `scope`. Remembering the
+    /// same allow twice changes nothing.
+    pub fn allow_action(&self, scope: &str, subject: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO allowed_actions (scope, subject) VALUES (?1, ?2)",
+            [scope, subject],
+        )?;
+        Ok(())
     }
 
     /// A transaction that takes the write lock at once. Every operation that

@@ -2,7 +2,7 @@ use anyhow::{Context, bail};
 use rusqlite::{OptionalExtension, Transaction};
 use serde::Serialize;
 
-use super::{Store, now_ms};
+use super::{Store, lane_scope, now_ms};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -231,6 +231,11 @@ impl Store {
             bail!("That lane no longer exists");
         }
         tx.execute("DELETE FROM sessions WHERE lane_id = ?1", [id])?;
+        // A new lane may reuse the id, so it must not inherit these.
+        tx.execute(
+            "DELETE FROM allowed_actions WHERE scope = ?1",
+            [lane_scope(id)],
+        )?;
         tx.execute("DELETE FROM lanes WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(())

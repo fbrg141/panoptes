@@ -77,6 +77,9 @@ impl Harness for PiHarness {
             );
         };
         let shared = map::Shared::default();
+        for subject in request.allowed {
+            shared.allow(&subject);
+        }
         let mapper = map::EventMapper::new(shared.clone());
         let process = rpc::RpcProcess::spawn(
             &self.install,
@@ -215,15 +218,31 @@ impl AgentSession for PiSession {
     async fn answer(&self, question_id: String, answer: Answer) -> anyhow::Result<()> {
         // An approval is a confirm or a select underneath; answer in kind.
         let approval = self.shared.take_approval(&question_id);
+        let allowed = match (&answer, approval.as_ref()) {
+            (Answer::Decision { allow }, _) => Some(*allow),
+            // An option picked from a permission dialog allows when it reads
+            // as an allow ("Allow Always").
+            (Answer::Value { value }, Some(reply)) => {
+                reply.options.as_ref().map(|_| map::is_allow(value))
+            }
+            _ => None,
+        };
         let mut response = json!({"type": "extension_ui_response", "id": question_id});
-        match answer {
+        match &answer {
             Answer::Value { value } => response["value"] = json!(value),
             Answer::Confirmed { confirmed } => response["confirmed"] = json!(confirmed),
-            Answer::Decision { allow } => match approval.flatten() {
-                Some((yes, no)) => response["value"] = json!(if allow { yes } else { no }),
-                None => response["confirmed"] = json!(allow),
-            },
+            Answer::Decision { allow } => {
+                let options = approval.as_ref().and_then(|reply| reply.options.clone());
+                response = map::dialog_response(&question_id, &options, *allow);
+            }
             Answer::Cancelled => response["cancelled"] = json!(true),
+        }
+        if let (Some(true), Some(subject)) = (
+            allowed,
+            approval.as_ref().and_then(|reply| reply.subject.clone()),
+        ) {
+            // One allow covers the matching repeats in this session.
+            self.shared.allow(&subject);
         }
         self.process.notify(response)
     }

@@ -261,6 +261,10 @@ pub struct Approval {
     pub tool_call_id: String,
     pub title: String,
     pub message: Option<String>,
+    /// What an allow covers. A later approval with the same subject is the
+    /// same action, so the user's allow can settle it without asking
+    /// again. `None` when the harness cannot name what the dialog is about.
+    pub subject: Option<String>,
     /// When the harness gives up waiting and picks a default, Unix
     /// milliseconds.
     pub expires_at: Option<i64>,
@@ -449,6 +453,10 @@ pub struct StartSession {
     /// Extra instructions for the session, appended to the harness's own
     /// system prompt both when it starts and when its conversation resumes.
     pub instructions: Option<String>,
+    /// Approval subjects ([`Approval::subject`]) the user already allowed
+    /// in this session's lane or session. The harness settles a matching
+    /// approval itself instead of asking again.
+    pub allowed: Vec<String>,
 }
 
 impl StartSession {
@@ -458,6 +466,7 @@ impl StartSession {
             resume: None,
             read_only: false,
             instructions: None,
+            allowed: Vec::new(),
         }
     }
 }

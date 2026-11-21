@@ -144,6 +144,49 @@ async fn a_lane_keeps_session_history_with_only_one_live_process() {
 }
 
 #[tokio::test]
+async fn an_allow_in_a_lane_is_remembered_for_its_next_session() {
+    let f = fixture(FakeHarness::default());
+    let (_code, lane) = lane_of(&f).await;
+    let first = f.service.create(lane.id, "fake").await.unwrap();
+    let sink = f.harness.sinks.lock().unwrap()[0].clone();
+    sink.send(HarnessEvent::Approval {
+        approval: panoptes_harness::Approval {
+            id: "a1".into(),
+            tool_call_id: "c1".into(),
+            title: "Allow?".into(),
+            message: None,
+            subject: Some("execute: rm -rf build".into()),
+            expires_at: None,
+        },
+    })
+    .unwrap();
+    settle().await;
+    f.service
+        .answer(&first.key, "a1".into(), Answer::Decision { allow: true })
+        .await
+        .unwrap();
+
+    // The allow is Panoptes' now, kept for the lane: Pi's own memory goes
+    // with its process.
+    let store = Store::open(f._dir.path()).unwrap();
+    assert_eq!(
+        store
+            .allowed_actions(&crate::store::lane_scope(lane.id))
+            .unwrap(),
+        ["execute: rm -rf build"]
+    );
+    drop(store);
+
+    // A session started in the lane later starts already knowing it.
+    f.service.replace_lane_session(lane.id).await.unwrap();
+    let requests = f.harness.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests.last().unwrap().allowed,
+        ["execute: rm -rf build".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn replacing_a_lane_session_starts_a_fresh_record_in_the_same_worktree() {
     let f = fixture(FakeHarness::default());
     let (_code, lane) = lane_of(&f).await;

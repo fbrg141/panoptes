@@ -51,6 +51,10 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         apply: v8_permission_warning_preference,
         committed: |_| {},
     },
+    Migration {
+        apply: v9_allowed_actions,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -208,6 +212,20 @@ fn v8_permission_warning_preference(tx: &Transaction, _: &Path) -> anyhow::Resul
             permission_warning_dismissed INTEGER NOT NULL DEFAULT 0 CHECK (permission_warning_dismissed IN (0, 1))
         ) STRICT;
         INSERT INTO ui_preferences (singleton) VALUES (1);",
+    )?;
+    Ok(())
+}
+
+/// What the user allowed, so the same action is not asked about again. The
+/// scope is the lane a session works in, or the session itself when it has
+/// no lane; the subject names what the allow covers.
+fn v9_allowed_actions(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE allowed_actions (
+            scope TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            PRIMARY KEY (scope, subject)
+        ) STRICT;",
     )?;
     Ok(())
 }

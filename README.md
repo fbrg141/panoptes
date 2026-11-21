@@ -49,7 +49,8 @@ time. ([Why it's built this way](docs/decisions.md#observe-pi-do-not-orchestrate
   in. Enter steers the agent, Option+Enter queues a follow-up, Esc stops it.
 - **Approvals and questions, answered in place.** Permission prompts and
   questions from Pi extensions (confirm, select, input, editor) appear right
-  above the composer.
+  above the composer. Allow covers the matching repeats: the decision is kept
+  for the lane, so reopening a session does not ask again.
 - **Cost and timing.** Model, tokens, cost and duration for each turn and
   each session.
 - **Safe cleanup.** Archive clean lanes. Commit, stash or save dirty work as a

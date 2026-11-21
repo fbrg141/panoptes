@@ -406,6 +406,7 @@ mod tests {
             tool_call_id: "c1".into(),
             title: "Allow?".into(),
             message: None,
+            subject: Some("execute: rm -rf build".into()),
             expires_at: None,
         };
         let c = fold(&[HarnessEvent::Approval {

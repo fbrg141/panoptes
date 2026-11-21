@@ -337,13 +337,69 @@ async fn approvals_are_tied_to_their_call_and_answered_in_kind() {
         unreachable!()
     };
     assert_eq!(approval.tool_call_id, "call-g");
+    assert_eq!(approval.subject.as_deref(), Some("execute: rm -rf build"));
     session
         .answer(approval.id.clone(), Answer::Decision { allow: false })
         .await
         .unwrap();
     let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
     // The select is answered with its own reject option.
-    assert_eq!(text_of(&events), "gate=No");
+    assert_eq!(text_of(&events), "gate=Reject");
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_allow_covers_the_matching_repeats() {
+    let (session, mut rx) = start().await;
+    session
+        .prompt("gate".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::Approval { .. })).await;
+    let Some(HarnessEvent::Approval { approval }) = events.last() else {
+        unreachable!()
+    };
+    session
+        .answer(approval.id.clone(), Answer::Decision { allow: true })
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    // The lasting option, so the permission system keeps the allow too.
+    assert_eq!(text_of(&events), "gate=Allow Always");
+
+    // The same call again asks nothing: the session remembers the allow.
+    session
+        .prompt("gate".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::Approval { .. })),
+        "the repeat was asked again: {events:?}"
+    );
+    assert_eq!(text_of(&events), "gate=Allow Always");
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_allow_the_lane_remembers_is_not_asked_again() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.allowed = vec!["execute: rm -rf build".into()];
+    let (session, mut rx) = start_with(request).await;
+    session
+        .prompt("gate".into(), Vec::new(), PromptMode::Start)
+        .await
+        .unwrap();
+    let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::Approval { .. })),
+        "an allow from the lane was asked again: {events:?}"
+    );
+    assert_eq!(text_of(&events), "gate=Allow Always");
     session.shutdown().await;
 }
 

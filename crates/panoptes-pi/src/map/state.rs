@@ -1,10 +1,18 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// How to answer an approval: `None` for a confirm dialog, or the select
-/// options that mean allow and reject.
-pub(crate) type ApprovalReply = Option<(String, String)>;
+use serde_json::Value;
+
+/// How to answer one open approval, and what an allow covers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ApprovalReply {
+    /// `None` for a confirm dialog, otherwise the select options that mean
+    /// allow (the lasting one, if the dialog offers a choice) and reject.
+    pub options: Option<(String, String)>,
+    /// The subject the allow is remembered under, when the call names one.
+    pub subject: Option<String>,
+}
 
 /// What the live event stream learns that a session's history needs too,
 /// shared between the [`EventMapper`](super::EventMapper) and the session.
@@ -22,6 +30,13 @@ pub struct SessionState {
     tool_times: Mutex<HashMap<String, (i64, Option<i64>)>>,
     /// How to answer each open approval.
     approvals: Mutex<HashMap<String, ApprovalReply>>,
+    /// Subjects ([`panoptes_harness::Approval::subject`]) the user has
+    /// allowed for this session. A matching approval is settled without
+    /// asking again.
+    allowed: Mutex<HashSet<String>>,
+    /// Responses to dialogs that were settled from `allowed`, waiting to be
+    /// written back to the harness.
+    auto_answers: Mutex<Vec<Value>>,
     /// The ids messages streamed under, by
     /// [`message_key`](super::message::message_key), in the order they
     /// ended. Pi writes the message object it streamed to the session file
@@ -66,6 +81,27 @@ impl SessionState {
 
     pub(super) fn clear_approvals(&self) {
         self.approvals.lock().unwrap().clear();
+    }
+
+    /// Whether the user already allowed `subject` in this session.
+    pub(super) fn is_allowed(&self, subject: &str) -> bool {
+        self.allowed.lock().unwrap().contains(subject)
+    }
+
+    /// Remembers that the user allowed `subject` in this session.
+    pub(crate) fn allow(&self, subject: &str) {
+        self.allowed.lock().unwrap().insert(subject.to_string());
+    }
+
+    /// Keeps a dialog response for the process to write back, because the
+    /// user's allow already settled it.
+    pub(super) fn remember_auto_answer(&self, response: Value) {
+        self.auto_answers.lock().unwrap().push(response);
+    }
+
+    /// The responses to dialogs settled without the user.
+    pub(crate) fn take_auto_answers(&self) -> Vec<Value> {
+        self.auto_answers.lock().unwrap().drain(..).collect()
     }
 
     /// Notes that a message with `key` streamed under `live_id`.
