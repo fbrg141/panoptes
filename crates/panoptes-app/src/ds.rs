@@ -355,10 +355,18 @@ impl RenderOnce for Button {
                 p.error,
             ),
         };
+        // Icon-only ghost buttons change ink, not fill, on hover. An open
+        // menu keeps the active fill so its anchor stays visible.
+        let active_bg = hover_bg;
+        let hover_bg = if self.variant == Variant::Ghost && icon_only {
+            transparent_black()
+        } else {
+            hover_bg
+        };
         let (bg, ink, border) = if self.disabled {
             (transparent_black(), p.ink_faint, p.line)
         } else if self.active {
-            (hover_bg, hover_ink, hover_border)
+            (active_bg, hover_ink, hover_border)
         } else {
             (bg, ink, border)
         };
