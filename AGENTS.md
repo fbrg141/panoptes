@@ -13,7 +13,7 @@ Read [docs/decisions.md](docs/decisions.md) for why it is built this way.
 | `crates/panoptes-core` | The backend with no UI dependency |
 | `crates/panoptes-app` | The GPUI app: `backend.rs` runs the service on tokio, `store.rs` holds the app state, `model/` the pure logic (tested), `ds.rs` the design system's components, and `views/` render |
 | `crates/panoptes-core/src/service.rs` | Open sessions (one process each), event forwarding, and the only user of the store |
-| `crates/panoptes-core/src/store.rs` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
+| `crates/panoptes-core/src/store/` | Panoptes' own data in SQLite: schema version, migrations, backup, pins, projects, lanes, session records, profiles and model-picker preferences |
 | `crates/panoptes-core/src/lanes.rs` | Lane worktree creation and rollback, safe archiving, checkpoints and restoration |
 | `crates/panoptes-core/src/changes.rs` | Read-only tree diffs: lane file lists, totals and lazily loaded hunks |
 | `crates/panoptes-core/src/cleanup.rs` | On-demand worktree disk usage and safe idle-lane suggestions |
@@ -66,7 +66,7 @@ use that the observation log records ([backlog](docs/backlog.md#intake-until-the
   conversation `<harness>:<session id>`. A session record points at its
   harness conversation and never copies it.
 - **Schema changes are migrations.** Append a step to `MIGRATIONS` in
-  `store.rs`; never edit one that has shipped. A store that can't be read or
+  `store/migrations.rs`; never edit one that has shipped. A store that can't be read or
   migrated stops the app with an error, never a silent fresh start.
   Debug builds use their own store (`<app data>/dev`) and lanes folder
   (`~/Panoptes/dev/lanes`), so a step can be reworked freely until it ships.
