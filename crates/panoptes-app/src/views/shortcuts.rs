@@ -5,7 +5,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::ds::{self, CONTROL, KbdTone, RADIUS_SM, Type as _, icon, kbd};
+use crate::ds::{self, CONTROL, RADIUS_SM, Type as _, icon, kbd};
 use crate::model::shortcuts::{filter_shortcuts, shortcut_groups};
 use crate::theme::PaletteExt as _;
 use crate::ui::Ui;
@@ -114,7 +114,7 @@ impl Render for Shortcuts {
                         .rounded(px(RADIUS_SM))
                         .hover(move |s| s.bg(p.selection))
                         .child(div().flex_1().min_w_0().truncate().child(entry.label))
-                        .child(kbd(entry.keys, KbdTone::Normal, &p))
+                        .child(kbd(entry.keys, &p))
                 }))
         };
         // Two columns, filled row by row as the CSS grid does.
