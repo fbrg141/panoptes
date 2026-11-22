@@ -4,6 +4,7 @@ pub mod composer;
 pub mod conversation;
 pub mod diff;
 pub mod format;
+pub mod notify;
 pub mod palette;
 pub mod panes;
 pub mod picker;

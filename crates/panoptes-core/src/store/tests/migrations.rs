@@ -295,6 +295,24 @@ fn a_store_held_by_another_panoptes_is_reported_as_in_use() {
     assert!(!error.contains("not a readable database"), "{error}");
 }
 
+#[test]
+fn a_store_from_before_notifications_starts_with_them_on() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open_with(dir.path(), &MIGRATIONS[..9]).unwrap();
+        store.dismiss_permission_warning().unwrap();
+    }
+
+    let store = Store::open(dir.path()).unwrap();
+    let preferences = store.preferences().unwrap();
+    assert_eq!(
+        preferences.notifications,
+        NotificationPreferences::default()
+    );
+    // The earlier step's own column is untouched.
+    assert!(preferences.permission_warning_dismissed);
+}
+
 /// A store as an earlier build left it, with data in every table that
 /// build had, comes through the later steps unchanged.
 #[test]

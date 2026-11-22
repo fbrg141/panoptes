@@ -31,6 +31,46 @@ pub struct ProfileInput {
     pub instructions: Option<String>,
 }
 
+/// One independently persisted notification switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationField {
+    Enabled,
+    Finished,
+    NeedsAttention,
+}
+
+/// When Panoptes posts a macOS notification about a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationPreferences {
+    /// Post notifications at all.
+    pub enabled: bool,
+    /// When a run finishes (Done).
+    pub finished: bool,
+    /// When a session waits for the user (Waiting).
+    pub needs_attention: bool,
+}
+
+impl Default for NotificationPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            finished: true,
+            needs_attention: true,
+        }
+    }
+}
+
+impl NotificationPreferences {
+    pub fn set(&mut self, field: NotificationField, value: bool) {
+        match field {
+            NotificationField::Enabled => self.enabled = value,
+            NotificationField::Finished => self.finished = value,
+            NotificationField::NeedsAttention => self.needs_attention = value,
+        }
+    }
+}
+
 /// Everything Panoptes adds to session setup and model presentation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +83,7 @@ pub struct Preferences {
     pub cleanup_idle_days: u32,
     /// Machine-local dismissal of the unguarded-tools warning.
     pub permission_warning_dismissed: bool,
+    pub notifications: NotificationPreferences,
 }
 
 impl Store {
@@ -96,10 +137,21 @@ impl Store {
             [],
             |row| row.get(0),
         )?;
-        let permission_warning_dismissed = self.conn.query_row(
-            "SELECT permission_warning_dismissed FROM ui_preferences WHERE singleton = 1",
+        let (permission_warning_dismissed, notifications) = self.conn.query_row(
+            "SELECT permission_warning_dismissed, notify_enabled, notify_finished,
+                    notify_needs_attention
+             FROM ui_preferences WHERE singleton = 1",
             [],
-            |row| row.get(0),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    NotificationPreferences {
+                        enabled: row.get(1)?,
+                        finished: row.get(2)?,
+                        needs_attention: row.get(3)?,
+                    },
+                ))
+            },
         )?;
         Ok(Preferences {
             profiles,
@@ -107,6 +159,7 @@ impl Store {
             hidden_models,
             cleanup_idle_days,
             permission_warning_dismissed,
+            notifications,
         })
     }
 
@@ -193,6 +246,25 @@ impl Store {
         self.conn.execute(
             "UPDATE ui_preferences SET permission_warning_dismissed = 1 WHERE singleton = 1",
             [],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_notification(
+        &self,
+        field: NotificationField,
+        value: bool,
+    ) -> anyhow::Result<()> {
+        // A toggle owns one column. Writing a snapshot of all three would let
+        // a quick second click restore the first click's old value.
+        let column = match field {
+            NotificationField::Enabled => "notify_enabled",
+            NotificationField::Finished => "notify_finished",
+            NotificationField::NeedsAttention => "notify_needs_attention",
+        };
+        self.conn.execute(
+            &format!("UPDATE ui_preferences SET {column} = ?1 WHERE singleton = 1"),
+            [value],
         )?;
         Ok(())
     }

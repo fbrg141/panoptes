@@ -18,7 +18,14 @@ fn profiles_and_model_preferences_survive_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     assert!(!store.preferences().unwrap().permission_warning_dismissed);
+    assert_eq!(
+        store.preferences().unwrap().notifications,
+        NotificationPreferences::default()
+    );
     store.dismiss_permission_warning().unwrap();
+    store
+        .set_notification(NotificationField::Finished, false)
+        .unwrap();
     let input = ProfileInput {
         name: "  Careful  ".into(),
         model_id: Some(" anthropic/claude-sonnet ".into()),
@@ -86,5 +93,39 @@ fn profiles_and_model_preferences_survive_reopening() {
                 },
             )
             .is_err()
+    );
+}
+
+#[test]
+fn notification_settings_survive_reopening() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store
+        .set_notification(NotificationField::Enabled, false)
+        .unwrap();
+    store
+        .set_notification(NotificationField::Finished, false)
+        .unwrap();
+    store
+        .set_notification(NotificationField::NeedsAttention, true)
+        .unwrap();
+    // Changing one switch must not restore a previous snapshot of another.
+    assert_eq!(
+        store.preferences().unwrap().notifications,
+        NotificationPreferences {
+            enabled: false,
+            finished: false,
+            needs_attention: true,
+        }
+    );
+    drop(store);
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        store.preferences().unwrap().notifications,
+        NotificationPreferences {
+            enabled: false,
+            finished: false,
+            needs_attention: true,
+        }
     );
 }

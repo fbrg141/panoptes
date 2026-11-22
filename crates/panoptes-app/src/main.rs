@@ -4,6 +4,7 @@ mod assets;
 mod backend;
 mod ds;
 mod model;
+mod notify;
 mod store;
 mod theme;
 mod ui;

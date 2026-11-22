@@ -55,6 +55,10 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         apply: v9_allowed_actions,
         committed: |_| {},
     },
+    Migration {
+        apply: v10_notification_preferences,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -226,6 +230,21 @@ fn v9_allowed_actions(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
             subject TEXT NOT NULL,
             PRIMARY KEY (scope, subject)
         ) STRICT;",
+    )?;
+    Ok(())
+}
+
+/// Whether Panoptes posts a system notification when a run finishes or a
+/// session needs the user.
+fn v10_notification_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE ui_preferences
+            ADD COLUMN notify_enabled INTEGER NOT NULL DEFAULT 1 CHECK (notify_enabled IN (0, 1));
+         ALTER TABLE ui_preferences
+            ADD COLUMN notify_finished INTEGER NOT NULL DEFAULT 1 CHECK (notify_finished IN (0, 1));
+         ALTER TABLE ui_preferences
+            ADD COLUMN notify_needs_attention INTEGER NOT NULL DEFAULT 1
+                CHECK (notify_needs_attention IN (0, 1));",
     )?;
     Ok(())
 }

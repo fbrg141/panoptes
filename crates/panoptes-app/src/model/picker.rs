@@ -304,6 +304,7 @@ mod tests {
             hidden_models: hidden.iter().map(|s| s.to_string()).collect(),
             cleanup_idle_days: 14,
             permission_warning_dismissed: false,
+            notifications: Default::default(),
         }
     }
 

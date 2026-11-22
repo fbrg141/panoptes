@@ -1,6 +1,6 @@
 use super::error::err;
 use super::{Service, ServiceResult};
-use crate::store::{Preferences, ProfileInput};
+use crate::store::{NotificationField, Preferences, ProfileInput};
 
 impl Service {
     pub async fn preferences(&self) -> ServiceResult<Preferences> {
@@ -56,6 +56,18 @@ impl Service {
             .call(move |store| store.set_model_hidden(&model_id, hidden))
             .await?;
         self.preferences().await
+    }
+
+    /// Changes one notification switch without overwriting the others.
+    pub async fn set_notification(
+        &self,
+        field: NotificationField,
+        value: bool,
+    ) -> ServiceResult<()> {
+        self.store
+            .call(move |store| store.set_notification(field, value))
+            .await
+            .map_err(err)
     }
 
     pub async fn set_cleanup_idle_days(&self, days: u32) -> ServiceResult<Preferences> {
