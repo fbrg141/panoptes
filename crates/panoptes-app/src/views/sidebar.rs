@@ -826,7 +826,9 @@ impl Sidebar {
             .w_full()
             .min_h(px(44.))
             .py(px(4.))
-            .pr(px(8.))
+            // Reserve the full width of the absolutely positioned action
+            // buttons so their hover/open state never covers the label.
+            .pr(px(action_inset(primary, !items.is_empty())))
             .pl(px(if row.expand.is_some() { 32. } else { 4. }))
             .rounded(px(4.))
             .text_color(p.ink)
@@ -992,6 +994,16 @@ impl Sidebar {
                     .children(actions),
             )
             .into_any_element()
+    }
+}
+
+/// Space kept at a session row's right edge for its hover/open actions.
+fn action_inset(primary: bool, menu: bool) -> f32 {
+    let buttons = usize::from(primary) + usize::from(menu);
+    if buttons == 0 {
+        8.
+    } else {
+        8. + buttons as f32 * crate::ds::CONTROL_SM + (buttons - 1) as f32 * 4.
     }
 }
 
@@ -1208,5 +1220,18 @@ impl Render for Sidebar {
             }))
             .child(list)
             .children(menu)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn session_actions_have_room_beside_the_label() {
+        assert_eq!(action_inset(false, false), 8.);
+        assert_eq!(action_inset(true, false), 32.);
+        assert_eq!(action_inset(false, true), 32.);
+        assert_eq!(action_inset(true, true), 60.);
     }
 }
