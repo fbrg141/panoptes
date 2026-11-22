@@ -90,3 +90,32 @@ fn only_unstarted_sessions_are_discarded_and_archived_lanes_take_none() {
     assert!(store.set_session_pinned(999, true).is_err());
     assert!(store.set_session_tags(999, &[]).is_err());
 }
+
+#[test]
+fn an_allow_is_remembered_per_scope_and_only_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store
+        .allow_action(&lane_scope(3), "execute: rm -rf build")
+        .unwrap();
+    store
+        .allow_action(&lane_scope(3), "execute: rm -rf build")
+        .unwrap();
+    store
+        .allow_action(&lane_scope(3), "edit: src/main.rs")
+        .unwrap();
+    store
+        .allow_action(&session_scope("pi:abc"), "execute: git push")
+        .unwrap();
+
+    assert_eq!(
+        store.allowed_actions(&lane_scope(3)).unwrap(),
+        ["execute: rm -rf build", "edit: src/main.rs"]
+    );
+    assert_eq!(
+        store.allowed_actions(&session_scope("pi:abc")).unwrap(),
+        ["execute: git push"]
+    );
+    // Another lane inherits nothing.
+    assert!(store.allowed_actions(&lane_scope(4)).unwrap().is_empty());
+}

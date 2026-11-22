@@ -600,6 +600,7 @@ mod tests {
             tool_call_id: "c2".into(),
             title: "Allow?".into(),
             message: None,
+            subject: Some("execute: rm -rf build".into()),
             expires_at: None,
         };
         let loose = Approval {

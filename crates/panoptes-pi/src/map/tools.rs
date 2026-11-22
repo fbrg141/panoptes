@@ -46,6 +46,34 @@ pub(super) fn tool_call(id: &str, name: &str, args: Value) -> ToolCall {
     }
 }
 
+/// What an allow covers: the kind of call and the whole argument it acts
+/// on. The display subject keeps only the first line (a command's subject is
+/// its first line), which must not key an allow: a longer command that only
+/// starts like the allowed one would be covered too.
+pub(super) fn approval_subject(call: &ToolCall) -> Option<String> {
+    let arg = |key: &str| call.input[key].as_str();
+    let subject = match call.kind {
+        ToolKind::Execute => arg("command"),
+        ToolKind::Edit | ToolKind::Read => arg("path"),
+        ToolKind::Search => arg("pattern"),
+        ToolKind::Other => call.subject.as_deref(),
+    }?;
+    let subject = subject.trim();
+    (!subject.is_empty()).then(|| format!("{}: {subject}", kind_word(call.kind)))
+}
+
+/// The neutral word for a kind of call, so a remembered allow stays readable
+/// and stable across harness versions.
+fn kind_word(kind: ToolKind) -> &'static str {
+    match kind {
+        ToolKind::Read => "read",
+        ToolKind::Edit => "edit",
+        ToolKind::Search => "search",
+        ToolKind::Execute => "execute",
+        ToolKind::Other => "other",
+    }
+}
+
 /// How Pi's `bash` tool reports a non-zero exit, as the last line of its
 /// output.
 const EXIT_PREFIX: &str = "Command exited with code ";

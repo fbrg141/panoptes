@@ -13,7 +13,7 @@ use super::lanes::{is_busy, lane_cwd, lane_session_busy};
 use super::registry::{EarlyExit, Launch, OpenSession, busy_writer};
 use super::status::{Tracker, now_ms};
 use super::{ErrorKind, Service, SessionEvent, SessionUpdate, StatusChanged};
-use crate::store::{Lane, LaneState};
+use crate::store::{Lane, LaneState, lane_scope, session_scope};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -583,11 +583,23 @@ impl Service {
         );
 
         let resumed = launch.resume.is_some();
+        // What this lane, or this conversation, already allowed: the session
+        // settles a matching approval instead of asking again.
+        let scope = match launch.lane {
+            Some(lane) => lane_scope(lane),
+            None => session_scope(key),
+        };
+        let allowed = self
+            .store
+            .call(move |store| store.allowed_actions(&scope))
+            .await
+            .map_err(err)?;
         let request = StartSession {
             cwd: launch.cwd,
             resume: launch.resume,
             read_only: launch.read_only,
             instructions: launch.instructions,
+            allowed,
         };
         let started = async {
             let session: Arc<dyn AgentSession> =

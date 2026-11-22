@@ -1,4 +1,5 @@
 use super::*;
+use crate::map::state::ApprovalReply;
 
 #[test]
 fn dialogs_become_questions_with_a_deadline() {
@@ -40,7 +41,10 @@ fn tagged_permission_dialogs_are_approvals() {
     );
     assert_eq!(
         shared.approvals()["q1"],
-        Some(("Yes".to_string(), "No".to_string()))
+        ApprovalReply {
+            options: Some(("Yes".to_string(), "No".to_string())),
+            subject: Some("execute: rm -rf x".to_string()),
+        }
     );
 
     // The tag names the call, which need not be the last one started.
@@ -53,7 +57,85 @@ fn tagged_permission_dialogs_are_approvals() {
     assert!(
         matches!(&events[..], [HarnessEvent::Approval { approval }] if approval.id == "q2" && approval.tool_call_id == "c1")
     );
-    assert_eq!(shared.approvals()["q2"], None);
+    assert_eq!(
+        shared.approvals()["q2"],
+        ApprovalReply {
+            options: None,
+            subject: Some("execute: rm -rf x".to_string()),
+        }
+    );
+}
+
+#[test]
+fn a_permission_dialog_allows_its_lasting_option() {
+    let (mut mapper, shared) = started();
+    tag(&mut mapper, "c1");
+    let events = mapper.ui_request(
+        &json!({"id":"q1","method":"select","title":"Permission Required",
+            "options":["Allow Once","Allow Always","Reject","Reject with Reason"]}),
+        0,
+    );
+    let [HarnessEvent::Approval { approval }] = events.as_slice() else {
+        panic!("expected an approval, got {events:?}");
+    };
+    assert_eq!(approval.subject.as_deref(), Some("execute: rm -rf x"));
+    // One Allow has to be the lasting one, or the prompt comes back.
+    assert_eq!(
+        shared.approvals()["q1"].options,
+        Some(("Allow Always".to_string(), "Reject".to_string()))
+    );
+}
+
+#[test]
+fn an_allow_already_given_settles_the_dialog_itself() {
+    let (mut mapper, shared) = started();
+    shared.allow("execute: rm -rf x");
+    tag(&mut mapper, "c1");
+    let events = mapper.ui_request(
+        &json!({"id":"q1","method":"select","title":"Permission Required",
+            "options":["Allow Once","Allow Always","Reject","Reject with Reason"]}),
+        0,
+    );
+    assert!(
+        events.is_empty(),
+        "an allowed repeat is not shown: {events:?}"
+    );
+    assert!(shared.approvals().is_empty());
+    assert_eq!(
+        mapper.take_auto_answers(),
+        vec![json!({"type":"extension_ui_response","id":"q1","value":"Allow Always"})]
+    );
+
+    // Only the same action is covered: another command still asks.
+    mapper.map(
+        json!({"type":"tool_execution_start","toolCallId":"c2","toolName":"bash","args":{"command":"rm -rf dist"}}),
+        1,
+    );
+    tag(&mut mapper, "c2");
+    let events = mapper.ui_request(&json!({"id":"q2","method":"confirm","title":"Allow?"}), 2);
+    assert!(matches!(&events[..], [HarnessEvent::Approval { .. }]));
+}
+
+#[test]
+fn an_allow_covers_the_whole_command_not_just_its_first_line() {
+    let shared = Shared::default();
+    shared.allow("execute: git push");
+    let mut mapper = EventMapper::new(shared.clone());
+    // Shown as `git push`, but it runs more than the user allowed.
+    mapper.map(
+        json!({"type":"tool_execution_start","toolCallId":"c1","toolName":"bash",
+            "args":{"command":"git push\nrm -rf build"}}),
+        0,
+    );
+    tag(&mut mapper, "c1");
+    let events = mapper.ui_request(&json!({"id":"q1","method":"confirm","title":"Allow?"}), 0);
+    let [HarnessEvent::Approval { approval }] = events.as_slice() else {
+        panic!("a longer command must still ask, got {events:?}");
+    };
+    assert_eq!(
+        approval.subject.as_deref(),
+        Some("execute: git push\nrm -rf build")
+    );
 }
 
 #[test]

@@ -90,6 +90,17 @@ impl StatusTracker {
         self.update(now)
     }
 
+    /// What the approval `question_id` lets the agent go ahead with, if it
+    /// is about a call the harness could name.
+    pub(super) fn approval_subject(&self, question_id: &str) -> Option<String> {
+        self.asked.iter().find_map(|event| match event {
+            HarnessEvent::Approval { approval } if approval.id == question_id => {
+                approval.subject.clone()
+            }
+            _ => None,
+        })
+    }
+
     pub(super) fn answered(&mut self, question_id: &str, now: i64) -> Option<SessionStatus> {
         self.questions.remove(question_id);
         self.update(now)
@@ -170,10 +181,15 @@ mod tests {
                 tool_call_id: "c1".into(),
                 title: "Allow?".into(),
                 message: None,
+                subject: Some("execute: rm -rf x".into()),
                 expires_at: None,
             },
         };
         assert_eq!(tracker.apply(&approval, 10), Some(SessionStatus::Waiting));
+        assert_eq!(
+            tracker.approval_subject("a1"),
+            Some("execute: rm -rf x".to_string())
+        );
         assert_eq!(tracker.answered("a1", 20), Some(SessionStatus::Running));
     }
 

@@ -281,9 +281,15 @@ Smaller fixes from the backend review, needed by the model above:
    the same as a question a tool asks while it runs, so Panoptes starts Pi
    with a small extension of its own (`crates/panoptes-pi/src/approvals.js`)
    that tags each confirm or select a `tool_call` hook raises with the call's
-   id. The Pi adapter treats a tagged confirm, or a tagged select between one
-   allow and one reject option, as the call's approval, and leaves every
-   other dialog a question.
+   id. The Pi adapter treats a tagged confirm, or a tagged select offering
+   both an allow and a reject option (the permission system asks with
+   "Allow Once", "Allow Always", "Reject" and "Reject with Reason"), as the
+   call's approval, and leaves every other dialog a question. Its allow
+   option is the lasting one, and the approval carries a `subject` naming the
+   action it covers ("execute: rm -rf build"), so one allow settles the
+   matching repeats: the adapter answers them itself, and the service keeps
+   the subject per lane, or per conversation when no lane owns it, so a
+   reopened session does not ask again.
 5. **Stable message ids and images.** Done in #26: a message keeps the id it
    streamed under while the session is open (the Pi adapter finds each
    history entry's live id by the message's role and timestamp), the harness

@@ -8,6 +8,7 @@ use super::error::{err, not_open, only_in_a_lane};
 use super::key::panoptes_id;
 use super::status::now_ms;
 use super::{Service, ServiceResult, SessionEvent, SessionUpdate, StatusChanged};
+use crate::store::{lane_scope, session_scope};
 
 impl Service {
     pub async fn history(&self, key: &str) -> ServiceResult<Vec<Message>> {
@@ -131,17 +132,36 @@ impl Service {
         question_id: String,
         answer: Answer,
     ) -> ServiceResult<()> {
-        let (session, status) = self
+        let (session, status, lane) = self
             .registry
             .open()
             .await
             .get(key)
-            .map(|open| (open.session.clone(), open.status.clone()))
+            .map(|open| (open.session.clone(), open.status.clone(), open.lane))
             .ok_or_else(not_open)?;
+        // What an allow covers, read before the answer clears it from the
+        // tracker's waiting list.
+        let allowed = match answer {
+            Answer::Decision { allow: true } => {
+                status.lock().unwrap().approval_subject(&question_id)
+            }
+            _ => None,
+        };
         session
             .answer(question_id.clone(), answer)
             .await
             .map_err(err)?;
+        if let Some(subject) = allowed {
+            let scope = approval_scope(key, lane);
+            let remembered = subject.clone();
+            self.store
+                .call(move |store| store.allow_action(&scope, &remembered))
+                .await
+                .map_err(err)?;
+            // The subject names a command or a file, so it stays out of the
+            // log: that one records what happened, never what was said.
+            self.log.record("allowed", json!({"key": key}));
+        }
         self.log
             .record("answered", json!({"key": key, "id": question_id}));
         let mut tracker = status.lock().unwrap();
@@ -154,5 +174,15 @@ impl Service {
             });
         }
         Ok(())
+    }
+}
+
+/// Where an allow in this session is remembered: its lane, so every session
+/// working in the same worktree inherits it, or the conversation itself when
+/// no lane owns it.
+fn approval_scope(key: &str, lane: Option<i64>) -> String {
+    match lane {
+        Some(lane) => lane_scope(lane),
+        None => session_scope(key),
     }
 }
