@@ -103,7 +103,19 @@ async fn a_lane_cannot_be_archived_while_its_session_starts() {
         let service = service.clone();
         async move { service.create(lane.id, "fake").await }
     });
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    // The session is listed as starting, which is exactly what archiving
+    // and deleting have to see. The start then sits in the harness for
+    // its process, so this window is real and not a guess.
+    wait_for_event(&f, "the lane's session to start", |event| {
+        event.key.starts_with("panoptes:")
+            && matches!(
+                event.event,
+                SessionUpdate::Status(StatusChanged {
+                    status: SessionStatus::Idle
+                })
+            )
+    })
+    .await;
     assert!(service.archive_lane(lane.id, None).await.is_err());
     assert!(service.delete_lane(lane.id).await.is_err());
     creating.await.unwrap().unwrap();
