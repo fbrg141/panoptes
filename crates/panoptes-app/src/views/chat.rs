@@ -18,7 +18,7 @@ use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::Ui;
 use crate::views::cards::{QuestionField, approval_card, question_card};
 use crate::views::composer::{Composer, ComposerEvent};
-use crate::views::turn::{Ctx, OnCopy, OnToggle, OnUnclamp, ViewState, turn_view};
+use crate::views::turn::{Ctx, OnCopy, OnImageClick, OnToggle, OnUnclamp, ViewState, turn_view};
 use crate::zoom::px;
 
 /// Turns rendered at first; earlier ones load on request.
@@ -36,7 +36,7 @@ pub struct ChatPane {
     scroll: ScrollHandle,
     view: ViewState,
     shown: usize,
-    /// Follow new output while at the bottom; stop once scrolled up.
+
     pinned: bool,
     /// How many messages the transcript had when last drawn.
     seen: usize,
@@ -391,6 +391,12 @@ impl Render for ChatPane {
         };
         let (card_store, card_key) = (self.store.clone(), self.key.clone());
         let approval = |a: &Approval| approval_card(a, false, &card_key, &card_store, &p);
+        let on_image: OnImageClick = {
+            let ui = self.ui.clone();
+            Arc::new(move |image, cx| {
+                ui.update(cx, |ui, cx| ui.show_image(image, cx));
+            })
+        };
         let ctx = Ctx {
             p: &p,
             view: &self.view,
@@ -398,6 +404,7 @@ impl Render for ChatPane {
             on_toggle,
             on_unclamp,
             on_copy,
+            on_image,
             approval: &approval,
             sent_turn: self.sent_turn.as_deref(),
         };

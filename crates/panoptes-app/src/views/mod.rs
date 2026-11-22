@@ -4,6 +4,7 @@ pub mod cards;
 pub mod chat;
 pub mod cleanup;
 pub mod composer;
+pub mod image_zoom;
 pub mod jump;
 pub mod lane_dialogs;
 pub mod menu;

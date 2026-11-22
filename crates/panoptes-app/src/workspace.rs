@@ -17,6 +17,7 @@ use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{DraggedSession, Overlay, Ui, split_focused_pane};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
+use crate::views::image_zoom::ImageZoom;
 use crate::views::jump::{Jump, JumpKind};
 use crate::views::lane_dialogs::LaneDialogs;
 use crate::views::new_lane::NewLane;
@@ -585,6 +586,10 @@ impl Render for Workspace {
             )
             .child(self.dialogs.clone())
             .children(self.overlay.as_ref().map(|(_, view)| view.clone()))
+            .children(self.ui.read(cx).image.clone().map(|image| {
+                let ui = self.ui.clone();
+                cx.new(|cx| ImageZoom::new(ui, image, window, cx))
+            }))
             .into_any_element()
     }
 }

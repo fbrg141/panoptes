@@ -8,6 +8,7 @@ use panoptes_core::service::Session;
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, single_pane};
 use crate::model::sidebar::lane_session_to_stop;
 use crate::store::AppStore;
+use crate::views::turn::ZoomedImage;
 
 /// The one overlay the window shows at a time. A second one replaces the
 /// first instead of stacking.
@@ -34,6 +35,10 @@ pub enum Overlay {
 
 pub struct Ui {
     pub overlay: Option<Overlay>,
+    /// An image clicked in the transcript, shown over the window until it is
+    /// closed. Not an [`Overlay`]: those are mutually exclusive, and looking
+    /// at a picture must not close the overlay you came from.
+    pub image: Option<ZoomedImage>,
     pub layout: PaneNode,
     pub focused_pane: String,
 }
@@ -44,6 +49,7 @@ impl Default for Ui {
         let focused_pane = layout.leaves()[0].id.clone();
         Self {
             overlay: None,
+            image: None,
             layout,
             focused_pane,
         }
@@ -53,6 +59,16 @@ impl Default for Ui {
 impl Ui {
     pub fn open(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         self.overlay = Some(overlay);
+        cx.notify();
+    }
+
+    pub fn show_image(&mut self, image: ZoomedImage, cx: &mut Context<Self>) {
+        self.image = Some(image);
+        cx.notify();
+    }
+
+    pub fn close_image(&mut self, cx: &mut Context<Self>) {
+        self.image = None;
         cx.notify();
     }
 
