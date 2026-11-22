@@ -1,83 +1,41 @@
-//! Posting a [`Notice`] to macOS.
-//!
-//! `osascript` shows it as Panoptes' own script notification, without a
-//! bundle identifier or a notification permission prompt, and it works for a
-//! `cargo run` binary as well as the packaged app. The command is built and
-//! tested as a string so the escaping is not a matter of trust.
+//! Native system notifications, identified by the session they open.
 
-use std::process::{Command, Stdio};
+use gpui_kit::{App, SystemNotification};
 
 use crate::model::notify::Notice;
 
-/// Shows `notice`, if the platform lets us. A notification is a nicety: a
-/// missing `osascript` must never interrupt a session.
-pub fn post(notice: &Notice) {
-    if let Ok(mut child) = Command::new("osascript")
-        .arg("-e")
-        .arg(script(notice))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        // Dropping a Child does not reap it. Notifications are rare, so a
-        // small detached waiter keeps a long-running app free of zombies.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
+/// Builds a notification whose tag takes a click back to this session.
+fn request(key: &str, notice: &Notice) -> SystemNotification {
+    SystemNotification {
+        tag: key.to_string().into(),
+        title: notice.title.clone().into(),
+        body: notice.body.clone().into(),
+        actions: Vec::new(),
     }
 }
 
-/// The AppleScript that displays `notice`.
-pub fn script(notice: &Notice) -> String {
-    format!(
-        "display notification \"{}\" with title \"{}\"",
-        quoted(&notice.body),
-        quoted(&notice.title)
-    )
-}
-
-/// `text` as the inside of an AppleScript string literal. Notifications put a
-/// line or two of the session into the body, and a session title may well
-/// hold quotes or a backslash.
-fn quoted(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            // The body is one line in a banner; newlines would only be lost.
-            '\n' | '\r' => out.push(' '),
-            '\\' | '"' => {
-                out.push('\\');
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-    }
-    out
+/// Shows `notice` as Panoptes, with macOS's own icon, permission and click
+/// handling. GPUI is a no-op when a bare development binary cannot post.
+pub fn post(key: &str, notice: &Notice, cx: &App) {
+    cx.show_system_notification(request(key, notice));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn notice(title: &str, body: &str) -> Notice {
-        Notice {
-            title: title.into(),
-            body: body.into(),
-        }
-    }
-
     #[test]
-    fn the_script_names_the_title_and_escapes_the_body() {
-        assert_eq!(
-            script(&notice("Run finished", "Fix login")),
-            "display notification \"Fix login\" with title \"Run finished\""
+    fn a_notification_carries_its_session_and_text() {
+        let request = request(
+            "panoptes:42",
+            &Notice {
+                title: "Run finished".into(),
+                body: "Fix login: retry \"auth\"\nnow".into(),
+            },
         );
-        // Quotes and backslashes cannot end the literal early, and a
-        // two-line body stays on one line.
-        assert_eq!(
-            script(&notice("Say \"hi\"", "a \"b\" \\ c\nd")),
-            "display notification \"a \\\"b\\\" \\\\ c d\" with title \"Say \\\"hi\\\"\""
-        );
+        assert_eq!(request.tag, "panoptes:42");
+        assert_eq!(request.title, "Run finished");
+        assert_eq!(request.body, "Fix login: retry \"auth\"\nnow");
+        assert!(request.actions.is_empty());
     }
 }
