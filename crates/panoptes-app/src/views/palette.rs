@@ -6,7 +6,7 @@ use gpui_kit::component::input::{Enter, Input, InputEvent, InputState, MoveDown,
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::ds::{CONTROL, CONTROL_LG, KbdTone, RADIUS_MD, RADIUS_SM, Type as _, icon, kbd};
+use crate::ds::{CONTROL, CONTROL_LG, RADIUS_MD, RADIUS_SM, Type as _, icon, kbd};
 use crate::model::palette::filter_palette;
 pub use crate::model::palette::{PaletteGroup, PaletteItem};
 use crate::theme::{FONT_MONO, Palette, PaletteExt as _};
@@ -83,7 +83,7 @@ fn hint(keys: &[&str], text: &str, p: &Palette) -> Div {
         .flex()
         .items_center()
         .gap(px(6.))
-        .child(kbd(keys, KbdTone::Normal, p))
+        .child(kbd(keys, p))
         .child(text.to_string())
 }
 
@@ -174,9 +174,7 @@ impl Render for CommandPalette {
                                         .child(hint)
                                 })),
                         )
-                        .when(!item.kbd.is_empty(), |el| {
-                            el.child(kbd(&item.kbd, KbdTone::Normal, &p))
-                        })
+                        .when(!item.kbd.is_empty(), |el| el.child(kbd(&item.kbd, &p)))
                         .into_any_element(),
                 );
             }
@@ -242,7 +240,7 @@ impl Render for CommandPalette {
                                 .px(px(0.)),
                         ),
                     )
-                    .child(kbd(&["Esc"], KbdTone::Normal, &p)),
+                    .child(kbd(&["Esc"], &p)),
             )
             .child(
                 div()

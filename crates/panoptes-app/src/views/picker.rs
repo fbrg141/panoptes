@@ -11,7 +11,7 @@ use gpui_kit::component::input::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::ds::{CONTROL, CONTROL_LG, CONTROL_SM, KbdTone, RADIUS_SM, Type as _, icon, kbd, panel};
+use crate::ds::{CONTROL, CONTROL_LG, CONTROL_SM, RADIUS_SM, Type as _, icon, kbd, panel};
 use crate::model::picker::{PickerGroup, filter_picker, initial_pick, pickable};
 use crate::theme::Palette;
 use crate::zoom::px;
@@ -474,6 +474,6 @@ fn hint(keys: &[&str], label: &'static str, p: &Palette) -> Div {
         .flex()
         .items_center()
         .gap(px(6.))
-        .child(kbd(keys, KbdTone::Normal, p))
+        .child(kbd(keys, p))
         .child(label)
 }

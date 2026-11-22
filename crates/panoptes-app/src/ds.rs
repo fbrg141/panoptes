@@ -164,18 +164,9 @@ impl Element for Icon {
 
 // --- Kbd -------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub enum KbdTone {
-    #[default]
-    Normal,
-    OnPrimary,
-}
-
-pub fn kbd(keys: &[&str], tone: KbdTone, p: &Palette) -> Div {
-    let (bg, border, ink) = match tone {
-        KbdTone::Normal => (transparent_black(), p.line, p.ink_muted),
-        KbdTone::OnPrimary => (transparent_black(), p.on_primary, p.on_primary),
-    };
+/// The keys of a shortcut, one small cap each.
+pub fn kbd(keys: &[&str], p: &Palette) -> Div {
+    let (bg, border, ink) = (transparent_black(), p.line, p.ink_muted);
     h_flex_gap(2.).children(keys.iter().map(|k| {
         div()
             .min_w(px(18.))
@@ -227,7 +218,6 @@ pub struct Button {
     icon: Option<&'static str>,
     variant: Variant,
     size: Size,
-    kbd: Option<Vec<&'static str>>,
     disabled: bool,
     active: bool,
     tooltip: Option<SharedString>,
@@ -245,7 +235,6 @@ impl Button {
             icon: None,
             variant: Variant::Secondary,
             size: Size::Md,
-            kbd: None,
             disabled: false,
             active: false,
             tooltip: None,
@@ -285,10 +274,6 @@ impl Button {
     }
     pub fn small(self) -> Self {
         self.size(Size::Sm)
-    }
-    pub fn kbd(mut self, keys: Vec<&'static str>) -> Self {
-        self.kbd = Some(keys);
-        self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
@@ -418,17 +403,6 @@ impl RenderOnce for Button {
         el.children(self.icon.map(|name| icon(name, 16.)))
             .children(self.glyph)
             .children(self.label.map(|l| div().child(l)))
-            .children(self.kbd.map(|keys| {
-                kbd(
-                    &keys,
-                    if self.variant == Variant::Primary {
-                        KbdTone::OnPrimary
-                    } else {
-                        KbdTone::Normal
-                    },
-                    &p,
-                )
-            }))
     }
 }
 

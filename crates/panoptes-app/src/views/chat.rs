@@ -9,7 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_harness::{Answer, Approval, NoticeLevel, SessionStatus};
 
-use crate::ds::{Button, LoopState, Type as _, icon, loop_mark, status_pill};
+use crate::ds::{Button, LoopState, RADIUS_SM, Type as _, icon, loop_mark, status_pill};
 use crate::model::format::now_ms;
 use crate::model::panes::SplitDirection;
 use crate::model::turns::{build_turns, loose_approvals, prompt_count, sent_turn};
@@ -23,6 +23,8 @@ use crate::zoom::px;
 
 /// Turns rendered at first; earlier ones load on request.
 const PAGE: usize = 50;
+/// The shared text-column inset keeps the jump control aligned at any width.
+const TRANSCRIPT_INSET: f32 = 24.;
 const PERMISSION_INSTALL_URL: &str =
     "https://www.npmjs.com/package/pi-permission-system#installation";
 
@@ -484,10 +486,13 @@ impl Render for ChatPane {
                 this.follow_after_scroll();
                 cx.notify();
             }))
-            .px(px(24.))
+            .px(px(TRANSCRIPT_INSET))
             .py(px(24.))
             .child(transcript);
 
+        // The way back to the newest output sits at the text column's right
+        // edge, where it lines up with the transcript instead of floating in
+        // the middle of it. One arrow, with the shortcut in its tooltip.
         let jump = behind.then(|| {
             let this = this.clone();
             div()
@@ -495,23 +500,26 @@ impl Render for ChatPane {
                 .left_0()
                 .right_0()
                 .bottom(px(8.))
+                .px(px(TRANSCRIPT_INSET))
                 .flex()
                 .justify_center()
                 .child(
-                    div()
-                        .rounded(px(4.))
-                        .bg(p.surface_raised)
-                        .shadow(p.shadow_pop())
-                        .child(
-                            Button::new("jump")
-                                .small()
-                                .icon("chevron-down")
-                                .label("Jump to latest")
-                                .kbd(vec!["⌘", "↓"])
-                                .on_click(move |_, _, cx| {
-                                    let _ = this.update(cx, |this, cx| this.scroll_to_end(cx));
-                                }),
-                        ),
+                    div().w_full().max_w(px(768.)).flex().justify_end().child(
+                        div()
+                            .rounded(px(RADIUS_SM))
+                            .bg(p.surface_raised)
+                            .shadow(p.shadow_pop())
+                            .child(
+                                Button::new("jump")
+                                    .small()
+                                    .ghost()
+                                    .tooltip("Jump to latest (\u{2318}\u{2193})")
+                                    .glyph(icon("arrow-up", 16.).rotate(180.))
+                                    .on_click(move |_, _, cx| {
+                                        let _ = this.update(cx, |this, cx| this.scroll_to_end(cx));
+                                    }),
+                            ),
+                    ),
                 )
         });
 
