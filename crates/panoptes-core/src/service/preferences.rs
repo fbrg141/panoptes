@@ -1,6 +1,6 @@
 use super::error::err;
 use super::{Service, ServiceResult};
-use crate::store::{Preferences, ProfileInput};
+use crate::store::{NotificationPreferences, Preferences, ProfileInput};
 
 impl Service {
     pub async fn preferences(&self) -> ServiceResult<Preferences> {
@@ -54,6 +54,17 @@ impl Service {
     ) -> ServiceResult<Preferences> {
         self.store
             .call(move |store| store.set_model_hidden(&model_id, hidden))
+            .await?;
+        self.preferences().await
+    }
+
+    /// Turns the notification settings on or off and returns them.
+    pub async fn set_notifications(
+        &self,
+        notifications: NotificationPreferences,
+    ) -> ServiceResult<Preferences> {
+        self.store
+            .call(move |store| store.set_notifications(&notifications))
             .await?;
         self.preferences().await
     }

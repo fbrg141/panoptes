@@ -1,4 +1,5 @@
-//! Panoptes-only session presets, model-picker presentation and lane cleanup.
+//! Panoptes-only session presets, model-picker presentation, lane cleanup and
+//! notifications.
 
 use std::collections::BTreeSet;
 
@@ -6,7 +7,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use panoptes_core::store::{AgentProfile, ProfileInput};
+use panoptes_core::store::{AgentProfile, NotificationPreferences, ProfileInput};
 use panoptes_harness::ModelInfo;
 
 use crate::ds::{self, Button, RADIUS_MD, Tab, Type as _};
@@ -24,6 +25,7 @@ enum SettingsTab {
     Profiles,
     Models,
     Lanes,
+    Notifications,
 }
 
 /// A profile being written: a new one, or an edit of a saved one.
@@ -745,6 +747,79 @@ impl Settings {
     }
 }
 
+impl Settings {
+    fn notifications_tab(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let notifications = self.store.read(cx).state.preferences.notifications;
+        // Each click re-reads the settings, so two quick toggles cannot
+        // overwrite each other with a stale copy.
+        let toggle = |apply: fn(&mut NotificationPreferences, bool)| {
+            let store = self.store.clone();
+            move |checked: bool, _: &mut Window, cx: &mut App| {
+                let mut next = store.read(cx).state.preferences.notifications;
+                apply(&mut next, checked);
+                store.update(cx, |store, cx| store.set_notifications(next, cx));
+            }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .child(
+                div()
+                    .child(div().t_body_strong().child("System notifications"))
+                    .child(
+                        div()
+                            .mt(px(4.))
+                            .t_label()
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(p.ink_muted)
+                            .child(
+                                "macOS shows a notification when a session in another \
+                                 window or another app needs you. The session you are \
+                                 looking at never notifies, and nothing is sent while \
+                                 notifications are off.",
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(ds::checkbox(
+                        "notify-enabled",
+                        notifications.enabled,
+                        "Show notifications",
+                        Some("Turn every notification off without changing the two below.".into()),
+                        false,
+                        p,
+                        toggle(|notifications, on| notifications.enabled = on),
+                    ))
+                    .child(ds::checkbox(
+                        "notify-finished",
+                        notifications.finished,
+                        "A run finishes",
+                        Some("Tell me when a session reaches Done.".into()),
+                        !notifications.enabled,
+                        p,
+                        toggle(|notifications, on| notifications.finished = on),
+                    ))
+                    .child(ds::checkbox(
+                        "notify-needs-attention",
+                        notifications.needs_attention,
+                        "A session needs me",
+                        Some(
+                            "Tell me when a session reaches Waiting: a question or an approval."
+                                .into(),
+                        ),
+                        !notifications.enabled,
+                        p,
+                        toggle(|notifications, on| notifications.needs_attention = on),
+                    )),
+            )
+    }
+}
+
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *cx.palette();
@@ -784,11 +859,18 @@ impl Render for Settings {
                     icon: Some("git-branch"),
                     count: None,
                 },
+                Tab {
+                    id: "notifications",
+                    label: "Notifications".into(),
+                    icon: Some("circle-check"),
+                    count: None,
+                },
             ],
             match tab {
                 SettingsTab::Profiles => "profiles",
                 SettingsTab::Models => "models",
                 SettingsTab::Lanes => "lanes",
+                SettingsTab::Notifications => "notifications",
             },
             &p,
             {
@@ -798,6 +880,7 @@ impl Render for Settings {
                         this.tab = match id {
                             "models" => SettingsTab::Models,
                             "lanes" => SettingsTab::Lanes,
+                            "notifications" => SettingsTab::Notifications,
                             _ => SettingsTab::Profiles,
                         };
                         this.editor = None;
@@ -811,6 +894,7 @@ impl Render for Settings {
             SettingsTab::Profiles => self.profiles_tab(&models, window, &p, cx),
             SettingsTab::Models => self.models_tab(&models, &p, cx),
             SettingsTab::Lanes => self.lanes_tab(window, &p, cx),
+            SettingsTab::Notifications => self.notifications_tab(&p, cx),
         };
         let panel = ds::overlay_panel(680., window, &p)
             .track_focus(&self.focus)

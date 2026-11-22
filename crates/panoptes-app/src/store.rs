@@ -16,7 +16,7 @@ use panoptes_core::service::{
     AdoptionOutcome, ArchiveLaneOutcome, DeleteLaneOutcome, ErrorKind, LaneNavigation, Listing,
     OpenedSession, Service, ServiceError, Session, SessionEvent, SessionUpdate,
 };
-use panoptes_core::store::{Lane, Preferences, ProfileInput, Project};
+use panoptes_core::store::{Lane, NotificationPreferences, Preferences, ProfileInput, Project};
 use panoptes_harness::{
     Answer, CommandInfo, HarnessEvent, ImageAttachment, ModelInfo, PromptMode, PromptOutcome,
     SessionSettings, SessionStatus,
@@ -25,6 +25,7 @@ use panoptes_harness::{
 use crate::backend::Backend;
 use crate::model::conversation::Conversation;
 use crate::model::format::now_ms;
+use crate::model::notify;
 
 /// What a composer holds: its text, attachments and picked mentions.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -124,6 +125,7 @@ impl Default for State {
                 hidden_models: Vec::new(),
                 cleanup_idle_days: 4,
                 permission_warning_dismissed: false,
+                notifications: NotificationPreferences::default(),
             },
             active_key: None,
             list_errors: Vec::new(),
@@ -143,6 +145,23 @@ impl State {
 
     pub fn session(&self, key: &str) -> Option<&Session> {
         self.sessions.iter().find(|s| s.key == key)
+    }
+
+    /// How a session is named in a notification: its lane, and its title
+    /// when it has one beyond the generic "New session".
+    pub fn session_label(&self, key: &str) -> String {
+        let Some(session) = self.session(key) else {
+            return "A session".into();
+        };
+        let lane = session
+            .lane_id
+            .and_then(|id| self.lanes.iter().find(|lane| lane.id == id))
+            .map(|lane| lane.name.clone());
+        match (lane, session.title.as_str()) {
+            (Some(lane), "New session") => lane,
+            (Some(lane), title) => format!("{lane}: {title}"),
+            (None, title) => title.to_string(),
+        }
     }
 
     fn bump(&mut self, key: &str) -> u64 {
@@ -379,9 +398,43 @@ impl AppStore {
     }
 
     pub fn on_event(&mut self, event: SessionEvent, cx: &mut Context<Self>) {
+        let key = event.key.clone();
+        let status = match &event.event {
+            SessionUpdate::Status(changed) => Some(changed.status),
+            _ => None,
+        };
+        let previous = self.state.statuses.get(&key).copied();
         let effects = self.state.on_event(event);
         self.run_effects(effects, cx);
+        if let Some(status) = status {
+            self.notify_session(&key, previous, status, cx);
+        }
         cx.notify();
+    }
+
+    /// Tells the user about a session, when their notification settings ask
+    /// for it and they are not already looking at that session.
+    fn notify_session(
+        &self,
+        key: &str,
+        previous: Option<SessionStatus>,
+        status: SessionStatus,
+        cx: &mut Context<Self>,
+    ) {
+        // `active_window` is the window the platform has focused, so a user
+        // in another app gets told, and one reading the session does not.
+        let attended =
+            cx.active_window().is_some() && self.state.active_key.as_deref() == Some(key);
+        let label = self.state.session_label(key);
+        if let Some(notice) = notify::notice(
+            previous,
+            status,
+            &self.state.preferences.notifications,
+            attended,
+            &label,
+        ) {
+            crate::notify::post(&notice);
+        }
     }
 
     fn load_settings(&mut self, key: String, cx: &mut Context<Self>) {
@@ -948,6 +1001,17 @@ impl AppStore {
     pub fn set_model_hidden(&mut self, model_id: String, hidden: bool, cx: &mut Context<Self>) {
         let work = self.backend.run("set_model_hidden", move |s| async move {
             s.set_model_hidden(model_id, hidden).await
+        });
+        self.set_preferences(work, cx).detach();
+    }
+
+    pub fn set_notifications(
+        &mut self,
+        notifications: NotificationPreferences,
+        cx: &mut Context<Self>,
+    ) {
+        let work = self.backend.run("set_notifications", move |s| async move {
+            s.set_notifications(notifications).await
         });
         self.set_preferences(work, cx).detach();
     }
