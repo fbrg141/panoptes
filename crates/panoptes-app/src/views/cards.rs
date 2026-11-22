@@ -19,11 +19,22 @@ pub fn expired(expires_at: Option<i64>) -> bool {
 
 fn frame(p: &Palette) -> Div {
     div()
+        .w_full()
+        .min_w_0()
         .rounded(px(RADIUS_MD))
         .border_1()
         .border_color(p.line)
         .bg(p.surface_raised)
         .shadow(p.shadow_pop())
+}
+
+/// Text that must stay inside a card, including long commands and paths.
+fn wrapping_text(text: impl Into<SharedString>) -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .whitespace_normal()
+        .child(text.into())
 }
 
 fn answer(store: &Entity<AppStore>, key: &str, id: &str, answer: Answer, cx: &mut App) {
@@ -54,21 +65,24 @@ pub fn approval_card(
         .child(
             div()
                 .flex()
+                .w_full()
+                .min_w_0()
                 .items_start()
                 .gap(px(8.))
                 .when(pill, |el| el.child(status_pill(SessionStatus::Waiting, p)))
-                .child(div().flex_1().min_w_0().child(approval.title.clone())),
+                .child(wrapping_text(approval.title.clone()).flex_1()),
         )
         .children(
             approval
                 .message
                 .clone()
-                .map(|message| div().mt(px(8.)).text_color(p.ink_muted).child(message)),
+                .map(|message| wrapping_text(message).mt(px(8.)).text_color(p.ink_muted)),
         )
         .child(
             div()
                 .mt(px(12.))
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .justify_end()
                 .gap(px(8.))
@@ -233,16 +247,18 @@ pub fn question_card(
         .child(
             div()
                 .flex()
+                .w_full()
+                .min_w_0()
                 .items_center()
                 .gap(px(8.))
                 .child(status_pill(SessionStatus::Waiting, p))
-                .child(div().t_heading().child(question.title.clone())),
+                .child(wrapping_text(question.title.clone()).flex_1().t_heading()),
         )
         .children(
             question
                 .message
                 .clone()
-                .map(|message| div().mt(px(8.)).text_color(p.ink_muted).child(message)),
+                .map(|message| wrapping_text(message).mt(px(8.)).text_color(p.ink_muted)),
         )
         .children(field_element)
         .child(actions)
@@ -252,6 +268,20 @@ pub fn question_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn cards_constrain_and_wrap_permission_text() {
+        let mut frame = frame(&Palette::load(false));
+        let style = frame.style();
+        assert_eq!(style.size.width, Some(relative(1.).into()));
+        assert_eq!(style.min_size.width, Some(px(0.).into()));
+
+        let mut text = wrapping_text("a long command or path");
+        let style = text.style();
+        assert_eq!(style.size.width, Some(relative(1.).into()));
+        assert_eq!(style.min_size.width, Some(px(0.).into()));
+        assert_eq!(style.text.white_space, Some(WhiteSpace::Normal));
+    }
 
     #[::core::prelude::v1::test]
     fn a_card_without_a_deadline_never_expires() {
