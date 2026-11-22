@@ -94,7 +94,7 @@ pub fn turn_view(turn: &Turn, ctx: &Ctx) -> AnyElement {
             let images = tool_images(&turn.work);
             let id = format!("{}:folded", turn.key);
             let open = ctx.is_open(&id, false);
-            let closed = (!images.is_empty()).then(|| tool_images_row(&images, ctx));
+            let closed = (!images.is_empty()).then(|| tool_images_row(&images, &id, ctx));
             reply.child(disclosure(
                 &id,
                 "history",
@@ -205,14 +205,11 @@ fn prompt_view(turn_key: &str, message: &Message, ctx: &Ctx) -> AnyElement {
         .child(selectable_plain(&id, body))
         .when(clamped, |el| el.child(show_all(&id, lines.len(), ctx)))
         .when(!shown.is_empty(), |el| {
-            el.child(
-                div()
-                    .mt(px(8.))
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .children(shown.iter().map(|(m, d)| thumbnail(m, d, ctx))),
-            )
+            el.child(div().mt(px(8.)).flex().flex_wrap().gap(px(8.)).children(
+                shown.iter().enumerate().map(|(index, (m, d))| {
+                    thumbnail(m, d, &format!("{turn_key}:attachment:{index}"), ctx)
+                }),
+            ))
         })
         .when(hidden > 0, |el| {
             el.child(
@@ -353,11 +350,13 @@ fn step_view(step: &Step, live: bool, ctx: &Ctx) -> AnyElement {
             .child(text.clone())
             .into_any_element(),
         Step::Image {
-            mime_type, data, ..
+            key,
+            mime_type,
+            data,
         } => match data {
             Some(data) => div()
                 .py(px(4.))
-                .child(thumbnail(mime_type, data, ctx))
+                .child(thumbnail(mime_type, data, key, ctx))
                 .into_any_element(),
             None => div()
                 .flex()
@@ -512,7 +511,7 @@ fn tool_call(step: &ToolStep, live: bool, ctx: &Ctx) -> AnyElement {
         .child(row)
         // Images stay in view, like an approval: what the agent saw is the point.
         .when(!call.images.is_empty(), |el| {
-            el.child(tool_images_row(&call.images, ctx))
+            el.child(tool_images_row(&call.images, &step.key, ctx))
         })
         .children(
             step.approval
@@ -740,14 +739,21 @@ fn disclosure(
         .into_any_element()
 }
 
-fn tool_images_row(images: &[ToolImage], ctx: &Ctx) -> AnyElement {
+fn tool_images_row(images: &[ToolImage], scope: &str, ctx: &Ctx) -> AnyElement {
     div()
         .flex()
         .flex_wrap()
         .gap(px(8.))
         .py(px(4.))
         .pl(px(24.))
-        .children(images.iter().map(|i| thumbnail(&i.mime_type, &i.data, ctx)))
+        .children(images.iter().enumerate().map(|(index, image)| {
+            thumbnail(
+                &image.mime_type,
+                &image.data,
+                &format!("{scope}:{index}"),
+                ctx,
+            )
+        }))
         .into_any_element()
 }
 
@@ -781,7 +787,13 @@ pub(crate) fn decoded(mime_type: &str, data: &str) -> Option<Arc<Image>> {
     })
 }
 
-fn thumbnail(mime_type: &str, data: &str, ctx: &Ctx) -> AnyElement {
+/// Interactive state belongs to the image's position, not its bytes: two
+/// identical screenshots in one row must still be separate click targets.
+fn thumbnail_id(scope: &str) -> String {
+    format!("image:{scope}")
+}
+
+fn thumbnail(mime_type: &str, data: &str, scope: &str, ctx: &Ctx) -> AnyElement {
     let p = ctx.p;
     let clicked = ZoomedImage {
         mime_type: mime_type.to_string(),
@@ -789,7 +801,7 @@ fn thumbnail(mime_type: &str, data: &str, ctx: &Ctx) -> AnyElement {
     };
     let on_image = ctx.on_image.clone();
     let frame = div()
-        .id(("image", image_key(data) as usize))
+        .id(thumbnail_id(scope))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             on_image(clicked.clone(), cx)
@@ -988,10 +1000,12 @@ mod tests {
             mime_type: "image/png".into(),
             data: data.into(),
         };
-        // The thumbnail, the decoder cache and the lightbox must agree, or
-        // two calls returning one picture could share a row's click target.
+        // The decoder shares equal bytes, while their element ids stay
+        // distinct because they come from the attachment/tool position.
         assert_eq!(image_key(data), image_key(&image.data));
         assert_ne!(image_key(data), image_key("something else"));
+        assert_ne!(thumbnail_id("call:0"), thumbnail_id("call:1"));
+        assert_eq!(thumbnail_id("call:0"), thumbnail_id("call:0"));
     }
     #[::core::prelude::v1::test]
     fn prompts_keep_their_text_when_escaped() {
