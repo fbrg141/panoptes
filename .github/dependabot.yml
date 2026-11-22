@@ -1,0 +1,22 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      compatible:
+        applies-to: version-updates
+        update-types: [minor, patch]
+        exclude-patterns: [gpui-kit]
+    ignore:
+      # GPUI is pre-1.0 and pinned exactly; upgrade it deliberately.
+      - dependency-name: gpui-kit
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
