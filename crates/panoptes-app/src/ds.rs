@@ -812,6 +812,38 @@ pub fn dialog(
         )
 }
 
+// --- Switch ----------------------------------------------------------------
+
+/// A compact on/off control, with keyboard and accessibility behavior from
+/// GPUI and track colours from the palette.
+pub fn switch(
+    id: impl Into<ElementId>,
+    checked: bool,
+    label: impl Into<SharedString>,
+    p: &Palette,
+    on_change: impl Fn(bool, &mut Window, &mut App) + 'static,
+) -> gpui_kit::base::Switch {
+    gpui_kit::base::Switch::new(id)
+        .checked(checked)
+        .accessibility_label(label)
+        .w(px(32.))
+        .h(px(18.))
+        .p(px(2.))
+        .flex()
+        .flex_none()
+        .rounded(px(9.))
+        .bg(if checked { p.focus } else { p.line_strong })
+        .cursor_pointer()
+        .child(
+            div()
+                .size(px(14.))
+                .rounded(px(7.))
+                .bg(if checked { p.on_focus } else { p.ink_muted })
+                .when(checked, |el| el.ml_auto()),
+        )
+        .on_change(move |checked, _, window, cx| on_change(checked, window, cx))
+}
+
 // --- Checkbox --------------------------------------------------------------
 
 pub fn checkbox(

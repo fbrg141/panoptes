@@ -70,6 +70,20 @@ impl Service {
             .map_err(err)
     }
 
+    pub async fn set_dark_mode(&self, dark: bool) -> ServiceResult<Preferences> {
+        self.store
+            .call(move |store| store.set_dark_mode(dark))
+            .await?;
+        self.preferences().await
+    }
+
+    pub async fn set_font_size(&self, percent: u32) -> ServiceResult<Preferences> {
+        self.store
+            .call(move |store| store.set_font_size(percent))
+            .await?;
+        self.preferences().await
+    }
+
     pub async fn set_cleanup_idle_days(&self, days: u32) -> ServiceResult<Preferences> {
         self.store
             .call(move |store| store.set_cleanup_idle_days(days))

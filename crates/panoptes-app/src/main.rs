@@ -27,9 +27,6 @@ fn main() {
         .with_assets(assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            theme::init(cx);
-            views::composer::init(cx);
-            views::shortcuts::init(cx);
             let started = match started {
                 Ok(started) => started,
                 Err(error) => {
@@ -40,6 +37,10 @@ fn main() {
                     return;
                 }
             };
+            zoom::set_zoom(started.preferences.font_size as f32 / 100.);
+            theme::init(cx, started.preferences.dark_mode);
+            views::composer::init(cx);
+            views::shortcuts::init(cx);
             let backend = started.backend.clone();
             cx.on_app_quit(move |_| {
                 let backend = backend.clone();

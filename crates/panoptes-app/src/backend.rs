@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use panoptes_core::eventlog::EventLog;
 use panoptes_core::service::{Service, ServiceError, SessionEvent};
-use panoptes_core::store::Store;
+use panoptes_core::store::{Preferences, Store};
 use panoptes_harness::Harness;
 use panoptes_pi::PiHarness;
 use tokio::sync::{mpsc, oneshot};
@@ -32,6 +32,8 @@ pub struct Backend {
 pub struct Started {
     pub backend: Arc<Backend>,
     pub events: mpsc::UnboundedReceiver<SessionEvent>,
+    /// Loaded before the first frame so the saved appearance applies at once.
+    pub preferences: Preferences,
 }
 
 impl Backend {
@@ -45,6 +47,7 @@ impl Backend {
             .context("Could not start the backend runtime")?;
         let paths = Paths::resolve()?;
         let store = Store::open(&paths.data_dir)?;
+        let preferences = store.preferences()?;
 
         let mut harnesses: Vec<Arc<dyn Harness>> = Vec::new();
         let mut harness_errors = Vec::new();
@@ -97,6 +100,7 @@ impl Backend {
                 logs_dir,
             }),
             events,
+            preferences,
         })
     }
 

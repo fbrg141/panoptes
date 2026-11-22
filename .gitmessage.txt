@@ -1,0 +1,21 @@
+# <type>(<optional-scope>): <imperative summary>
+# Example: feat(app): add appearance settings
+#
+# Keep each commit to one logical change, including its tests and docs.
+# Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.
+# Useful scopes: app, core, harness, pi, docs, scripts, ci, release.
+# Add ! after the type/scope for a breaking change: feat(core)!: ...
+#
+# Aim for a 50-character subject; 72 is the limit. Use the imperative mood
+# ("add", not "added" or "adds"), capitalize sparingly, and omit the period.
+#
+# Leave one blank line before the optional body. Explain the problem, why this
+# approach was chosen, and any tradeoffs; the diff already shows what changed.
+# Wrap body lines at 72 characters, except URLs or quoted output.
+#
+# Optional footers:
+# Refs: #123
+# BREAKING CHANGE: explain the impact and required migration.
+#
+# Before committing, run sh scripts/check.sh. Use scripts/smoke.sh as well when
+# changing the Pi adapter, event contract, or history behavior.

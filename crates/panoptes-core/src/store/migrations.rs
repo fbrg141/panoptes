@@ -3,7 +3,10 @@ use std::path::Path;
 use rusqlite::Transaction;
 
 use super::legacy::{legacy_pins, retire_legacy_index};
-use super::preferences::{DEFAULT_CLEANUP_IDLE_DAYS, MAX_CLEANUP_IDLE_DAYS};
+use super::preferences::{
+    DEFAULT_CLEANUP_IDLE_DAYS, DEFAULT_FONT_SIZE, MAX_CLEANUP_IDLE_DAYS, MAX_FONT_SIZE,
+    MIN_FONT_SIZE,
+};
 
 /// One schema step.
 #[derive(Clone, Copy)]
@@ -57,6 +60,10 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         apply: v10_notification_preferences,
+        committed: |_| {},
+    },
+    Migration {
+        apply: v11_appearance_preferences,
         committed: |_| {},
     },
 ];
@@ -246,5 +253,18 @@ fn v10_notification_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()
             ADD COLUMN notify_needs_attention INTEGER NOT NULL DEFAULT 1
                 CHECK (notify_needs_attention IN (0, 1));",
     )?;
+    Ok(())
+}
+
+/// Appearance stays system-controlled until the user chooses a dark mode.
+/// Font size is the percentage used by the window's existing zoom control.
+fn v11_appearance_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(&format!(
+        "ALTER TABLE ui_preferences ADD COLUMN dark_mode INTEGER
+         CHECK (dark_mode IS NULL OR dark_mode IN (0, 1));
+         ALTER TABLE ui_preferences ADD COLUMN font_size INTEGER NOT NULL
+         DEFAULT {DEFAULT_FONT_SIZE}
+         CHECK (font_size BETWEEN {MIN_FONT_SIZE} AND {MAX_FONT_SIZE} AND font_size % 10 = 0);"
+    ))?;
     Ok(())
 }

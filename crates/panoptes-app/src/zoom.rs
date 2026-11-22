@@ -4,6 +4,10 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use gpui_kit::{App, Window};
+
+use crate::theme::PaletteExt as _;
+
 pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 2.0;
 const STEP: f32 = 0.1;
@@ -25,6 +29,11 @@ pub fn set_zoom(scale: f32) {
     ZOOM.store(scale.to_bits(), Ordering::Relaxed);
 }
 
+/// The current font size as a percentage of the design's type scale.
+pub fn font_size() -> u32 {
+    (zoom() * 100.).round() as u32
+}
+
 /// The next zoom scale, clamped to [MIN_ZOOM, MAX_ZOOM] in tenths.
 pub fn next_zoom(current: f32, command: ZoomCommand) -> f32 {
     let target = match command {
@@ -38,6 +47,19 @@ pub fn next_zoom(current: f32, command: ZoomCommand) -> f32 {
 /// A length in the design's pixels, at the window's zoom.
 pub fn px(pixels: f32) -> gpui_kit::Pixels {
     gpui_kit::px(pixels * zoom())
+}
+
+/// Changes the whole window's scale and returns the font size to persist.
+pub fn change(command: ZoomCommand, window: &mut Window, cx: &mut App) -> Option<u32> {
+    let next = next_zoom(zoom(), command);
+    if next == zoom() {
+        return None;
+    }
+    set_zoom(next);
+    let dark = cx.palette().dark;
+    crate::theme::apply(dark, cx);
+    window.refresh();
+    Some(font_size())
 }
 
 #[cfg(test)]

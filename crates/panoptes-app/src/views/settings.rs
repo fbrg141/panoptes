@@ -18,10 +18,11 @@ use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::Ui;
 use crate::views::picker::{Picker, PickerEvent, PickerState};
-use crate::zoom::px;
+use crate::zoom::{MAX_ZOOM, MIN_ZOOM, ZoomCommand, px};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
+    Appearance,
     Profiles,
     Models,
     Lanes,
@@ -141,7 +142,7 @@ impl Settings {
         Self {
             store,
             ui,
-            tab: SettingsTab::Profiles,
+            tab: SettingsTab::Appearance,
             editor: None,
             confirm_delete: None,
             days,
@@ -689,6 +690,125 @@ impl Settings {
             })
     }
 
+    fn appearance_tab(&self, p: &Palette) -> Div {
+        let dark_store = self.store.downgrade();
+        let decrease_store = self.store.downgrade();
+        let increase_store = self.store.downgrade();
+        let reset_store = self.store.downgrade();
+        let percent = crate::zoom::font_size();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(24.))
+                    .child(
+                        ds::v_flex_gap(4.)
+                            .child(div().t_body_strong().child("Dark mode"))
+                            .child(
+                                div()
+                                    .t_small()
+                                    .text_color(p.ink_muted)
+                                    .child("Use dark colors throughout Panoptes."),
+                            ),
+                    )
+                    .child(ds::switch(
+                        "dark-mode",
+                        p.dark,
+                        "Dark mode",
+                        p,
+                        move |dark, _, cx| {
+                            crate::theme::set_dark_mode(dark, cx);
+                            let _ =
+                                dark_store.update(cx, |store, cx| store.set_dark_mode(dark, cx));
+                        },
+                    )),
+            )
+            .child(div().h(px(1.)).bg(p.line))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(24.))
+                    .child(
+                        ds::v_flex_gap(4.)
+                            .child(div().t_body_strong().child("Font size"))
+                            .child(
+                                div()
+                                    .t_small()
+                                    .text_color(p.ink_muted)
+                                    .child("Scale text and interface controls from 50% to 200%."),
+                            ),
+                    )
+                    .child(
+                        ds::h_flex_gap(4.)
+                            .items_center()
+                            .child(
+                                Button::new("font-size-decrease")
+                                    .ghost()
+                                    .small()
+                                    .label("−")
+                                    .tooltip("Decrease font size")
+                                    .disabled(percent <= (MIN_ZOOM * 100.) as u32)
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(percent) =
+                                            crate::zoom::change(ZoomCommand::Out, window, cx)
+                                        {
+                                            let _ = decrease_store.update(cx, |store, cx| {
+                                                store.set_font_size(percent, cx)
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(48.))
+                                    .text_center()
+                                    .t_body_strong()
+                                    .child(format!("{percent}%")),
+                            )
+                            .child(
+                                Button::new("font-size-increase")
+                                    .ghost()
+                                    .small()
+                                    .label("+")
+                                    .tooltip("Increase font size")
+                                    .disabled(percent >= (MAX_ZOOM * 100.) as u32)
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(percent) =
+                                            crate::zoom::change(ZoomCommand::In, window, cx)
+                                        {
+                                            let _ = increase_store.update(cx, |store, cx| {
+                                                store.set_font_size(percent, cx)
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("font-size-reset")
+                                    .ghost()
+                                    .small()
+                                    .label("Reset")
+                                    .disabled(percent == 100)
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(percent) =
+                                            crate::zoom::change(ZoomCommand::Reset, window, cx)
+                                        {
+                                            let _ = reset_store.update(cx, |store, cx| {
+                                                store.set_font_size(percent, cx)
+                                            });
+                                        }
+                                    }),
+                            ),
+                    ),
+            )
+    }
+
     fn lanes_tab(&self, window: &Window, p: &Palette, cx: &mut Context<Self>) -> Div {
         let text = self.days.read(cx).value().to_string();
         let valid = valid_days(&text).is_some();
@@ -840,6 +960,12 @@ impl Render for Settings {
         let tabs = ds::tabs(
             vec![
                 Tab {
+                    id: "appearance",
+                    label: "Appearance".into(),
+                    icon: Some("settings"),
+                    count: None,
+                },
+                Tab {
                     id: "profiles",
                     label: "Profiles".into(),
                     icon: Some("agent"),
@@ -865,6 +991,7 @@ impl Render for Settings {
                 },
             ],
             match tab {
+                SettingsTab::Appearance => "appearance",
                 SettingsTab::Profiles => "profiles",
                 SettingsTab::Models => "models",
                 SettingsTab::Lanes => "lanes",
@@ -876,10 +1003,11 @@ impl Render for Settings {
                 move |id, window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         this.tab = match id {
+                            "profiles" => SettingsTab::Profiles,
                             "models" => SettingsTab::Models,
                             "lanes" => SettingsTab::Lanes,
                             "notifications" => SettingsTab::Notifications,
-                            _ => SettingsTab::Profiles,
+                            _ => SettingsTab::Appearance,
                         };
                         this.editor = None;
                         window.focus(&this.focus, cx);
@@ -889,6 +1017,7 @@ impl Render for Settings {
             },
         );
         let body = match tab {
+            SettingsTab::Appearance => self.appearance_tab(&p),
             SettingsTab::Profiles => self.profiles_tab(&models, window, &p, cx),
             SettingsTab::Models => self.models_tab(&models, &p, cx),
             SettingsTab::Lanes => self.lanes_tab(window, &p, cx),

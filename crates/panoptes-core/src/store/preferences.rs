@@ -9,6 +9,10 @@ pub(super) const DEFAULT_CLEANUP_IDLE_DAYS: u32 = 4;
 
 pub(super) const MAX_CLEANUP_IDLE_DAYS: u32 = 365;
 
+pub const MIN_FONT_SIZE: u32 = 50;
+pub const MAX_FONT_SIZE: u32 = 200;
+pub const DEFAULT_FONT_SIZE: u32 = 100;
+
 /// A reusable choice for a new session. Empty fields keep harness defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +88,10 @@ pub struct Preferences {
     /// Machine-local dismissal of the unguarded-tools warning.
     pub permission_warning_dismissed: bool,
     pub notifications: NotificationPreferences,
+    /// An explicit light/dark choice, or `None` to follow the system.
+    pub dark_mode: Option<bool>,
+    /// Interface font size as a percentage of the design's type scale.
+    pub font_size: u32,
 }
 
 impl Store {
@@ -103,7 +111,7 @@ impl Store {
         Ok(())
     }
 
-    pub(crate) fn preferences(&self) -> anyhow::Result<Preferences> {
+    pub fn preferences(&self) -> anyhow::Result<Preferences> {
         let mut statement = self.conn.prepare_cached(
             "SELECT id, name, model_id, thinking_level, instructions
              FROM profiles ORDER BY position, id",
@@ -137,22 +145,25 @@ impl Store {
             [],
             |row| row.get(0),
         )?;
-        let (permission_warning_dismissed, notifications) = self.conn.query_row(
-            "SELECT permission_warning_dismissed, notify_enabled, notify_finished,
-                    notify_needs_attention
+        let (permission_warning_dismissed, notifications, dark_mode, font_size) =
+            self.conn.query_row(
+                "SELECT permission_warning_dismissed, notify_enabled, notify_finished,
+                    notify_needs_attention, dark_mode, font_size
              FROM ui_preferences WHERE singleton = 1",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    NotificationPreferences {
-                        enabled: row.get(1)?,
-                        finished: row.get(2)?,
-                        needs_attention: row.get(3)?,
-                    },
-                ))
-            },
-        )?;
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        NotificationPreferences {
+                            enabled: row.get(1)?,
+                            finished: row.get(2)?,
+                            needs_attention: row.get(3)?,
+                        },
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
         Ok(Preferences {
             profiles,
             favorite_models,
@@ -160,6 +171,8 @@ impl Store {
             cleanup_idle_days,
             permission_warning_dismissed,
             notifications,
+            dark_mode,
+            font_size,
         })
     }
 
@@ -265,6 +278,28 @@ impl Store {
         self.conn.execute(
             &format!("UPDATE ui_preferences SET {column} = ?1 WHERE singleton = 1"),
             [value],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_dark_mode(&self, dark: bool) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE ui_preferences SET dark_mode = ?1 WHERE singleton = 1",
+            [dark],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_font_size(&self, percent: u32) -> anyhow::Result<()> {
+        // Percentages are the app's zoom steps: 50%, 60%, ..., 200%.
+        if !(MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&percent) || !percent.is_multiple_of(10) {
+            bail!(
+                "Font size must be a multiple of 10 between {MIN_FONT_SIZE} and {MAX_FONT_SIZE} percent"
+            );
+        }
+        self.conn.execute(
+            "UPDATE ui_preferences SET font_size = ?1 WHERE singleton = 1",
+            [percent],
         )?;
         Ok(())
     }

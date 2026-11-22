@@ -305,6 +305,8 @@ mod tests {
             cleanup_idle_days: 14,
             permission_warning_dismissed: false,
             notifications: Default::default(),
+            dark_mode: None,
+            font_size: panoptes_core::store::DEFAULT_FONT_SIZE,
         }
     }
 

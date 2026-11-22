@@ -1,6 +1,6 @@
 //! The design system's tokens, read from `packages/design-system/tokens/tokens.json`
-//! (the one place they live), as GPUI colours. The palette follows the
-//! system's light or dark appearance.
+//! (the one place they live), as GPUI colours. The palette follows the saved
+//! appearance choice, or the system's light or dark appearance by default.
 
 use crate::zoom::px;
 use gpui_kit::component::{Theme, ThemeMode};
@@ -12,6 +12,14 @@ const TOKENS: &str = include_str!("../assets/tokens.json");
 pub const FONT_SANS: &str = "IBM Plex Sans";
 pub const FONT_MONO: &str = "IBM Plex Mono";
 pub const FONT_DISPLAY: &str = "Gloock";
+
+/// The user's explicit choice, if they have stopped following the system.
+#[derive(Debug, Clone, Copy)]
+struct AppearancePreference {
+    dark_mode: Option<bool>,
+}
+
+impl Global for AppearancePreference {}
 
 /// Every colour token, resolved for one appearance.
 #[derive(Debug, Clone, Copy)]
@@ -172,10 +180,10 @@ impl PaletteExt for App {
     }
 }
 
-/// Loads the fonts, then the palette for the system appearance, and maps
-/// it onto the component library's theme so its inputs, scrollbars and
+/// Loads the fonts, then the palette for the saved or system appearance, and
+/// maps it onto the component library's theme so its inputs, scrollbars and
 /// text views match.
-pub fn init(cx: &mut App) {
+pub fn init(cx: &mut App, dark_mode: Option<bool>) {
     let fonts: Vec<std::borrow::Cow<'static, [u8]>> = vec![
         include_bytes!("../assets/fonts/ibm-plex-sans-latin-400-normal.ttf")
             .as_slice()
@@ -199,18 +207,29 @@ pub fn init(cx: &mut App) {
     if let Err(error) = cx.text_system().add_fonts(fonts) {
         eprintln!("Could not load the design system's fonts: {error:#}");
     }
+    cx.set_global(AppearancePreference { dark_mode });
     follow(cx.window_appearance(), cx);
 }
 
-/// Applies the palette for a system appearance. `PANOPTES_THEME=light` or
-/// `dark` overrides it, for screenshots on systems that report none.
+/// Resolves the system appearance when there is no explicit user choice.
+fn selected_dark(appearance: WindowAppearance, dark_mode: Option<bool>) -> bool {
+    dark_mode.unwrap_or(!matches!(
+        appearance,
+        WindowAppearance::Light | WindowAppearance::VibrantLight
+    ))
+}
+
+/// Applies the palette for a system appearance unless the user has chosen one.
+/// `PANOPTES_THEME=light` or `dark` overrides both, for screenshots on systems
+/// that report none.
 pub fn follow(appearance: WindowAppearance, cx: &mut App) {
     let dark = match std::env::var("PANOPTES_THEME").as_deref() {
         Ok("dark") => true,
         Ok("light") => false,
-        _ => !matches!(
+        _ => selected_dark(
             appearance,
-            WindowAppearance::Light | WindowAppearance::VibrantLight
+            cx.try_global::<AppearancePreference>()
+                .and_then(|preference| preference.dark_mode),
         ),
     };
     if cx.try_global::<Palette>().is_some_and(|p| p.dark == dark) {
@@ -218,6 +237,17 @@ pub fn follow(appearance: WindowAppearance, cx: &mut App) {
     }
     apply(dark, cx);
     cx.refresh_windows();
+}
+
+/// Applies the choice immediately; the caller persists it.
+pub fn set_dark_mode(dark: bool, cx: &mut App) {
+    cx.set_global(AppearancePreference {
+        dark_mode: Some(dark),
+    });
+    if cx.palette().dark != dark {
+        apply(dark, cx);
+        cx.refresh_windows();
+    }
 }
 
 /// Switches the palette, and the component theme with it.
@@ -294,6 +324,14 @@ pub fn apply(dark: bool, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn saved_dark_mode_overrides_the_system_appearance() {
+        assert!(!selected_dark(WindowAppearance::Light, None));
+        assert!(selected_dark(WindowAppearance::Dark, None));
+        assert!(selected_dark(WindowAppearance::Light, Some(true)));
+        assert!(!selected_dark(WindowAppearance::Dark, Some(false)));
+    }
 
     #[::core::prelude::v1::test]
     fn tokens_resolve_aliases_in_both_themes() {

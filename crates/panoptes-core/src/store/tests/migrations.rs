@@ -313,6 +313,26 @@ fn a_store_from_before_notifications_starts_with_them_on() {
     assert!(preferences.permission_warning_dismissed);
 }
 
+#[test]
+fn appearance_defaults_preserve_existing_ui_preferences() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open_with(dir.path(), &MIGRATIONS[..10]).unwrap();
+        store.dismiss_permission_warning().unwrap();
+        store
+            .set_notification(NotificationField::Finished, false)
+            .unwrap();
+    }
+
+    let store = Store::open(dir.path()).unwrap();
+    let preferences = store.preferences().unwrap();
+    assert!(preferences.permission_warning_dismissed);
+    assert!(!preferences.notifications.finished);
+    assert_eq!(preferences.dark_mode, None);
+    assert_eq!(preferences.font_size, DEFAULT_FONT_SIZE);
+    assert_eq!(version(dir.path()), MIGRATIONS.len() as u32);
+}
+
 /// A store as an earlier build left it, with data in every table that
 /// build had, comes through the later steps unchanged.
 #[test]

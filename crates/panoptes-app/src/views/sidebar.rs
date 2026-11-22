@@ -288,7 +288,7 @@ impl Sidebar {
                     .ghost()
                     .small()
                     .icon("settings")
-                    .tooltip("Profiles and model preferences")
+                    .tooltip("Appearance, profiles and preferences")
                     .on_click(open(Overlay::Settings)),
             )
             .child(
