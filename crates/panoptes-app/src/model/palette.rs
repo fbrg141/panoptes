@@ -168,12 +168,7 @@ pub fn palette_groups(
         "command",
         &["⌘", "/"],
     ));
-    actions.push(action(
-        "showLogs",
-        "Show logs in Finder",
-        "folder-open",
-        &[],
-    ));
+    actions.push(action("showLogs", "Open diagnostics window", "watch", &[]));
     vec![
         PaletteGroup {
             label: "Sessions".into(),

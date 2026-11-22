@@ -181,7 +181,7 @@ impl Jump {
             }
             PaletteTarget::NewProject => store.update(cx, |store, cx| store.pick_project(cx)),
             PaletteTarget::Shortcuts => self.show(Overlay::Shortcuts, cx),
-            PaletteTarget::ShowLogs => store.update(cx, |store, cx| store.show_logs(cx)),
+            PaletteTarget::ShowLogs => crate::views::diagnostics::open(self.store.clone(), cx),
         }
     }
 }

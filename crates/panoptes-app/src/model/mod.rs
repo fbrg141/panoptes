@@ -2,6 +2,7 @@
 
 pub mod composer;
 pub mod conversation;
+pub mod diagnostics;
 pub mod diff;
 pub mod format;
 pub mod notify;

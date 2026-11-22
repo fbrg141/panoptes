@@ -16,6 +16,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
+/// The parsed contents of the retained log, oldest first. Bad lines are
+/// reported instead of hiding every other diagnostic behind one parse error.
+#[derive(Debug, Default)]
+pub struct LogSnapshot {
+    pub events: Vec<Value>,
+    pub errors: Vec<String>,
+}
+
 /// How many days of files are kept.
 pub const KEEP_DAYS: i64 = 30;
 
@@ -91,6 +99,56 @@ impl EventLog {
             let _ = handle.write_all(&bytes);
         }
     }
+}
+
+/// Reads every retained day file. Files and their lines are returned in
+/// chronological order; a partially written final line is shown as an error.
+pub fn read(dir: &Path) -> LogSnapshot {
+    let mut snapshot = LogSnapshot::default();
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return snapshot,
+        Err(error) => {
+            snapshot
+                .errors
+                .push(format!("Could not list logs: {error}"));
+            return snapshot;
+        }
+    };
+    files.sort();
+    for path in files {
+        let name = path.display().to_string();
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                for (line, text) in contents.lines().enumerate() {
+                    match serde_json::from_str(text) {
+                        Ok(value @ Value::Object(_)) => snapshot.events.push(value),
+                        Ok(_) => snapshot.errors.push(format!(
+                            "{name}:{}: the log entry is not an object",
+                            line + 1
+                        )),
+                        Err(error) => snapshot
+                            .errors
+                            .push(format!("{name}:{}: {error}", line + 1)),
+                    }
+                }
+            }
+            Err(error) => snapshot
+                .errors
+                .push(format!("Could not read {name}: {error}")),
+        }
+    }
+    snapshot
+        .events
+        .sort_by_key(|event| event.get("at").and_then(Value::as_i64).unwrap_or(0));
+    snapshot
 }
 
 fn now_ms() -> i64 {
@@ -184,6 +242,27 @@ mod tests {
             ]
         );
         assert_eq!(lines(dir.path(), "2025-11-14").len(), 1);
+    }
+
+    #[test]
+    fn reads_valid_entries_and_reports_bad_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("2025-11-13.jsonl"),
+            "{\"at\":2,\"event\":\"second\"}\nnot json\n{\"at\":1,\"event\":\"first\"}\n",
+        )
+        .unwrap();
+        let snapshot = read(dir.path());
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event["event"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert_eq!(snapshot.errors.len(), 1);
+        assert!(snapshot.errors[0].contains(":2:"));
     }
 
     #[test]
