@@ -152,9 +152,15 @@ then enable the repository's Git hooks:
 
 ```bash
 brew install gitleaks
-git config core.hooksPath .githooks   # once: scan commits and check pushes
+sh scripts/setup.sh   # once per clone: enable Git hooks and the commit template
 cargo run -p panoptes-app
 ```
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/),
+for example `feat(app): add appearance settings`. The `commit-msg` hook checks
+the format and subject length; `.gitmessage.txt` explains the convention,
+scopes and body guidelines. Pull requests use `.github/pull_request_template.md`,
+including a definition of done tailored to the app.
 
 A debug build keeps its own store and lanes folder, so it never touches the
 installed app's data.
