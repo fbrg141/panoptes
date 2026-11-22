@@ -264,16 +264,14 @@ impl Sidebar {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
+            .gap(px(6.))
             .h(px(38.))
-            .px(px(12.))
-            .border_b_1()
-            .border_color(p.line)
-            .child(loop_mark("brand", 20., LoopState::Idle, p.ink))
+            .px(px(10.))
+            .child(loop_mark("brand", 18., LoopState::Idle, p.ink_muted))
             .child(
                 div()
                     .flex_1()
-                    .t_wordmark()
+                    .t_body_strong()
                     .text_color(p.ink)
                     .child("Panoptes"),
             )
@@ -284,14 +282,6 @@ impl Sidebar {
                     .icon("search")
                     .tooltip("Search projects, lanes and sessions (⌘P)")
                     .on_click(open(Overlay::Search)),
-            )
-            .child(
-                Button::new("shortcuts")
-                    .ghost()
-                    .small()
-                    .icon("command")
-                    .tooltip("Keyboard shortcuts (⌘/)")
-                    .on_click(open(Overlay::Shortcuts)),
             )
             .child(
                 Button::new("settings")
@@ -421,11 +411,7 @@ impl Sidebar {
                 .filter(|l| l.state == LaneState::Archived)
                 .collect();
             let shown = self.archived_lanes_shown.contains(&id);
-            let mut body = div()
-                .ml(px(12.))
-                .border_l_1()
-                .border_color(p.line)
-                .pl(px(4.));
+            let mut body = div().ml(px(12.)).pl(px(4.));
             for lane in &active {
                 body = body.child(self.render_lane(
                     lane,
@@ -644,13 +630,7 @@ impl Sidebar {
             .flex()
             .items_center()
             .gap(px(4.))
-            .map(|el| {
-                if main_checkout {
-                    el.t_caption().text_color(p.waiting)
-                } else {
-                    el.t_code_sm().text_color(p.ink_muted)
-                }
-            })
+            .map(|el| el.t_code_sm().text_color(p.ink_muted))
             .child(checkout_icon(main_checkout, p))
             .child(div().truncate().child(format!(
                 "{location}{}",
@@ -895,7 +875,7 @@ impl Sidebar {
                     .flex_col()
                     .items_end()
                     .flex_none()
-                    .min_w(px(52.))
+                    .min_w(px(if row.lane.is_some() { 0. } else { 52. }))
                     .font_family(crate::theme::FONT_MONO)
                     .text_size(px(11.5))
                     .line_height(px(16.))
@@ -904,7 +884,7 @@ impl Sidebar {
                         el.group_hover(group.clone(), |s| s.opacity(0.))
                     })
                     .when(has_actions && menu_open, |el| el.opacity(0.))
-                    .child(time),
+                    .when(row.lane.is_none(), |el| el.child(time)),
             );
 
         let actions = has_actions.then(|| {
@@ -996,18 +976,6 @@ impl Sidebar {
                     .rounded(px(4.))
                     .when(active, |el| el.bg(selection))
                     .when(!active, |el| el.hover(move |s| s.bg(raised)))
-                    .when(active, |el| {
-                        el.child(
-                            div()
-                                .absolute()
-                                .top(px(8.))
-                                .bottom(px(8.))
-                                .left_0()
-                                .w(px(2.))
-                                .rounded_r(px(2.))
-                                .bg(p.focus),
-                        )
-                    })
                     .children(expand)
                     .child(hit)
                     .children(actions),
@@ -1054,11 +1022,7 @@ fn checkout_icon(main_checkout: bool, p: &Palette) -> crate::ds::Icon {
         },
         12.,
     )
-    .text_color(if main_checkout {
-        p.waiting
-    } else {
-        p.ink_muted
-    })
+    .text_color(p.ink_muted)
 }
 
 /// "Project / task" for a session listed outside its lane.
@@ -1097,13 +1061,13 @@ impl Render for Sidebar {
                 Tab {
                     id: "lanes",
                     label: "Lanes".into(),
-                    icon: Some("git-branch"),
+                    icon: None,
                     count: None,
                 },
                 Tab {
                     id: "all",
                     label: "All sessions".into(),
-                    icon: Some("history"),
+                    icon: None,
                     count: Some(sessions.len()),
                 },
             ],
@@ -1214,14 +1178,14 @@ impl Render for Sidebar {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(320.))
+            .w(px(280.))
             .h_full()
             .border_r_1()
             .border_color(p.line)
             .bg(p.surface)
             .text_color(p.ink)
             .child(self.render_header(&p, cx))
-            .child(div().px(px(12.)).pt(px(12.)).child(tab_bar))
+            .child(div().px(px(8.)).pt(px(8.)).child(tab_bar))
             .children(list_errors.into_iter().map(|error| {
                 div()
                     .px(px(12.))

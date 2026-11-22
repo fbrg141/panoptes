@@ -48,12 +48,14 @@ pub struct Palette {
     pub on_focus: Hsla,
     pub selection: Hsla,
     pub running: Hsla,
+    #[allow(dead_code)]
     pub running_soft: Hsla,
     pub waiting: Hsla,
     pub waiting_soft: Hsla,
     pub error: Hsla,
     pub error_soft: Hsla,
     pub done: Hsla,
+    #[allow(dead_code)]
     pub done_soft: Hsla,
     pub diff_add: Hsla,
     pub diff_remove: Hsla,
