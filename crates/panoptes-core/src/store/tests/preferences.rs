@@ -24,11 +24,7 @@ fn profiles_and_model_preferences_survive_reopening() {
     );
     store.dismiss_permission_warning().unwrap();
     store
-        .set_notifications(&NotificationPreferences {
-            enabled: true,
-            finished: false,
-            needs_attention: true,
-        })
+        .set_notification(NotificationField::Finished, false)
         .unwrap();
     let input = ProfileInput {
         name: "  Careful  ".into(),
@@ -105,20 +101,31 @@ fn notification_settings_survive_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     store
-        .set_notifications(&NotificationPreferences {
-            enabled: false,
-            finished: true,
-            needs_attention: false,
-        })
+        .set_notification(NotificationField::Enabled, false)
         .unwrap();
+    store
+        .set_notification(NotificationField::Finished, false)
+        .unwrap();
+    store
+        .set_notification(NotificationField::NeedsAttention, true)
+        .unwrap();
+    // Changing one switch must not restore a previous snapshot of another.
+    assert_eq!(
+        store.preferences().unwrap().notifications,
+        NotificationPreferences {
+            enabled: false,
+            finished: false,
+            needs_attention: true,
+        }
+    );
     drop(store);
     let store = Store::open(dir.path()).unwrap();
     assert_eq!(
         store.preferences().unwrap().notifications,
         NotificationPreferences {
             enabled: false,
-            finished: true,
-            needs_attention: false,
+            finished: false,
+            needs_attention: true,
         }
     );
 }

@@ -12,13 +12,20 @@ use crate::model::notify::Notice;
 /// Shows `notice`, if the platform lets us. A notification is a nicety: a
 /// missing `osascript` must never interrupt a session.
 pub fn post(notice: &Notice) {
-    let _ = Command::new("osascript")
+    if let Ok(mut child) = Command::new("osascript")
         .arg("-e")
         .arg(script(notice))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()
+    {
+        // Dropping a Child does not reap it. Notifications are rare, so a
+        // small detached waiter keeps a long-running app free of zombies.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 /// The AppleScript that displays `notice`.

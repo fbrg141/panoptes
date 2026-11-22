@@ -31,6 +31,14 @@ pub struct ProfileInput {
     pub instructions: Option<String>,
 }
 
+/// One independently persisted notification switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationField {
+    Enabled,
+    Finished,
+    NeedsAttention,
+}
+
 /// When Panoptes posts a macOS notification about a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +57,16 @@ impl Default for NotificationPreferences {
             enabled: true,
             finished: true,
             needs_attention: true,
+        }
+    }
+}
+
+impl NotificationPreferences {
+    pub fn set(&mut self, field: NotificationField, value: bool) {
+        match field {
+            NotificationField::Enabled => self.enabled = value,
+            NotificationField::Finished => self.finished = value,
+            NotificationField::NeedsAttention => self.needs_attention = value,
         }
     }
 }
@@ -232,19 +250,21 @@ impl Store {
         Ok(())
     }
 
-    pub(crate) fn set_notifications(
+    pub(crate) fn set_notification(
         &self,
-        notifications: &NotificationPreferences,
+        field: NotificationField,
+        value: bool,
     ) -> anyhow::Result<()> {
+        // A toggle owns one column. Writing a snapshot of all three would let
+        // a quick second click restore the first click's old value.
+        let column = match field {
+            NotificationField::Enabled => "notify_enabled",
+            NotificationField::Finished => "notify_finished",
+            NotificationField::NeedsAttention => "notify_needs_attention",
+        };
         self.conn.execute(
-            "UPDATE ui_preferences
-             SET notify_enabled = ?1, notify_finished = ?2, notify_needs_attention = ?3
-             WHERE singleton = 1",
-            rusqlite::params![
-                notifications.enabled,
-                notifications.finished,
-                notifications.needs_attention
-            ],
+            &format!("UPDATE ui_preferences SET {column} = ?1 WHERE singleton = 1"),
+            [value],
         )?;
         Ok(())
     }

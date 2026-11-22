@@ -24,7 +24,9 @@ mod projects;
 mod sessions;
 
 pub use lanes::{Lane, LaneState, LaneWorktree, NewLane, NewLaneWorktree};
-pub use preferences::{AgentProfile, NotificationPreferences, Preferences, ProfileInput};
+pub use preferences::{
+    AgentProfile, NotificationField, NotificationPreferences, Preferences, ProfileInput,
+};
 pub use projects::{Project, ProjectSettings};
 
 use migrate::{check, explain, migrate};

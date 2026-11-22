@@ -16,7 +16,9 @@ use panoptes_core::service::{
     AdoptionOutcome, ArchiveLaneOutcome, DeleteLaneOutcome, ErrorKind, LaneNavigation, Listing,
     OpenedSession, Service, ServiceError, Session, SessionEvent, SessionUpdate,
 };
-use panoptes_core::store::{Lane, NotificationPreferences, Preferences, ProfileInput, Project};
+use panoptes_core::store::{
+    Lane, NotificationField, NotificationPreferences, Preferences, ProfileInput, Project,
+};
 use panoptes_harness::{
     Answer, CommandInfo, HarnessEvent, ImageAttachment, ModelInfo, PromptMode, PromptOutcome,
     SessionSettings, SessionStatus,
@@ -421,10 +423,16 @@ impl AppStore {
         status: SessionStatus,
         cx: &mut Context<Self>,
     ) {
-        // `active_window` is the window the platform has focused, so a user
-        // in another app gets told, and one reading the session does not.
-        let attended =
-            cx.active_window().is_some() && self.state.active_key.as_deref() == Some(key);
+        // A backgrounded app's main window is not necessarily key/active.
+        let window_active = cx
+            .active_window()
+            .map(|window| {
+                window
+                    .update(cx, |_, window, _| window.is_window_active())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        let attended = notify::attended(self.state.active_key.as_deref(), key, window_active);
         let label = self.state.session_label(key);
         if let Some(notice) = notify::notice(
             previous,
@@ -1005,15 +1013,27 @@ impl AppStore {
         self.set_preferences(work, cx).detach();
     }
 
-    pub fn set_notifications(
+    pub fn set_notification(
         &mut self,
-        notifications: NotificationPreferences,
+        field: NotificationField,
+        value: bool,
         cx: &mut Context<Self>,
     ) {
-        let work = self.backend.run("set_notifications", move |s| async move {
-            s.set_notifications(notifications).await
+        // Reflect the click at once. Each field has its own SQL update, so a
+        // quick click on another switch cannot restore this one's old value.
+        self.state.preferences.notifications.set(field, value);
+        cx.notify();
+        let work = self.backend.run("set_notification", move |s| async move {
+            s.set_notification(field, value).await
         });
-        self.set_preferences(work, cx).detach();
+        self.spawn(cx, work, |this, result, cx| match result {
+            Ok(()) => true,
+            Err(error) => {
+                this.fail(error, cx);
+                false
+            }
+        })
+        .detach();
     }
 
     pub fn set_cleanup_idle_days(
@@ -1435,6 +1455,7 @@ mod tests {
     use super::*;
     use crate::model::sidebar::tests::session;
     use panoptes_core::service::StatusChanged;
+    use panoptes_core::store::LaneState;
     use panoptes_harness::{Message, Role};
 
     fn opened(key: &str, history: Vec<Message>) -> OpenedSession {
@@ -1523,6 +1544,37 @@ mod tests {
         assert!(state.previews.contains("k"));
         state.adopt_opened(opened("k", Vec::new()), None);
         assert!(!state.previews.contains("k"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn notification_labels_name_lanes_titles_and_unknown_sessions() {
+        let mut state = State::default();
+        state.lanes.push(Lane {
+            id: 7,
+            project_id: 1,
+            name: "Fix login".into(),
+            task: "Fix login".into(),
+            branch: "fix-login".into(),
+            state: LaneState::Active,
+            worktrees: Vec::new(),
+        });
+        let mut new = session("new");
+        new.lane_id = Some(7);
+        new.title = "New session".into();
+        let mut titled = session("titled");
+        titled.lane_id = Some(7);
+        titled.title = "Retry the request".into();
+        let mut loose = session("loose");
+        loose.title = "A conversation".into();
+        state.sessions = vec![new, titled, loose];
+
+        assert_eq!(state.session_label("new"), "Fix login");
+        assert_eq!(
+            state.session_label("titled"),
+            "Fix login: Retry the request"
+        );
+        assert_eq!(state.session_label("loose"), "A conversation");
+        assert_eq!(state.session_label("missing"), "A session");
     }
 
     #[::core::prelude::v1::test]

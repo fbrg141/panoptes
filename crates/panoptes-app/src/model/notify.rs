@@ -29,6 +29,12 @@ impl Notice {
     }
 }
 
+/// A session is attended only in a window that is actually key. In
+/// particular, macOS can retain a main window after another app is frontmost.
+pub fn attended(active_key: Option<&str>, key: &str, window_active: bool) -> bool {
+    window_active && active_key == Some(key)
+}
+
 /// What to notify about a session moving from `previous` to `status`.
 ///
 /// `attended` means the user is looking at that session in the frontmost
@@ -64,6 +70,14 @@ mod tests {
             finished,
             needs_attention,
         }
+    }
+
+    #[test]
+    fn a_background_window_does_not_count_as_attended() {
+        assert!(attended(Some("k"), "k", true));
+        assert!(!attended(Some("k"), "k", false));
+        assert!(!attended(Some("other"), "k", true));
+        assert!(!attended(None, "k", true));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use super::error::err;
 use super::{Service, ServiceResult};
-use crate::store::{NotificationPreferences, Preferences, ProfileInput};
+use crate::store::{NotificationField, Preferences, ProfileInput};
 
 impl Service {
     pub async fn preferences(&self) -> ServiceResult<Preferences> {
@@ -58,15 +58,16 @@ impl Service {
         self.preferences().await
     }
 
-    /// Turns the notification settings on or off and returns them.
-    pub async fn set_notifications(
+    /// Changes one notification switch without overwriting the others.
+    pub async fn set_notification(
         &self,
-        notifications: NotificationPreferences,
-    ) -> ServiceResult<Preferences> {
+        field: NotificationField,
+        value: bool,
+    ) -> ServiceResult<()> {
         self.store
-            .call(move |store| store.set_notifications(&notifications))
-            .await?;
-        self.preferences().await
+            .call(move |store| store.set_notification(field, value))
+            .await
+            .map_err(err)
     }
 
     pub async fn set_cleanup_idle_days(&self, days: u32) -> ServiceResult<Preferences> {

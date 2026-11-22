@@ -7,7 +7,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use panoptes_core::store::{AgentProfile, NotificationPreferences, ProfileInput};
+use panoptes_core::store::{AgentProfile, NotificationField, ProfileInput};
 use panoptes_harness::ModelInfo;
 
 use crate::ds::{self, Button, RADIUS_MD, Tab, Type as _};
@@ -750,14 +750,12 @@ impl Settings {
 impl Settings {
     fn notifications_tab(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
         let notifications = self.store.read(cx).state.preferences.notifications;
-        // Each click re-reads the settings, so two quick toggles cannot
-        // overwrite each other with a stale copy.
-        let toggle = |apply: fn(&mut NotificationPreferences, bool)| {
+        // Each switch is persisted independently, so quick successive clicks
+        // cannot overwrite one another with a stale preferences snapshot.
+        let toggle = |field: NotificationField| {
             let store = self.store.clone();
             move |checked: bool, _: &mut Window, cx: &mut App| {
-                let mut next = store.read(cx).state.preferences.notifications;
-                apply(&mut next, checked);
-                store.update(cx, |store, cx| store.set_notifications(next, cx));
+                store.update(cx, |store, cx| store.set_notification(field, checked, cx));
             }
         };
         div()
@@ -793,7 +791,7 @@ impl Settings {
                         Some("Turn every notification off without changing the two below.".into()),
                         false,
                         p,
-                        toggle(|notifications, on| notifications.enabled = on),
+                        toggle(NotificationField::Enabled),
                     ))
                     .child(ds::checkbox(
                         "notify-finished",
@@ -802,7 +800,7 @@ impl Settings {
                         Some("Tell me when a session reaches Done.".into()),
                         !notifications.enabled,
                         p,
-                        toggle(|notifications, on| notifications.finished = on),
+                        toggle(NotificationField::Finished),
                     ))
                     .child(ds::checkbox(
                         "notify-needs-attention",
@@ -814,7 +812,7 @@ impl Settings {
                         ),
                         !notifications.enabled,
                         p,
-                        toggle(|notifications, on| notifications.needs_attention = on),
+                        toggle(NotificationField::NeedsAttention),
                     )),
             )
     }
