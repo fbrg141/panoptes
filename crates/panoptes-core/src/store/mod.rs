@@ -25,7 +25,8 @@ mod sessions;
 
 pub use lanes::{Lane, LaneState, LaneWorktree, NewLane, NewLaneWorktree};
 pub use preferences::{
-    AgentProfile, NotificationField, NotificationPreferences, Preferences, ProfileInput,
+    AgentProfile, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, NotificationField,
+    NotificationPreferences, Preferences, ProfileInput,
 };
 pub use projects::{Project, ProjectSettings};
 

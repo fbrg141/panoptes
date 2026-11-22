@@ -28,7 +28,7 @@ use crate::views::shortcuts::{
 };
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 use crate::views::startup;
-use crate::zoom::{ZoomCommand, next_zoom, px, set_zoom, zoom};
+use crate::zoom::{ZoomCommand, px};
 
 pub struct Workspace {
     store: Entity<AppStore>,
@@ -475,6 +475,8 @@ impl Render for Workspace {
         let ui = &self.ui;
         let (lane_store, project_store) = (self.store.clone(), self.store.clone());
         let (lane_ui, project_ui) = (self.ui.clone(), self.ui.clone());
+        let (zoom_in_store, zoom_out_store, zoom_reset_store) =
+            (self.store.clone(), self.store.clone(), self.store.clone());
         div()
             .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
@@ -504,9 +506,15 @@ impl Render for Workspace {
                     pane.update(cx, |pane, cx| pane.scroll_to_end(cx));
                 }
             }))
-            .on_action(|_: &ZoomIn, window, cx| zoom_by(ZoomCommand::In, window, cx))
-            .on_action(|_: &ZoomOut, window, cx| zoom_by(ZoomCommand::Out, window, cx))
-            .on_action(|_: &ZoomReset, window, cx| zoom_by(ZoomCommand::Reset, window, cx))
+            .on_action(move |_: &ZoomIn, window, cx| {
+                zoom_by(&zoom_in_store, ZoomCommand::In, window, cx)
+            })
+            .on_action(move |_: &ZoomOut, window, cx| {
+                zoom_by(&zoom_out_store, ZoomCommand::Out, window, cx)
+            })
+            .on_action(move |_: &ZoomReset, window, cx| {
+                zoom_by(&zoom_reset_store, ZoomCommand::Reset, window, cx)
+            })
             .on_action(move |_: &AddProject, _, cx| {
                 if project_ui.read(cx).overlay.is_none() {
                     project_store.update(cx, |store, cx| store.pick_project(cx))
@@ -627,13 +635,9 @@ fn drop_indicator(zone: DropZone, empty: bool, p: &Palette) -> Div {
         .child(label)
 }
 
-/// Zooms the whole window: every length is drawn again at the new scale.
-fn zoom_by(command: ZoomCommand, window: &mut Window, cx: &mut App) {
-    let next = next_zoom(zoom(), command);
-    if next != zoom() {
-        set_zoom(next);
-        let dark = cx.palette().dark;
-        crate::theme::apply(dark, cx);
-        window.refresh();
+/// Zooms the whole window and saves the font-size preference.
+fn zoom_by(store: &Entity<AppStore>, command: ZoomCommand, window: &mut Window, cx: &mut App) {
+    if let Some(percent) = crate::zoom::change(command, window, cx) {
+        store.update(cx, |store, cx| store.set_font_size(percent, cx));
     }
 }

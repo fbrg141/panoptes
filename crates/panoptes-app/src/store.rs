@@ -128,6 +128,8 @@ impl Default for State {
                 cleanup_idle_days: 4,
                 permission_warning_dismissed: false,
                 notifications: NotificationPreferences::default(),
+                dark_mode: None,
+                font_size: panoptes_core::store::DEFAULT_FONT_SIZE,
             },
             active_key: None,
             list_errors: Vec::new(),
@@ -1047,6 +1049,20 @@ impl AppStore {
                 s.set_cleanup_idle_days(days).await
             });
         self.set_preferences(work, cx)
+    }
+
+    pub fn set_dark_mode(&mut self, dark: bool, cx: &mut Context<Self>) {
+        let work = self.backend.run("set_dark_mode", move |s| async move {
+            s.set_dark_mode(dark).await
+        });
+        self.set_preferences(work, cx).detach();
+    }
+
+    pub fn set_font_size(&mut self, percent: u32, cx: &mut Context<Self>) {
+        let work = self.backend.run("set_font_size", move |s| async move {
+            s.set_font_size(percent).await
+        });
+        self.set_preferences(work, cx).detach();
     }
 
     pub fn set_model(&mut self, key: String, model_id: String, cx: &mut Context<Self>) {

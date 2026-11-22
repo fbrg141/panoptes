@@ -17,11 +17,11 @@ fn pins_survive_reopening() {
 fn profiles_and_model_preferences_survive_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    assert!(!store.preferences().unwrap().permission_warning_dismissed);
-    assert_eq!(
-        store.preferences().unwrap().notifications,
-        NotificationPreferences::default()
-    );
+    let initial = store.preferences().unwrap();
+    assert!(!initial.permission_warning_dismissed);
+    assert_eq!(initial.notifications, NotificationPreferences::default());
+    assert_eq!(initial.dark_mode, None);
+    assert_eq!(initial.font_size, DEFAULT_FONT_SIZE);
     store.dismiss_permission_warning().unwrap();
     store
         .set_notification(NotificationField::Finished, false)
@@ -63,10 +63,18 @@ fn profiles_and_model_preferences_survive_reopening() {
     store.set_cleanup_idle_days(9).unwrap();
     assert!(store.set_cleanup_idle_days(0).is_err());
     assert!(store.set_cleanup_idle_days(366).is_err());
+    store.set_dark_mode(true).unwrap();
+    store.set_font_size(120).unwrap();
+    assert!(store.set_font_size(95).is_err());
+    assert!(store.set_font_size(MIN_FONT_SIZE - 10).is_err());
+    assert!(store.set_font_size(MAX_FONT_SIZE + 10).is_err());
     drop(store);
     let store = Store::open(dir.path()).unwrap();
-    assert_eq!(store.preferences().unwrap().cleanup_idle_days, 9);
-    assert!(store.preferences().unwrap().permission_warning_dismissed);
+    let reopened = store.preferences().unwrap();
+    assert_eq!(reopened.cleanup_idle_days, 9);
+    assert!(reopened.permission_warning_dismissed);
+    assert_eq!(reopened.dark_mode, Some(true));
+    assert_eq!(reopened.font_size, 120);
 
     store
         .save_profile(
