@@ -443,7 +443,7 @@ impl AppStore {
             attended,
             &label,
         ) {
-            crate::notify::post(&notice);
+            crate::notify::post(key, &notice, cx);
         }
     }
 

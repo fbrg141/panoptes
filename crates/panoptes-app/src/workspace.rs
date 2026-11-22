@@ -103,6 +103,14 @@ impl Workspace {
             });
         })
         .detach();
+        let window_handle = window.window_handle();
+        let this = cx.entity().downgrade();
+        cx.on_system_notification_response(move |response, cx| {
+            let key = response.tag.to_string();
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| this.open_notification(&key, window, cx));
+            });
+        });
         Self {
             store,
             ui,
@@ -209,6 +217,36 @@ impl Workspace {
         match key.and_then(|key| self.panes.get(&key)) {
             Some(pane) => pane.update(cx, |pane, cx| pane.focus(window, cx)),
             None => window.focus(&self.focus, cx),
+        }
+    }
+
+    /// Opens the session named by a clicked system notification and brings
+    /// the main window and its composer to the front.
+    fn open_notification(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        cx.dismiss_system_notification(key);
+        cx.activate(true);
+        window.activate_window();
+
+        let session = self.store.read(cx).state.session(key).cloned();
+        self.ui.update(cx, |ui, cx| {
+            ui.close(cx);
+            ui.close_image(cx);
+            if session.is_some() {
+                ui.show_session(key, None, cx);
+            }
+        });
+        if let Some(session) = session {
+            self.store.update(cx, |store, cx| {
+                store.open(&session, cx).detach();
+            });
+            self.sync_panes(cx);
+            let pane = self.pane(key, window, cx);
+            pane.update(cx, |pane, cx| pane.focus(window, cx));
+        } else {
+            self.store.update(cx, |store, cx| {
+                store.show_error("That session is no longer available.", cx)
+            });
+            self.focus_active(window, cx);
         }
     }
 

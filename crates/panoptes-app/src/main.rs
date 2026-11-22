@@ -27,6 +27,7 @@ fn main() {
         .with_assets(assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            cx.set_app_identity("dev.panoptes.app", "Panoptes");
             let started = match started {
                 Ok(started) => started,
                 Err(error) => {
