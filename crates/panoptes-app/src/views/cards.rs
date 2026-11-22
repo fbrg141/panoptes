@@ -24,8 +24,7 @@ fn frame(p: &Palette) -> Div {
         .rounded(px(RADIUS_MD))
         .border_1()
         .border_color(p.line)
-        .bg(p.surface_raised)
-        .shadow(p.shadow_pop())
+        .bg(p.surface)
 }
 
 /// Text that must stay inside a card, including long commands and paths.
@@ -184,9 +183,6 @@ pub fn question_card(
     });
     let mut actions = div()
         .mt(px(12.))
-        .pt(px(12.))
-        .border_t_1()
-        .border_color(p.line)
         .flex()
         .flex_wrap()
         .items_center()

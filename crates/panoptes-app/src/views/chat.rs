@@ -257,9 +257,10 @@ impl ChatPane {
             .h(px(38.))
             .px(px(12.))
             .border_b_1()
-            .border_color(if focused { p.line_strong } else { p.line })
-            .when(status == SessionStatus::Running, |el| {
-                el.child(loop_mark("pane-running", 20., LoopState::Thinking, p.ink))
+            .border_color(if can_close && focused {
+                p.line_strong
+            } else {
+                p.line
             })
             .child(self.render_title(title, renamable, cx))
             .when(status != SessionStatus::Idle, |el| {
@@ -325,7 +326,6 @@ impl Render for ChatPane {
             .unwrap_or(false);
         let warning = unguarded && !state.preferences.permission_warning_dismissed;
         let preview = state.previews.contains(&self.key);
-        let status = state.status(&self.key);
         let session = state.session(&self.key).cloned();
         let turns = conversation.map(build_turns).unwrap_or_default();
         let notices = conversation.map(|c| c.notices.clone()).unwrap_or_default();
@@ -484,7 +484,7 @@ impl Render for ChatPane {
                 this.follow_after_scroll();
                 cx.notify();
             }))
-            .px(px(16.))
+            .px(px(24.))
             .py(px(24.))
             .child(transcript);
 
@@ -557,9 +557,9 @@ impl Render for ChatPane {
         });
 
         let bottom = div()
-            .px(px(16.))
-            .pb(px(16.))
-            .pt(px(8.))
+            .px(px(24.))
+            .pb(px(20.))
+            .pt(px(4.))
             .children(questions.iter().map(|q| {
                 question_card(
                     q,
@@ -579,26 +579,6 @@ impl Render for ChatPane {
                     .max_w(px(768.))
                     .child(approval_card(a, true, &self.key, &self.store, &p))
             }))
-            .when(status == SessionStatus::Running, |el| {
-                el.child(
-                    div()
-                        .mx_auto()
-                        .flex()
-                        .w_full()
-                        .max_w(px(768.))
-                        .items_center()
-                        .gap(px(8.))
-                        .pb(px(4.))
-                        .text_color(p.running)
-                        .child(loop_mark(
-                            "composer-running",
-                            16.,
-                            LoopState::Thinking,
-                            p.running,
-                        ))
-                        .child("Running"),
-                )
-            })
             .child(self.composer.clone());
 
         div()

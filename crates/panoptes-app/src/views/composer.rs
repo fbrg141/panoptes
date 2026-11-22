@@ -15,7 +15,7 @@ use panoptes_core::files::Attachment;
 use panoptes_harness::{CommandInfo, PromptMode};
 
 use crate::ds::{
-    Button, CONTROL, CONTROL_SM, RADIUS_LG, RADIUS_SM, RADIUS_XS, Tooltip, Type as _, icon,
+    Button, CONTROL, CONTROL_SM, RADIUS_MD, RADIUS_SM, RADIUS_XS, Tooltip, Type as _, icon,
     menu_item, panel,
 };
 use crate::model::composer::{
@@ -568,7 +568,7 @@ impl Render for Composer {
             .flex_col()
             .w_full()
             .max_w(px(768.))
-            .rounded(px(RADIUS_LG))
+            .rounded(px(RADIUS_MD))
             .border_1()
             .border_color(if self.dragging {
                 p.focus
@@ -577,7 +577,7 @@ impl Render for Composer {
             } else {
                 p.line
             })
-            .bg(p.surface_raised)
+            .bg(p.surface)
             .capture_action(move |action: &Enter, window, cx| {
                 let _ = on_enter.update(cx, |this, cx| {
                     if action.shift {
@@ -722,9 +722,9 @@ impl Render for Composer {
                     .appearance(false)
                     .disabled(self.disabled)
                     .t_body()
-                    .px(px(2.))
-                    .pt(px(1.))
-                    .pb(px(0.))
+                    .px(px(12.))
+                    .pt(px(12.))
+                    .pb(px(4.))
                     .token(move |token, _, _| {
                         div()
                             .rounded(px(RADIUS_XS))

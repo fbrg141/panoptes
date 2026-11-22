@@ -388,7 +388,7 @@ impl Workspace {
                     .flex_1()
                     .items_center()
                     .justify_center()
-                    .gap(px(16.))
+                    .gap(px(12.))
                     .text_center()
                     .cursor_pointer()
                     .on_click(move |_, _, cx| {
@@ -401,12 +401,12 @@ impl Workspace {
                             )
                         })
                     })
-                    .child(loop_mark("empty-mark", 64., LoopState::Idle, p.ink))
+                    .child(loop_mark("empty-mark", 32., LoopState::Idle, p.ink_faint))
                     .child(
                         div()
                             .child(
                                 div()
-                                    .t_title()
+                                    .t_heading()
                                     .text_color(p.ink)
                                     .child("No session selected"),
                             )
@@ -415,7 +415,7 @@ impl Workspace {
                                     .mt(px(4.))
                                     .t_body()
                                     .text_color(p.ink_muted)
-                                    .child("Click to choose a session for this pane."),
+                                    .child("Choose a session from the sidebar, or press ⌘P."),
                             ),
                     ),
             )

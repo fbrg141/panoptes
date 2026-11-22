@@ -173,7 +173,7 @@ pub enum KbdTone {
 
 pub fn kbd(keys: &[&str], tone: KbdTone, p: &Palette) -> Div {
     let (bg, border, ink) = match tone {
-        KbdTone::Normal => (p.surface_raised, p.line_strong, p.ink_muted),
+        KbdTone::Normal => (transparent_black(), p.line, p.ink_muted),
         KbdTone::OnPrimary => (transparent_black(), p.on_primary, p.on_primary),
     };
     h_flex_gap(2.).children(keys.iter().map(|k| {
@@ -331,12 +331,12 @@ impl RenderOnce for Button {
                 transparent_black(),
             ),
             Variant::Secondary => (
-                transparent_black(),
+                p.surface_raised,
                 p.ink,
-                p.line_strong,
+                transparent_black(),
                 p.selection,
                 p.ink,
-                p.line_strong,
+                transparent_black(),
             ),
             Variant::Ghost => (
                 transparent_black(),
@@ -518,28 +518,15 @@ pub fn status_glyph(status: SessionStatus, p: &Palette) -> AnyElement {
 }
 
 pub fn status_pill(status: SessionStatus, p: &Palette) -> Div {
-    let (bg, ink) = match status {
-        SessionStatus::Running => (p.running_soft, p.running),
-        SessionStatus::Waiting => (p.waiting_soft, p.waiting),
-        SessionStatus::Failed => (p.error_soft, p.error),
-        SessionStatus::Done => (p.done_soft, p.done),
-        SessionStatus::Idle => (p.surface_raised, p.ink_muted),
-    };
-    let mut pill = h_flex_gap(6.)
+    h_flex_gap(4.)
         .flex_none()
-        .h(px(22.))
-        .px(px(8.))
-        .rounded(px(RADIUS_SM))
-        .bg(bg)
-        .text_color(ink)
+        .h(px(20.))
+        .px(px(4.))
+        .text_color(status_color(status, p))
         .t_label()
         .whitespace_nowrap()
         .child(status_glyph(status, p))
-        .child(status_word(status).unwrap_or("Idle"));
-    if status == SessionStatus::Idle {
-        pill = pill.border_1().border_color(p.line);
-    }
-    pill
+        .child(status_word(status).unwrap_or("Idle"))
 }
 
 // --- LoopMark --------------------------------------------------------------
@@ -664,7 +651,7 @@ pub fn tabs(
     on_change: impl Fn(&'static str, &mut Window, &mut App) + 'static,
 ) -> Div {
     let on_change = Rc::new(on_change);
-    h_flex_gap(4.)
+    h_flex_gap(0.)
         .border_b_1()
         .border_color(p.line)
         .children(tabs.into_iter().map(|tab| {
@@ -678,15 +665,15 @@ pub fn tabs(
                 .relative()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .h(px(CONTROL_LG))
+                .gap(px(6.))
+                .h(px(CONTROL))
                 .px(px(12.))
                 .t_label()
                 .text_color(ink)
                 .cursor_pointer()
                 .hover(move |s| s.text_color(hover_ink))
                 .on_click(move |_, window, cx| on_change(id, window, cx))
-                .children(tab.icon.map(|name| icon(name, 16.)))
+                .children(tab.icon.map(|name| icon(name, 14.)))
                 .child(tab.label)
                 .children(tab.count.map(|n| {
                     div()
@@ -701,8 +688,8 @@ pub fn tabs(
                             .left(px(8.))
                             .right(px(8.))
                             .bottom(px(-1.))
-                            .h(px(2.))
-                            .bg(p.focus),
+                            .h(px(1.))
+                            .bg(p.ink_muted),
                     )
                 })
         }))

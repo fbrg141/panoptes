@@ -183,7 +183,7 @@ fn prompt_view(turn_key: &str, message: &Message, ctx: &Ctx) -> AnyElement {
         .rounded(px(6.))
         .border_1()
         .border_color(p.line)
-        .bg(p.surface_raised)
+        .bg(p.surface)
         .px(px(12.))
         .py(px(8.))
         .t_body()
@@ -280,14 +280,8 @@ fn step_view(step: &Step, live: bool, ctx: &Ctx) -> AnyElement {
     let p = ctx.p;
     match step {
         Step::Text { key, text } => div()
-            .max_w(relative(0.85))
-            .self_start()
-            .rounded(px(6.))
-            .border_1()
-            .border_color(p.line)
-            .bg(p.surface_raised)
-            .px(px(12.))
-            .py(px(8.))
+            .w_full()
+            .py(px(4.))
             .child(markdown(key, text, false, p))
             .into_any_element(),
         Step::Thinking {
