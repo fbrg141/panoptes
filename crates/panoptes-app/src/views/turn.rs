@@ -41,9 +41,22 @@ pub struct ViewState {
     pub copied: Option<String>,
 }
 
+/// A content hash of an image's bytes: how the decoder cache is keyed, and
+/// the click target of its thumbnail.
+pub type ImageKey = u64;
+
+/// An image clicked in the transcript, carried to the lightbox. The same
+/// content may appear in two calls, so it is identified by its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoomedImage {
+    pub mime_type: String,
+    pub data: String,
+}
+
 pub type OnToggle = Arc<dyn Fn(String, bool, &mut App)>;
 pub type OnUnclamp = Arc<dyn Fn(String, &mut App)>;
 pub type OnCopy = Arc<dyn Fn(String, String, &mut App)>;
+pub type OnImageClick = Arc<dyn Fn(ZoomedImage, &mut App)>;
 
 /// What rendering a turn needs, and how its rows talk back to the pane.
 pub struct Ctx<'a> {
@@ -53,6 +66,8 @@ pub struct Ctx<'a> {
     pub on_toggle: OnToggle,
     pub on_unclamp: OnUnclamp,
     pub on_copy: OnCopy,
+    /// Opens an image in the lightbox.
+    pub on_image: OnImageClick,
     /// Draws an approval card under its tool row.
     pub approval: &'a dyn Fn(&Approval) -> AnyElement,
     /// The newly sent turn whose prompt rises in from the composer.
@@ -79,7 +94,7 @@ pub fn turn_view(turn: &Turn, ctx: &Ctx) -> AnyElement {
             let images = tool_images(&turn.work);
             let id = format!("{}:folded", turn.key);
             let open = ctx.is_open(&id, false);
-            let closed = (!images.is_empty()).then(|| tool_images_row(&images, p));
+            let closed = (!images.is_empty()).then(|| tool_images_row(&images, &id, ctx));
             reply.child(disclosure(
                 &id,
                 "history",
@@ -190,14 +205,11 @@ fn prompt_view(turn_key: &str, message: &Message, ctx: &Ctx) -> AnyElement {
         .child(selectable_plain(&id, body))
         .when(clamped, |el| el.child(show_all(&id, lines.len(), ctx)))
         .when(!shown.is_empty(), |el| {
-            el.child(
-                div()
-                    .mt(px(8.))
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .children(shown.iter().map(|(m, d)| thumbnail(m, d, p))),
-            )
+            el.child(div().mt(px(8.)).flex().flex_wrap().gap(px(8.)).children(
+                shown.iter().enumerate().map(|(index, (m, d))| {
+                    thumbnail(m, d, &format!("{turn_key}:attachment:{index}"), ctx)
+                }),
+            ))
         })
         .when(hidden > 0, |el| {
             el.child(
@@ -338,11 +350,13 @@ fn step_view(step: &Step, live: bool, ctx: &Ctx) -> AnyElement {
             .child(text.clone())
             .into_any_element(),
         Step::Image {
-            mime_type, data, ..
+            key,
+            mime_type,
+            data,
         } => match data {
             Some(data) => div()
                 .py(px(4.))
-                .child(thumbnail(mime_type, data, p))
+                .child(thumbnail(mime_type, data, key, ctx))
                 .into_any_element(),
             None => div()
                 .flex()
@@ -497,7 +511,7 @@ fn tool_call(step: &ToolStep, live: bool, ctx: &Ctx) -> AnyElement {
         .child(row)
         // Images stay in view, like an approval: what the agent saw is the point.
         .when(!call.images.is_empty(), |el| {
-            el.child(tool_images_row(&call.images, p))
+            el.child(tool_images_row(&call.images, &step.key, ctx))
         })
         .children(
             step.approval
@@ -725,14 +739,21 @@ fn disclosure(
         .into_any_element()
 }
 
-fn tool_images_row(images: &[ToolImage], p: &Palette) -> AnyElement {
+fn tool_images_row(images: &[ToolImage], scope: &str, ctx: &Ctx) -> AnyElement {
     div()
         .flex()
         .flex_wrap()
         .gap(px(8.))
         .py(px(4.))
         .pl(px(24.))
-        .children(images.iter().map(|i| thumbnail(&i.mime_type, &i.data, p)))
+        .children(images.iter().enumerate().map(|(index, image)| {
+            thumbnail(
+                &image.mime_type,
+                &image.data,
+                &format!("{scope}:{index}"),
+                ctx,
+            )
+        }))
         .into_any_element()
 }
 
@@ -742,10 +763,15 @@ thread_local! {
 }
 
 /// An image from the conversation, decoded once.
-pub(crate) fn decoded(mime_type: &str, data: &str) -> Option<Arc<Image>> {
+/// What an image is keyed by, in the decoder cache and in the lightbox.
+pub(crate) fn image_key(data: &str) -> ImageKey {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     data.hash(&mut hasher);
-    let key = hasher.finish();
+    hasher.finish()
+}
+
+pub(crate) fn decoded(mime_type: &str, data: &str) -> Option<Arc<Image>> {
+    let key = image_key(data);
     IMAGES.with(|cache| {
         cache
             .borrow_mut()
@@ -761,15 +787,33 @@ pub(crate) fn decoded(mime_type: &str, data: &str) -> Option<Arc<Image>> {
     })
 }
 
-fn thumbnail(mime_type: &str, data: &str, p: &Palette) -> AnyElement {
+/// Interactive state belongs to the image's position, not its bytes: two
+/// identical screenshots in one row must still be separate click targets.
+fn thumbnail_id(scope: &str) -> String {
+    format!("image:{scope}")
+}
+
+fn thumbnail(mime_type: &str, data: &str, scope: &str, ctx: &Ctx) -> AnyElement {
+    let p = ctx.p;
+    let clicked = ZoomedImage {
+        mime_type: mime_type.to_string(),
+        data: data.to_string(),
+    };
+    let on_image = ctx.on_image.clone();
     let frame = div()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(p.line)
-        .bg(p.surface_sunken)
-        .overflow_hidden();
-    match decoded(mime_type, data) {
-        Some(image) => frame
+        .id(thumbnail_id(scope))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            on_image(clicked.clone(), cx)
+        })
+        .tooltip(move |window, cx| crate::ds::Tooltip::new("Click to enlarge").build(window, cx));
+    let inner = match decoded(mime_type, data) {
+        Some(image) => div()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(p.line)
+            .bg(p.surface_sunken)
+            .overflow_hidden()
             .child(
                 img(image)
                     .max_h(px(160.))
@@ -777,13 +821,18 @@ fn thumbnail(mime_type: &str, data: &str, p: &Palette) -> AnyElement {
                     .object_fit(ObjectFit::Contain),
             )
             .into_any_element(),
-        None => frame
+        None => div()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(p.line)
+            .bg(p.surface_sunken)
             .p(px(8.))
             .t_caption()
             .text_color(p.ink_muted)
             .child(format!("IMAGE ({})", mime_type.to_uppercase()))
             .into_any_element(),
-    }
+    };
+    frame.child(inner).into_any_element()
 }
 
 /// The design system's Terminal: the command, then its output.
@@ -944,6 +993,20 @@ fn footer(turn: &Turn, group: SharedString, ctx: &Ctx) -> Option<AnyElement> {
 mod tests {
     use super::*;
 
+    #[::core::prelude::v1::test]
+    fn the_same_image_keeps_the_same_key_in_the_cache_and_the_lightbox() {
+        let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let image = ZoomedImage {
+            mime_type: "image/png".into(),
+            data: data.into(),
+        };
+        // The decoder shares equal bytes, while their element ids stay
+        // distinct because they come from the attachment/tool position.
+        assert_eq!(image_key(data), image_key(&image.data));
+        assert_ne!(image_key(data), image_key("something else"));
+        assert_ne!(thumbnail_id("call:0"), thumbnail_id("call:1"));
+        assert_eq!(thumbnail_id("call:0"), thumbnail_id("call:0"));
+    }
     #[::core::prelude::v1::test]
     fn prompts_keep_their_text_when_escaped() {
         assert_eq!(escape_markdown("a *b* #1"), "a \\*b\\* \\#1");

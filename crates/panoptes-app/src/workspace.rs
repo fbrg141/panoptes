@@ -17,6 +17,7 @@ use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{DraggedSession, Overlay, Ui, split_focused_pane};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
+use crate::views::image_zoom::ImageZoom;
 use crate::views::jump::{Jump, JumpKind};
 use crate::views::lane_dialogs::LaneDialogs;
 use crate::views::new_lane::NewLane;
@@ -37,6 +38,9 @@ pub struct Workspace {
     dialogs: Entity<LaneDialogs>,
     /// The overlay shown, and the view drawing it.
     overlay: Option<(Overlay, AnyView)>,
+    /// The image shown, and its persistent view. Keeping the entity preserves
+    /// focus and the scroll position of tall screenshots across redraws.
+    image_zoom: Option<(crate::views::turn::ZoomedImage, AnyView)>,
     /// Holds the keyboard when no text field does, so window shortcuts work.
     focus: FocusHandle,
     /// Whether a slow first load has gone on long enough to show a loader.
@@ -69,6 +73,7 @@ impl Workspace {
             .detach();
         cx.observe_in(&ui, window, |this, _, window, cx| {
             this.sync_overlay(window, cx);
+            this.sync_image_zoom(window, cx);
             cx.notify();
         })
         .detach();
@@ -104,6 +109,7 @@ impl Workspace {
             sidebar,
             dialogs,
             overlay: None,
+            image_zoom: None,
             focus,
             show_loader: false,
             drop_target: None,
@@ -151,9 +157,24 @@ impl Workspace {
             };
             (overlay, view)
         });
-        if self.overlay.is_none() {
+        if self.overlay.is_none() && self.image_zoom.is_none() {
             self.focus_active(window, cx);
         }
+    }
+
+    /// Builds the lightbox once per image, rather than on every workspace draw.
+    fn sync_image_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.ui.read(cx).image.clone();
+        if self.image_zoom.as_ref().map(|(image, _)| image) == wanted.as_ref() {
+            return;
+        }
+        let ui = self.ui.clone();
+        self.image_zoom = wanted.map(|image| {
+            let view = cx
+                .new(|cx| ImageZoom::new(ui, image.clone(), window, cx))
+                .into();
+            (image, view)
+        });
     }
 
     /// Places a dropped session: in the pane, or in a split beside it.
@@ -585,6 +606,7 @@ impl Render for Workspace {
             )
             .child(self.dialogs.clone())
             .children(self.overlay.as_ref().map(|(_, view)| view.clone()))
+            .children(self.image_zoom.as_ref().map(|(_, view)| view.clone()))
             .into_any_element()
     }
 }
