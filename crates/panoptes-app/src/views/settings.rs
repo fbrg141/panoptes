@@ -27,6 +27,7 @@ enum SettingsTab {
     Models,
     Lanes,
     Notifications,
+    Diagnostics,
 }
 
 /// A profile being written: a new one, or an edit of a saved one.
@@ -809,6 +810,37 @@ impl Settings {
             )
     }
 
+    fn diagnostics_tab(&self, p: &Palette) -> Div {
+        let store = self.store.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(div().t_body_strong().child("Session diagnostics"))
+            .child(
+                div()
+                    .t_label()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(p.ink_muted)
+                    .child(
+                        "Open a dedicated debugging window with the session and fork tree, \
+                         tool outcomes, token usage, context size, edited files and the complete \
+                         structured event log. Logs stay on this machine and are kept for 30 days.",
+                    ),
+            )
+            .child(
+                div().child(
+                    Button::new("open-diagnostics")
+                        .primary()
+                        .icon("watch")
+                        .label("Open diagnostics window")
+                        .on_click(move |_, _, cx| {
+                            crate::views::diagnostics::open(store.clone(), cx);
+                        }),
+                ),
+            )
+    }
+
     fn lanes_tab(&self, window: &Window, p: &Palette, cx: &mut Context<Self>) -> Div {
         let text = self.days.read(cx).value().to_string();
         let valid = valid_days(&text).is_some();
@@ -989,6 +1021,12 @@ impl Render for Settings {
                     icon: Some("circle-check"),
                     count: None,
                 },
+                Tab {
+                    id: "diagnostics",
+                    label: "Diagnostics".into(),
+                    icon: Some("watch"),
+                    count: None,
+                },
             ],
             match tab {
                 SettingsTab::Appearance => "appearance",
@@ -996,6 +1034,7 @@ impl Render for Settings {
                 SettingsTab::Models => "models",
                 SettingsTab::Lanes => "lanes",
                 SettingsTab::Notifications => "notifications",
+                SettingsTab::Diagnostics => "diagnostics",
             },
             &p,
             {
@@ -1007,6 +1046,7 @@ impl Render for Settings {
                             "models" => SettingsTab::Models,
                             "lanes" => SettingsTab::Lanes,
                             "notifications" => SettingsTab::Notifications,
+                            "diagnostics" => SettingsTab::Diagnostics,
                             _ => SettingsTab::Appearance,
                         };
                         this.editor = None;
@@ -1022,6 +1062,7 @@ impl Render for Settings {
             SettingsTab::Models => self.models_tab(&models, &p, cx),
             SettingsTab::Lanes => self.lanes_tab(window, &p, cx),
             SettingsTab::Notifications => self.notifications_tab(&p, cx),
+            SettingsTab::Diagnostics => self.diagnostics_tab(&p),
         };
         let panel = ds::overlay_panel(680., window, &p)
             .track_focus(&self.focus)

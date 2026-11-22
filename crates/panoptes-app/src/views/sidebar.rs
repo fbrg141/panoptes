@@ -260,6 +260,7 @@ impl Sidebar {
             }
         };
         let this = cx.entity().downgrade();
+        let diagnostics_store = self.store.clone();
         div()
             .flex()
             .flex_none()
@@ -282,6 +283,16 @@ impl Sidebar {
                     .icon("search")
                     .tooltip("Search projects, lanes and sessions (⌘P)")
                     .on_click(open(Overlay::Search)),
+            )
+            .child(
+                Button::new("diagnostics")
+                    .ghost()
+                    .small()
+                    .icon("watch")
+                    .tooltip("Open diagnostics window")
+                    .on_click(move |_, _, cx| {
+                        crate::views::diagnostics::open(diagnostics_store.clone(), cx);
+                    }),
             )
             .child(
                 Button::new("settings")

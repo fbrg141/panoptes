@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use panoptes_core::eventlog::EventLog;
+use panoptes_core::eventlog::{self, EventLog, LogSnapshot};
 use panoptes_core::service::{Service, ServiceError, SessionEvent};
 use panoptes_core::store::{Preferences, Store};
 use panoptes_harness::Harness;
@@ -125,6 +125,22 @@ impl Backend {
                 .await
                 .context("The backend stopped before answering")
         }
+    }
+
+    /// Reads retained diagnostics off the UI thread. The log remains local.
+    pub fn read_logs(&self) -> impl Future<Output = LogSnapshot> + use<> {
+        let (answer, answered) = oneshot::channel();
+        let dir = self.logs_dir.clone();
+        self.runtime.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || eventlog::read(&dir))
+                .await
+                .unwrap_or_else(|error| LogSnapshot {
+                    events: Vec::new(),
+                    errors: vec![format!("Could not read logs: {error}")],
+                });
+            let _ = answer.send(result);
+        });
+        async move { answered.await.unwrap_or_default() }
     }
 
     /// Runs a fallible service call, recording its error in the event log

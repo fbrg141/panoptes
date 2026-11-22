@@ -53,6 +53,7 @@ async fn a_session_leaves_a_record_without_its_words() {
         events,
         [
             "sessionStarted",
+            "runStarted",
             "status",
             "asked",
             "status",
@@ -64,8 +65,8 @@ async fn a_session_leaves_a_record_without_its_words() {
     );
     assert_eq!(lines[0]["key"], "fake:s1");
     assert_eq!(lines[0]["resumed"], true);
-    assert_eq!(lines[2]["kind"], "question");
-    assert_eq!(lines[7]["kind"], "notOpen");
+    assert_eq!(lines[3]["kind"], "question");
+    assert_eq!(lines[8]["kind"], "notOpen");
     // What the question said is not kept.
     let text = serde_json::to_string(&lines).unwrap();
     assert!(!text.contains("Proceed?"), "{text}");
