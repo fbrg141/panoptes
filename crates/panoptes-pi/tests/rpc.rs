@@ -114,6 +114,10 @@ async fn a_read_only_session_gets_only_reading_tools() {
             .unwrap();
         let events = until(&mut rx, |e| matches!(e, HarnessEvent::RunSettled { .. })).await;
         assert_eq!(text_of(&events), expected);
+        assert_eq!(
+            session.settings().await.unwrap().toggles.is_empty(),
+            read_only
+        );
         session.shutdown().await;
     }
 }
@@ -619,6 +623,29 @@ async fn discoverable_commands_have_neutral_names_and_kinds() {
     assert_eq!(commands[0].kind, CommandKind::Prompt);
     assert_eq!(commands[1].kind, CommandKind::Extension);
     assert_eq!(commands[2].kind, CommandKind::Skill);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn codemode_can_be_toggled() {
+    let (session, _rx) = start().await;
+    let settings = session.settings().await.unwrap();
+    assert_eq!(settings.toggles.len(), 1);
+    assert_eq!(settings.toggles[0].label, "Codemode");
+    assert!(!settings.toggles[0].enabled);
+
+    session.set_toggle("codemode".into(), true).await.unwrap();
+    assert!(session.settings().await.unwrap().toggles[0].enabled);
+    session.set_toggle("codemode".into(), false).await.unwrap();
+    assert!(!session.settings().await.unwrap().toggles[0].enabled);
+    let error = session
+        .set_toggle("unknown".into(), true)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Rejected)
+    );
     session.shutdown().await;
 }
 

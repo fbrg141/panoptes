@@ -548,7 +548,17 @@ pub struct ContextUsage {
     pub window: u64,
 }
 
-/// A session's model, reasoning effort and context use.
+/// A boolean session option supplied by a harness. Ids are opaque to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionToggle {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub enabled: bool,
+}
+
+/// A session's model, reasoning effort, harness options and context use.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSettings {
@@ -558,6 +568,8 @@ pub struct SessionSettings {
     /// Levels the current model supports, lowest first. Empty when the
     /// harness has no such setting.
     pub thinking_levels: Vec<String>,
+    /// Harness-defined options the session can change.
+    pub toggles: Vec<SessionToggle>,
     pub context: Option<ContextUsage>,
 }
 
@@ -652,6 +664,11 @@ pub trait AgentSession: Send + Sync {
     /// [`SessionSettings::thinking_levels`].
     async fn set_thinking_level(&self, _level: String) -> anyhow::Result<()> {
         Err(HarnessError::rejected("This harness has no thinking levels").into())
+    }
+
+    /// Changes a harness-defined option from the next message on.
+    async fn set_toggle(&self, _toggle_id: String, _enabled: bool) -> anyhow::Result<()> {
+        Err(HarnessError::rejected("This harness has no session toggles").into())
     }
 
     /// Ends the session's process. The session stays resumable.

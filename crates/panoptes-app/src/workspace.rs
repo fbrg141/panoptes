@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use gpui_kit::base::{h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_core::service::SessionEvent;
@@ -10,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::backend::Backend;
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark};
+use crate::model::diagnostics::DiagnosticsFilter;
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, drop_zone_at};
 use crate::store::AppStore;
 use crate::store::Startup;
@@ -17,6 +19,7 @@ use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{DraggedSession, Overlay, Ui, split_focused_pane};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
+use crate::views::diagnostics::DiagnosticsPane;
 use crate::views::image_zoom::ImageZoom;
 use crate::views::jump::{Jump, JumpKind};
 use crate::views::lane_dialogs::LaneDialogs;
@@ -41,6 +44,8 @@ pub struct Workspace {
     /// The image shown, and its persistent view. Keeping the entity preserves
     /// focus and the scroll position of tall screenshots across redraws.
     image_zoom: Option<(crate::views::turn::ZoomedImage, AnyView)>,
+    /// The diagnostics pane and the scope it was opened with.
+    diagnostics: Option<(DiagnosticsFilter, AnyView)>,
     /// Holds the keyboard when no text field does, so window shortcuts work.
     focus: FocusHandle,
     /// Whether a slow first load has gone on long enough to show a loader.
@@ -74,6 +79,7 @@ impl Workspace {
         cx.observe_in(&ui, window, |this, _, window, cx| {
             this.sync_overlay(window, cx);
             this.sync_image_zoom(window, cx);
+            this.sync_diagnostics(window, cx);
             cx.notify();
         })
         .detach();
@@ -118,6 +124,7 @@ impl Workspace {
             dialogs,
             overlay: None,
             image_zoom: None,
+            diagnostics: None,
             focus,
             show_loader: false,
             drop_target: None,
@@ -183,6 +190,24 @@ impl Workspace {
                 .into();
             (image, view)
         });
+    }
+
+    /// Builds the diagnostics pane when opened and drops its refresh clock on close.
+    fn sync_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.ui.read(cx).diagnostics;
+        if self.diagnostics.as_ref().map(|(filter, _)| *filter) == wanted {
+            return;
+        }
+        let (store, ui) = (self.store.clone(), self.ui.clone());
+        self.diagnostics = wanted.map(|filter| {
+            let view = cx
+                .new(|cx| DiagnosticsPane::new(store, ui, filter, window, cx))
+                .into();
+            (filter, view)
+        });
+        if self.diagnostics.is_none() {
+            self.focus_active(window, cx);
+        }
     }
 
     /// Places a dropped session: in the pane, or in a split beside it.
@@ -506,6 +531,32 @@ impl Render for Workspace {
         let layout = self.ui.read(cx).layout.clone();
         let multiple = layout.leaves().len() > 1;
         let panes = self.render_node(&layout, multiple, &p, window, cx);
+        let narrow = window.viewport_size().width < px(1280.);
+        let content: AnyElement = match self.diagnostics.as_ref().map(|(_, view)| view.clone()) {
+            Some(diagnostics) if narrow => diagnostics.into_any_element(),
+            Some(diagnostics) => div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(
+                    h_resizable("conversation-diagnostics")
+                        .child(resizable_panel().child(panes))
+                        .child(
+                            resizable_panel()
+                                .size(px(760.))
+                                .flex_none()
+                                .child(diagnostics),
+                        ),
+                )
+                .into_any_element(),
+            None => div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(panes)
+                .into_any_element(),
+        };
         let store = self.store.clone();
         fn open<A: Action>(
             ui: &Entity<Ui>,
@@ -640,7 +691,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(self.sidebar.clone())
-                    .child(div().flex().flex_1().min_w_0().min_h_0().child(panes)),
+                    .child(content),
             )
             .child(self.dialogs.clone())
             .children(self.overlay.as_ref().map(|(_, view)| view.clone()))

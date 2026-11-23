@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use panoptes_harness::{
     AgentSession, Answer, CommandInfo, CommandKind, DiscoveredSession, EventSink, Harness,
     HarnessError, HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
-    SessionSettings, StartSession,
+    SessionSettings, SessionToggle, StartSession,
 };
 use serde_json::{Value, json};
 
@@ -268,6 +268,18 @@ impl AgentSession for PiSession {
             model: map::model(&state["model"]),
             thinking_level: state["thinkingLevel"].as_str().map(str::to_string),
             thinking_levels,
+            toggles: if self.read_only {
+                Vec::new()
+            } else {
+                vec![SessionToggle {
+                    id: "codemode".into(),
+                    label: "Codemode".into(),
+                    description: Some(
+                        "Let the model run JavaScript that calls tools and non-LLM models".into(),
+                    ),
+                    enabled: self.shared.codemode(),
+                }]
+            },
             // Usage is a nicety: a session without stats still has settings.
             context: stats.ok().as_ref().and_then(map::context_usage),
         })
@@ -291,6 +303,7 @@ impl AgentSession for PiSession {
             .map(|commands| {
                 commands
                     .iter()
+                    .filter(|command| command["name"].as_str() != Some("panoptes-codemode"))
                     .filter_map(|command| {
                         Some(CommandInfo {
                             name: command["name"].as_str()?.to_string(),
@@ -322,6 +335,25 @@ impl AgentSession for PiSession {
             .call(json!({"type": "set_thinking_level", "level": level}))
             .await
             .map(|_| ())
+    }
+
+    async fn set_toggle(&self, toggle_id: String, enabled: bool) -> anyhow::Result<()> {
+        if toggle_id != "codemode" {
+            return Err(
+                HarnessError::rejected(format!("Unknown session toggle {toggle_id}")).into(),
+            );
+        }
+        let command = format!("/panoptes-codemode {}", if enabled { "on" } else { "off" });
+        let data = self
+            .process
+            .call(json!({"type": "prompt", "message": command}))
+            .await?;
+        if data["disposition"].as_str() != Some("handled") || self.shared.codemode() != enabled {
+            return Err(
+                HarnessError::rejected("Codemode is not available for this session").into(),
+            );
+        }
+        Ok(())
     }
 
     async fn shutdown(&self) {

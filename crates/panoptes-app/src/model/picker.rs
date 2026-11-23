@@ -169,6 +169,15 @@ pub fn thinking_groups(levels: &[String], level: &str) -> Vec<PickerGroup> {
     vec![PickerGroup { label: None, items }]
 }
 
+/// Thinking levels for a live session, where the harness default is not a choice.
+pub fn session_thinking_groups(levels: &[String], level: &str) -> Vec<PickerGroup> {
+    let mut groups = thinking_groups(levels, level);
+    if let Some(group) = groups.first_mut() {
+        group.items.retain(|item| item.id != DEFAULT_CHOICE);
+    }
+    groups
+}
+
 /// A saved model missing from a loaded list is stale; an empty list proves
 /// nothing.
 pub fn missing_profile_model<'a>(
@@ -425,5 +434,8 @@ mod tests {
         let groups = thinking_groups(&levels, "high");
         assert_eq!(groups[0].items.len(), 3);
         assert!(groups[0].items[2].current);
+        let session = session_thinking_groups(&levels, "high");
+        assert_eq!(session[0].items.len(), 2);
+        assert!(session[0].items[1].current);
     }
 }

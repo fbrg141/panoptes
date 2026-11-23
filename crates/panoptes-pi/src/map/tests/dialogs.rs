@@ -189,6 +189,17 @@ fn other_status_lines_pass_through() {
 }
 
 #[test]
+fn codemode_status_updates_session_settings_without_a_raw_event() {
+    let mut mapper = EventMapper::default();
+    let events = mapper.ui_request(
+        &json!({"id":"s","method":"setStatus","statusKey":"panoptes.codemode","statusText":"on"}),
+        0,
+    );
+    assert!(events.is_empty());
+    assert!(mapper.shared.codemode());
+}
+
+#[test]
 fn notify_becomes_a_notice() {
     let events = extension_ui(
         &json!({"type":"extension_ui_request","id":"n","method":"notify","message":"Blocked","notifyType":"warning"}),

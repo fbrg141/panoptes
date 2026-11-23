@@ -5,6 +5,7 @@ use gpui_kit::*;
 
 use panoptes_core::service::Session;
 
+use crate::model::diagnostics::DiagnosticsFilter;
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, single_pane};
 use crate::model::sidebar::lane_session_to_stop;
 use crate::store::AppStore;
@@ -41,6 +42,8 @@ pub struct Ui {
     pub image: Option<ZoomedImage>,
     pub layout: PaneNode,
     pub focused_pane: String,
+    /// The diagnostics pane and its initial project/lane scope.
+    pub diagnostics: Option<DiagnosticsFilter>,
 }
 
 impl Default for Ui {
@@ -52,6 +55,7 @@ impl Default for Ui {
             image: None,
             layout,
             focused_pane,
+            diagnostics: None,
         }
     }
 }
@@ -75,6 +79,18 @@ impl Ui {
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.overlay = None;
         cx.notify();
+    }
+
+    pub fn open_diagnostics(&mut self, filter: DiagnosticsFilter, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.diagnostics = Some(filter);
+        cx.notify();
+    }
+
+    pub fn close_diagnostics(&mut self, cx: &mut Context<Self>) {
+        if self.diagnostics.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub fn focus_pane(&mut self, pane_id: &str, cx: &mut Context<Self>) {

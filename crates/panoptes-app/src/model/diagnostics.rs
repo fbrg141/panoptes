@@ -1,4 +1,4 @@
-//! Pure aggregation for the diagnostics window. The JSONL log is the source
+//! Pure aggregation for the diagnostics pane. The JSONL log is the source
 //! of history; the service listing supplies durable titles, lanes and forks.
 
 use std::collections::{BTreeMap, HashMap};
@@ -9,6 +9,91 @@ use panoptes_harness::SessionStatus;
 use serde_json::Value;
 
 use super::format::format_tokens;
+use super::picker::{PickerGroup, PickerItem};
+
+/// Restricts both the session tree and its events to one project or lane.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiagnosticsFilter {
+    pub project_id: Option<i64>,
+    pub lane_id: Option<i64>,
+}
+
+impl DiagnosticsFilter {
+    pub fn project(project_id: i64) -> Self {
+        Self {
+            project_id: Some(project_id),
+            lane_id: None,
+        }
+    }
+
+    pub fn lane(project_id: i64, lane_id: i64) -> Self {
+        Self {
+            project_id: Some(project_id),
+            lane_id: Some(lane_id),
+        }
+    }
+
+    pub fn is_all(self) -> bool {
+        self.project_id.is_none() && self.lane_id.is_none()
+    }
+
+    pub fn matches(self, session: &SessionDiagnostics) -> bool {
+        self.project_id
+            .is_none_or(|id| session.project_id == Some(id))
+            && self.lane_id.is_none_or(|id| session.lane_id == Some(id))
+    }
+}
+
+pub fn project_filter_groups(projects: &[Project], filter: DiagnosticsFilter) -> Vec<PickerGroup> {
+    let mut items = vec![PickerItem {
+        id: String::new(),
+        label: "All projects".into(),
+        current: filter.project_id.is_none(),
+        ..Default::default()
+    }];
+    items.extend(projects.iter().map(|project| PickerItem {
+        id: project.id.to_string(),
+        label: project.settings.name.clone(),
+        detail: Some(project.repo.clone()),
+        current: filter.project_id == Some(project.id),
+        ..Default::default()
+    }));
+    vec![PickerGroup { label: None, items }]
+}
+
+pub fn lane_filter_groups(
+    lanes: &[Lane],
+    projects: &[Project],
+    filter: DiagnosticsFilter,
+) -> Vec<PickerGroup> {
+    let mut items = vec![PickerItem {
+        id: String::new(),
+        label: "All lanes".into(),
+        current: filter.lane_id.is_none(),
+        ..Default::default()
+    }];
+    items.extend(
+        lanes
+            .iter()
+            .filter(|lane| filter.project_id.is_none_or(|id| lane.project_id == id))
+            .map(|lane| {
+                let project = projects
+                    .iter()
+                    .find(|project| project.id == lane.project_id)
+                    .map(|project| project.settings.name.as_str())
+                    .unwrap_or("Unknown project");
+                PickerItem {
+                    id: lane.id.to_string(),
+                    label: lane.task.clone(),
+                    detail: Some(lane.branch.clone()),
+                    keywords: vec![project.to_string()],
+                    current: filter.lane_id == Some(lane.id),
+                    ..Default::default()
+                }
+            }),
+    );
+    vec![PickerGroup { label: None, items }]
+}
 
 #[derive(Debug, Clone)]
 pub struct ToolSummary {
@@ -169,6 +254,38 @@ impl Diagnostics {
     pub fn get(&self, key: &str) -> Option<&SessionDiagnostics> {
         self.sessions.iter().find(|session| session.key == key)
     }
+
+    pub fn get_in(&self, key: &str, filter: DiagnosticsFilter) -> Option<&SessionDiagnostics> {
+        self.get(key).filter(|session| filter.matches(session))
+    }
+}
+
+/// Event rows for the selected session, or for every session in the scope.
+/// Unscoped diagnostics also retain events that have no session key.
+pub fn diagnostic_event_indices(
+    diagnostics: &Diagnostics,
+    event_count: usize,
+    filter: DiagnosticsFilter,
+    selected_key: Option<&str>,
+) -> Vec<usize> {
+    if let Some(key) = selected_key {
+        return diagnostics
+            .get_in(key, filter)
+            .map(|session| session.event_indices.clone())
+            .unwrap_or_default();
+    }
+    if filter.is_all() {
+        return (0..event_count).collect();
+    }
+    let mut indices: Vec<usize> = diagnostics
+        .sessions
+        .iter()
+        .filter(|session| filter.matches(session))
+        .flat_map(|session| session.event_indices.iter().copied())
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
 }
 
 fn text<'a>(event: &'a Value, field: &str) -> Option<&'a str> {
@@ -393,8 +510,34 @@ pub fn event_summary(event: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use panoptes_core::store::{LaneState, ProjectSettings};
     use panoptes_harness::HarnessRef;
     use serde_json::json;
+
+    fn project(id: i64, name: &str) -> Project {
+        Project {
+            id,
+            repo: format!("/{name}"),
+            settings: ProjectSettings {
+                name: name.into(),
+                base_branch: "main".into(),
+                copy_files: Vec::new(),
+                setup: None,
+            },
+        }
+    }
+
+    fn lane(id: i64, project_id: i64, task: &str) -> Lane {
+        Lane {
+            id,
+            project_id,
+            name: task.into(),
+            task: task.into(),
+            branch: format!("lane/{task}"),
+            state: LaneState::Active,
+            worktrees: Vec::new(),
+        }
+    }
 
     fn session(key: &str, locator: &str, parent: Option<&str>) -> Session {
         Session {
@@ -471,6 +614,62 @@ mod tests {
         assert_eq!(diagnostics.sessions.len(), 1);
         assert_eq!(diagnostics.sessions[0].status, SessionStatus::Failed);
         assert_eq!(diagnostics.sessions[0].last_activity, 9);
+    }
+
+    #[test]
+    fn project_and_lane_filters_scope_sessions_and_their_events() {
+        let mut first = session("first", "/first", None);
+        first.project_id = Some(1);
+        first.lane_id = Some(10);
+        let mut second = session("second", "/second", None);
+        second.project_id = Some(1);
+        second.lane_id = Some(11);
+        let mut other = session("other", "/other", None);
+        other.project_id = Some(2);
+        let events = vec![
+            json!({"at": 1, "event": "error", "message": "global"}),
+            json!({"at": 2, "event": "status", "key": "first", "status": "done"}),
+            json!({"at": 3, "event": "status", "key": "second", "status": "done"}),
+            json!({"at": 4, "event": "status", "key": "other", "status": "done"}),
+        ];
+        let diagnostics = analyze(&[first, second, other], &[], &[], &events);
+        let project = DiagnosticsFilter::project(1);
+        assert_eq!(
+            diagnostic_event_indices(&diagnostics, events.len(), project, None),
+            [1, 2]
+        );
+        let lane = DiagnosticsFilter::lane(1, 11);
+        assert_eq!(
+            diagnostic_event_indices(&diagnostics, events.len(), lane, None),
+            [2]
+        );
+        assert_eq!(
+            diagnostic_event_indices(&diagnostics, events.len(), lane, Some("first")),
+            [] as [usize; 0]
+        );
+        assert_eq!(
+            diagnostic_event_indices(&diagnostics, events.len(), Default::default(), None),
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn filter_pickers_list_projects_and_only_the_selected_projects_lanes() {
+        let projects = [project(1, "One"), project(2, "Two")];
+        let lanes = [lane(10, 1, "First"), lane(20, 2, "Second")];
+        let filter = DiagnosticsFilter::project(1);
+        let project_items = &project_filter_groups(&projects, filter)[0].items;
+        assert_eq!(project_items[0].label, "All projects");
+        assert!(project_items[1].current);
+        let lane_items = &lane_filter_groups(&lanes, &projects, filter)[0].items;
+        assert_eq!(
+            lane_items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["", "10"]
+        );
+        assert!(lane_items[0].current);
     }
 
     #[test]

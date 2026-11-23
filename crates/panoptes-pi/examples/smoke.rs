@@ -1,7 +1,7 @@
 //! End-to-end check against the installed Pi. The test suite only talks to a
 //! scripted stand-in, so this is the one place the real protocol is proven:
-//! it starts a new session in a temporary folder (with Panoptes' approvals
-//! extension loaded, as the app does), sends one prompt, and fails unless
+//! it starts a new session in a temporary folder (with Panoptes' extensions
+//! loaded, as the app does), toggles codemode, sends one prompt, and fails unless
 //! the events and the history keep the contract the UI relies on. The
 //! session it creates is deleted again at the end.
 //!
@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     let session = harness
         .start_session(StartSession::new(cwd), tx)
         .await
-        .context("Pi did not start a session with the approvals extension loaded")?;
+        .context("Pi did not start a session with Panoptes' extensions loaded")?;
     println!("started {:?}", session.harness_ref());
 
     let checked = check(session.as_ref(), &mut rx, prompt).await;
@@ -64,6 +64,35 @@ async fn check(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>,
     prompt: String,
 ) -> anyhow::Result<()> {
+    let settings = session.settings().await?;
+    ensure!(
+        settings
+            .toggles
+            .iter()
+            .any(|toggle| toggle.id == "codemode"),
+        "Pi did not offer the codemode session toggle"
+    );
+    session.set_toggle("codemode".into(), true).await?;
+    ensure!(
+        session
+            .settings()
+            .await?
+            .toggles
+            .iter()
+            .any(|toggle| toggle.id == "codemode" && toggle.enabled),
+        "Codemode did not turn on"
+    );
+    session.set_toggle("codemode".into(), false).await?;
+    ensure!(
+        session
+            .settings()
+            .await?
+            .toggles
+            .iter()
+            .any(|toggle| toggle.id == "codemode" && !toggle.enabled),
+        "Codemode did not turn off"
+    );
+
     session
         .prompt(prompt, Vec::new(), PromptMode::Start)
         .await?;

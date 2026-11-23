@@ -24,6 +24,8 @@ pub(crate) struct ApprovalReply {
 pub struct SessionState {
     /// Set by the permission extension's startup status.
     permission_guard: AtomicBool,
+    /// Whether Panoptes' controls extension reports codemode as active.
+    codemode: AtomicBool,
     /// When each tool call started and ended, as seen live. Pi's history has
     /// no such times, so history reloads borrow them from here and give the
     /// same values the live events did.
@@ -58,6 +60,14 @@ impl SessionState {
 
     pub(crate) fn has_permission_guard(&self) -> bool {
         self.permission_guard.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_codemode(&self, enabled: bool) {
+        self.codemode.store(enabled, Ordering::Relaxed);
+    }
+
+    pub(crate) fn codemode(&self) -> bool {
+        self.codemode.load(Ordering::Relaxed)
     }
 
     pub(super) fn record_tool_time(&self, call_id: &str, started: i64, ended: Option<i64>) {

@@ -168,7 +168,7 @@ pub fn palette_groups(
         "command",
         &["⌘", "/"],
     ));
-    actions.push(action("showLogs", "Open diagnostics window", "watch", &[]));
+    actions.push(action("showLogs", "Open diagnostics pane", "watch", &[]));
     vec![
         PaletteGroup {
             label: "Sessions".into(),

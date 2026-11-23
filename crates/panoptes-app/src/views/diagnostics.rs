@@ -1,4 +1,4 @@
-//! A separate, local-only observability window for sessions and the event log.
+//! A local-only observability pane for sessions and the event log.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -12,12 +12,15 @@ use serde_json::Value;
 
 use crate::ds::{self, Button, Tab, Type as _, icon};
 use crate::model::diagnostics::{
-    Diagnostics, FileChange, SessionDiagnostics, ToolSummary, analyze, event_summary,
+    Diagnostics, DiagnosticsFilter, FileChange, SessionDiagnostics, ToolSummary, analyze,
+    diagnostic_event_indices, event_summary, lane_filter_groups, project_filter_groups,
 };
 use crate::model::format::{format_tokens, relative_time};
 use crate::model::usage::format_cost;
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
+use crate::ui::Ui;
+use crate::views::picker::{Picker, PickerEvent, PickerState};
 use crate::zoom::px;
 
 const REFRESH: Duration = Duration::from_secs(2);
@@ -36,8 +39,12 @@ enum TreeRow {
     Session { key: String, depth: usize },
 }
 
-pub struct DiagnosticsWindow {
+pub struct DiagnosticsPane {
     store: Entity<AppStore>,
+    ui: Entity<Ui>,
+    filter: DiagnosticsFilter,
+    project_picker: Entity<PickerState>,
+    lane_picker: Entity<PickerState>,
     events: Vec<Value>,
     analysis: Diagnostics,
     analysis_dirty: bool,
@@ -48,35 +55,6 @@ pub struct DiagnosticsWindow {
     tab: DetailTab,
     loading: bool,
     _clock: Task<()>,
-}
-
-/// Opens a new window without creating another backend or consuming its event
-/// channel. The workspace store remains the one live view of open sessions.
-pub fn open(store: Entity<AppStore>, cx: &mut App) {
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(1440.), px(900.)),
-            cx,
-        ))),
-        titlebar: Some(TitlebarOptions {
-            title: Some("Panoptes Diagnostics".into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let root = store.clone();
-    let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-        window
-            .observe_window_appearance(|window, cx| crate::theme::follow(window.appearance(), cx))
-            .detach();
-        cx.new(|cx| DiagnosticsWindow::new(root, window, cx))
-    });
-    if let Err(error) = opened {
-        store.update(cx, |store, cx| {
-            store.show_error(format!("Could not open diagnostics: {error}"), cx)
-        });
-    }
 }
 
 fn timestamp(ms: i64) -> String {
@@ -181,10 +159,11 @@ fn session_rows(members: &[&SessionDiagnostics], query: &str) -> Vec<TreeRow> {
     rows
 }
 
-fn tree_rows(diagnostics: &Diagnostics, query: &str) -> Vec<TreeRow> {
+fn tree_rows(diagnostics: &Diagnostics, query: &str, filter: DiagnosticsFilter) -> Vec<TreeRow> {
     let mut project_ids: Vec<_> = diagnostics
         .sessions
         .iter()
+        .filter(|session| filter.matches(session))
         .filter_map(|session| session.project_id)
         .collect::<HashSet<_>>()
         .into_iter()
@@ -195,7 +174,7 @@ fn tree_rows(diagnostics: &Diagnostics, query: &str) -> Vec<TreeRow> {
         let members: Vec<_> = diagnostics
             .sessions
             .iter()
-            .filter(|session| session.project_id == Some(project_id))
+            .filter(|session| filter.matches(session) && session.project_id == Some(project_id))
             .collect();
         let mut project_rows = Vec::new();
         let mut lane_ids: Vec<_> = members
@@ -241,7 +220,7 @@ fn tree_rows(diagnostics: &Diagnostics, query: &str) -> Vec<TreeRow> {
     let other: Vec<_> = diagnostics
         .sessions
         .iter()
-        .filter(|session| session.project_id.is_none())
+        .filter(|session| filter.matches(session) && session.project_id.is_none())
         .collect();
     let other_rows = session_rows(&other, query);
     if !other_rows.is_empty() {
@@ -251,8 +230,48 @@ fn tree_rows(diagnostics: &Diagnostics, query: &str) -> Vec<TreeRow> {
     rows
 }
 
-impl DiagnosticsWindow {
-    fn new(store: Entity<AppStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl DiagnosticsPane {
+    pub fn new(
+        store: Entity<AppStore>,
+        ui: Entity<Ui>,
+        filter: DiagnosticsFilter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let project_picker = cx.new(|cx| PickerState::new("Project", window, cx));
+        cx.subscribe(&project_picker, |this, _, event, cx| {
+            if let PickerEvent::Selected(id) = event {
+                this.filter = DiagnosticsFilter {
+                    project_id: id.parse().ok(),
+                    lane_id: None,
+                };
+                this.selected_key = None;
+                this.selected_event = None;
+                cx.notify();
+            }
+        })
+        .detach();
+        let lane_picker = cx.new(|cx| PickerState::new("Lane", window, cx));
+        cx.subscribe(&lane_picker, |this, _, event, cx| {
+            if let PickerEvent::Selected(id) = event {
+                let lane_id = id.parse().ok();
+                this.filter.lane_id = lane_id;
+                if let Some(lane_id) = lane_id {
+                    this.filter.project_id = this
+                        .store
+                        .read(cx)
+                        .state
+                        .lanes
+                        .iter()
+                        .find(|lane| lane.id == lane_id)
+                        .map(|lane| lane.project_id);
+                }
+                this.selected_key = None;
+                this.selected_event = None;
+                cx.notify();
+            }
+        })
+        .detach();
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Filter sessions, tools, files or events")
         });
@@ -278,6 +297,10 @@ impl DiagnosticsWindow {
         });
         let mut this = Self {
             store,
+            ui,
+            filter,
+            project_picker,
+            lane_picker,
             events: Vec::new(),
             analysis: Diagnostics::default(),
             analysis_dirty: true,
@@ -330,14 +353,12 @@ impl DiagnosticsWindow {
     }
 
     fn filtered_events(&self, diagnostics: &Diagnostics, query: &str) -> Vec<usize> {
-        let indices: Vec<usize> = match self
-            .selected_key
-            .as_deref()
-            .and_then(|key| diagnostics.get(key))
-        {
-            Some(session) => session.event_indices.clone(),
-            None => (0..self.events.len()).collect(),
-        };
+        let indices = diagnostic_event_indices(
+            diagnostics,
+            self.events.len(),
+            self.filter,
+            self.selected_key.as_deref(),
+        );
         indices
             .into_iter()
             .rev()
@@ -749,6 +770,8 @@ impl DiagnosticsWindow {
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let event_count =
+            diagnostic_event_indices(diagnostics, self.events.len(), self.filter, None).len();
         let mut tree = div()
             .id("diagnostic-sessions")
             .flex_1()
@@ -778,10 +801,10 @@ impl DiagnosticsWindow {
                         .ml_auto()
                         .t_code_sm()
                         .text_color(p.ink_muted)
-                        .child(self.events.len().to_string()),
+                        .child(event_count.to_string()),
                 ),
         );
-        for row in tree_rows(diagnostics, query) {
+        for row in tree_rows(diagnostics, query, self.filter) {
             match row {
                 TreeRow::Project(title) => {
                     tree = tree.child(
@@ -903,7 +926,7 @@ impl DiagnosticsWindow {
     fn metric(label: &'static str, value: String, detail: String, p: &Palette) -> Div {
         div()
             .flex_1()
-            .min_w_0()
+            .min_w(px(120.))
             .p(px(12.))
             .rounded(px(ds::RADIUS_MD))
             .border_1()
@@ -925,7 +948,11 @@ impl DiagnosticsWindow {
         match session {
             Some(session) => {
                 let state = &self.store.read(cx).state;
-                let status = state.statuses.get(&session.key).copied().unwrap_or(session.status);
+                let status = state
+                    .statuses
+                    .get(&session.key)
+                    .copied()
+                    .unwrap_or(session.status);
                 let context = state
                     .settings
                     .get(&session.key)
@@ -933,19 +960,27 @@ impl DiagnosticsWindow {
                     .map(|context| (context.tokens, Some(context.window)))
                     .unwrap_or((session.context_tokens, session.context_window));
                 let context_value = match context {
-                    (Some(tokens), Some(window)) => format!("{} / {}", format_tokens(tokens), format_tokens(window)),
+                    (Some(tokens), Some(window)) => {
+                        format!("{} / {}", format_tokens(tokens), format_tokens(window))
+                    }
                     _ => "Unknown".into(),
                 };
                 let context_detail = match context {
-                    (Some(tokens), Some(window)) if window > 0 => format!("{}% of the model window", tokens.saturating_mul(100) / window),
+                    (Some(tokens), Some(window)) if window > 0 => format!(
+                        "{}% of the model window",
+                        tokens.saturating_mul(100) / window
+                    ),
                     _ => "Reported after a run settles".into(),
                 };
-                let input = session.input_tokens + session.cache_read_tokens + session.cache_write_tokens;
+                let input =
+                    session.input_tokens + session.cache_read_tokens + session.cache_write_tokens;
                 let token_detail = format!(
                     "{} in · {} out{}",
                     format_tokens(input),
                     format_tokens(session.output_tokens),
-                    format_cost(session.cost).map(|cost| format!(" · {cost}")).unwrap_or_default()
+                    format_cost(session.cost)
+                        .map(|cost| format!(" · {cost}"))
+                        .unwrap_or_default()
                 );
                 div()
                     .flex_none()
@@ -955,7 +990,10 @@ impl DiagnosticsWindow {
                             .items_center()
                             .gap(px(8.))
                             .child(div().t_title().child(session.title.clone()))
-                            .children((status != SessionStatus::Idle).then(|| ds::status_pill(status, &p))),
+                            .children(
+                                (status != SessionStatus::Idle)
+                                    .then(|| ds::status_pill(status, &p)),
+                            ),
                     )
                     .child(
                         div()
@@ -972,20 +1010,37 @@ impl DiagnosticsWindow {
                             .child(format!(
                                 "{}{}{}",
                                 session.lane.as_deref().unwrap_or("No lane"),
-                                session.branch.as_ref().map(|branch| format!(" · {branch}")).unwrap_or_default(),
-                                session.parent_key.as_ref().map(|parent| format!(" · Forked from {parent}")).unwrap_or_default()
+                                session
+                                    .branch
+                                    .as_ref()
+                                    .map(|branch| format!(" · {branch}"))
+                                    .unwrap_or_default(),
+                                session
+                                    .parent_key
+                                    .as_ref()
+                                    .map(|parent| format!(" · Forked from {parent}"))
+                                    .unwrap_or_default()
                             )),
                     )
                     .child(
                         div()
                             .mt(px(14.))
                             .flex()
+                            .flex_wrap()
                             .gap(px(8.))
-                            .child(Self::metric("TOKENS", format_tokens(session.total_tokens()), token_detail, &p))
+                            .child(Self::metric(
+                                "TOKENS",
+                                format_tokens(session.total_tokens()),
+                                token_detail,
+                                &p,
+                            ))
                             .child(Self::metric(
                                 "MODEL CALLS",
                                 session.model_calls.to_string(),
-                                format!("{} runs · {} failed", session.runs, session.failed_model_calls),
+                                format!(
+                                    "{} runs · {} failed",
+                                    session.runs, session.failed_model_calls
+                                ),
                                 &p,
                             ))
                             .child(Self::metric(
@@ -1008,24 +1063,96 @@ impl DiagnosticsWindow {
                             )),
                     )
             }
-            None => div()
-                .flex_none()
-                .child(div().t_title().child("All activity"))
-                .child(
-                    div()
-                        .mt(px(4.))
-                        .t_body()
-                        .text_color(p.ink_muted)
-                        .child(format!(
-                            "{} retained events. Select a session for usage, tools, forks and file changes.",
-                            self.events.len()
-                        )),
-                ),
+            None => {
+                let state = &self.store.read(cx).state;
+                let title = self
+                    .filter
+                    .lane_id
+                    .and_then(|id| state.lanes.iter().find(|lane| lane.id == id))
+                    .map(|lane| lane.task.clone())
+                    .or_else(|| {
+                        self.filter
+                            .project_id
+                            .and_then(|id| state.projects.iter().find(|project| project.id == id))
+                            .map(|project| project.settings.name.clone())
+                    })
+                    .unwrap_or_else(|| "All activity".into());
+                let event_count =
+                    diagnostic_event_indices(&self.analysis, self.events.len(), self.filter, None)
+                        .len();
+                div()
+                    .flex_none()
+                    .child(div().t_title().child(title))
+                    .child(
+                        div()
+                            .mt(px(4.))
+                            .t_body()
+                            .text_color(p.ink_muted)
+                            .child(format!(
+                                "{} retained events in this view. Select a session for usage, tools, forks and file changes.",
+                                event_count
+                            )),
+                    )
+            }
         }
+    }
+    fn filters(&self, p: &Palette, cx: &App) -> Div {
+        let state = &self.store.read(cx).state;
+        let project = self.filter.project_id.and_then(|id| {
+            state
+                .projects
+                .iter()
+                .find(|project| project.id == id)
+                .map(|project| project.settings.name.clone())
+        });
+        let lane = self.filter.lane_id.and_then(|id| {
+            state
+                .lanes
+                .iter()
+                .find(|lane| lane.id == id)
+                .map(|lane| lane.task.clone())
+        });
+        div()
+            .h(px(48.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(20.))
+            .border_b_1()
+            .border_color(p.line)
+            .child(div().t_label().text_color(p.ink_muted).child("PROJECT"))
+            .child(
+                Picker::new(
+                    "diagnostics-project-filter",
+                    &self.project_picker,
+                    project_filter_groups(&state.projects, self.filter),
+                    project.unwrap_or_else(|| "All projects".into()),
+                    p,
+                )
+                .width(280.),
+            )
+            .child(
+                div()
+                    .ml(px(8.))
+                    .t_label()
+                    .text_color(p.ink_muted)
+                    .child("LANE"),
+            )
+            .child(
+                Picker::new(
+                    "diagnostics-lane-filter",
+                    &self.lane_picker,
+                    lane_filter_groups(&state.lanes, &state.projects, self.filter),
+                    lane.unwrap_or_else(|| "All lanes".into()),
+                    p,
+                )
+                .width(280.),
+            )
     }
 }
 
-impl Render for DiagnosticsWindow {
+impl Render for DiagnosticsPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *cx.palette();
         let query = self.search.read(cx).value().trim().to_lowercase();
@@ -1043,7 +1170,7 @@ impl Render for DiagnosticsWindow {
         let selected = self
             .selected_key
             .as_deref()
-            .and_then(|key| diagnostics.get(key));
+            .and_then(|key| diagnostics.get_in(key, self.filter));
         let selected_event = self.selected_event.and_then(|index| self.events.get(index));
         let this = cx.entity().downgrade();
         let tabs = ds::tabs(
@@ -1105,6 +1232,7 @@ impl Render for DiagnosticsWindow {
         };
         let refresh_this = this.clone();
         let folder_store = self.store.clone();
+        let close_ui = self.ui.clone();
         div()
             .size_full()
             .bg(p.bg)
@@ -1155,8 +1283,19 @@ impl Render for DiagnosticsWindow {
                             .on_click(move |_, _, cx| {
                                 folder_store.update(cx, |store, cx| store.show_logs(cx));
                             }),
+                    )
+                    .child(
+                        Button::new("close-diagnostics")
+                            .ghost()
+                            .small()
+                            .icon("x")
+                            .tooltip("Close diagnostics")
+                            .on_click(move |_, _, cx| {
+                                close_ui.update(cx, |ui, cx| ui.close_diagnostics(cx));
+                            }),
                     ),
             )
+            .child(self.filters(&p, cx))
             .children((!self.errors.is_empty()).then(|| {
                 div()
                     .flex_none()

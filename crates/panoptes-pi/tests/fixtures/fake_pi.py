@@ -44,6 +44,7 @@ models = [
 ]
 model = models[0]
 thinking_level = "medium"
+codemode = False
 gates = 0
 
 
@@ -199,6 +200,7 @@ for line in sys.stdin:
             {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
             {"name": "review", "description": None, "source": "extension"},
             {"name": "skill:review", "description": "Review with a skill", "source": "skill"},
+            {"name": "panoptes-codemode", "description": "Internal session control", "source": "extension"},
         ]})
     elif kind == "set_model":
         found = [m for m in models if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
@@ -215,6 +217,12 @@ for line in sys.stdin:
     elif kind == "get_session_stats":
         respond(command, {"contextUsage": {"tokens": 1200, "contextWindow": model["contextWindow"], "percent": 4}})
     elif kind == "prompt":
+        if command["message"] in ["/panoptes-codemode on", "/panoptes-codemode off"]:
+            codemode = command["message"].endswith(" on")
+            send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+                  "statusKey": "panoptes.codemode", "statusText": "on" if codemode else "off"})
+            respond(command, {"disposition": "handled"})
+            continue
         if command["message"] == "crash":
             # The command may already be part of the conversation even though
             # its caller never gets a response. Retrying it could duplicate it.
