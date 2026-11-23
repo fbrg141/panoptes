@@ -13,8 +13,9 @@ use panoptes_harness::SessionStatus;
 use crate::ds::{Button, LoopState, Tab, Type as _, icon, loop_mark, status_word, tabs};
 use crate::model::format::{now_ms, relative_time};
 use crate::model::sidebar::{
-    EmptyLane, MenuEntry, empty_lane, is_live, lane_main_session, lane_menu_items, primary_action,
-    project_menu_items, session_detail, session_row_menu_items, work_label,
+    EmptyLane, MenuEntry, ProjectOpen, empty_lane, is_live, lane_main_session, lane_menu_items,
+    primary_action, project_menu_items, project_open, session_detail, session_row_menu_items,
+    work_label,
 };
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
@@ -336,6 +337,31 @@ impl Sidebar {
                 });
             }
         };
+        // Clicking the project name opens its main checkout. The chevron to
+        // its left still folds the lane list, and the menu still acts on the
+        // project.
+        let open_project = {
+            let store = self.store.clone();
+            let ui = self.ui.clone();
+            let repo = project.repo.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                let action = {
+                    let state = &store.read(cx).state;
+                    project_open(id, &state.lanes, &state.navigation, &state.sessions, &repo)
+                };
+                match action {
+                    Some(ProjectOpen::Open(session)) => {
+                        crate::ui::request_open(&store, &ui, &session, None, cx)
+                    }
+                    Some(ProjectOpen::Start { lane }) => {
+                        store.update(cx, |store, cx| {
+                            store.create(lane, Default::default(), cx).detach()
+                        });
+                    }
+                    None => {}
+                }
+            }
+        };
         let menu_items = project_menu_items(lanes.len());
         let menu_open =
             matches!(&self.menu, Some(m) if matches!(m.owner, Owner::Project(o) if o == id));
@@ -371,7 +397,7 @@ impl Sidebar {
                     .py(px(4.))
                     .t_caption()
                     .child(project.settings.name.to_uppercase())
-                    .on_click(toggle),
+                    .on_click(open_project),
             )
             .child(reveal(div()).child({
                 let ui = self.ui.clone();

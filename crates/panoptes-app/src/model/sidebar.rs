@@ -3,10 +3,76 @@
 
 use panoptes_core::lanes::LaneWork;
 use panoptes_core::service::{LaneNavigation, Session};
+#[cfg(test)]
+use panoptes_core::store::LaneWorktree;
 use panoptes_core::store::{Lane, LaneState};
 use panoptes_harness::SessionStatus;
 
 use super::format::plural;
+
+/// What clicking a project opens: the session in its default main-checkout
+/// lane. Projects have one active lane whose worktree is the repository
+/// itself (the service refuses a second), so the click has an answer.
+#[allow(clippy::large_enum_variant)] // `Session` is what the click opens.
+pub enum ProjectOpen {
+    /// Nothing yet: start the first session in the lane.
+    Start { lane: i64 },
+    /// There is one: open it, or adopt a conversation running in the lane's
+    /// folder that no lane owns yet.
+    Open(Session),
+}
+
+/// The main-checkout lane of `project_id`: active, with the repository as its
+/// worktree, newest first in case more than one was made while it was allowed.
+pub fn main_checkout_lane(lanes: &[Lane], project_id: i64) -> Option<&Lane> {
+    let mut candidates: Vec<&Lane> = lanes
+        .iter()
+        .filter(|lane| {
+            lane.project_id == project_id
+                && lane.state == LaneState::Active
+                && lane.worktrees.iter().any(|tree| tree.main_checkout)
+        })
+        .collect();
+    candidates.sort_by_key(|lane| std::cmp::Reverse(lane.id));
+    candidates.into_iter().next()
+}
+
+/// What a click on the project opens.
+pub fn project_open(
+    project_id: i64,
+    lanes: &[Lane],
+    navigation: &[LaneNavigation],
+    sessions: &[Session],
+    repo: &str,
+) -> Option<ProjectOpen> {
+    let lane = main_checkout_lane(lanes, project_id)?;
+    let owned: Vec<Session> = navigation
+        .iter()
+        .find(|nav| nav.lane_id == lane.id)
+        .into_iter()
+        .flat_map(|nav| nav.sessions.iter().chain(nav.archived_sessions.iter()))
+        .cloned()
+        .collect();
+    if let Some(session) = lane_main_session(&owned) {
+        return Some(ProjectOpen::Open(session.clone()));
+    }
+    // An empty lane still opens: a conversation sitting in the main checkout
+    // belongs there, and adopting it is what puts it under the lane.
+    let unowned = sessions
+        .iter()
+        .find(|session| {
+            // A conversation from another folder of the same repository is not
+            // this lane's work: the lane runs in the checkout itself.
+            session.lane_id.is_none()
+                && session.project_id == Some(project_id)
+                && session.cwd == repo
+        })
+        .cloned();
+    Some(match unowned {
+        Some(session) => ProjectOpen::Open(session),
+        None => ProjectOpen::Start { lane: lane.id },
+    })
+}
 
 /// Whether a row carries weight: an agent at work or one that needs you.
 pub fn is_live(status: SessionStatus) -> bool {
@@ -292,6 +358,81 @@ pub(crate) mod tests {
             archived: false,
             open: false,
         }
+    }
+
+    /// An active main-checkout lane for `project_id`.
+    fn main_lane(id: i64, project_id: i64) -> Lane {
+        Lane {
+            id,
+            project_id,
+            name: "main".into(),
+            task: "Work on the checkout".into(),
+            branch: "main".into(),
+            state: LaneState::Active,
+            worktrees: vec![LaneWorktree {
+                project_id,
+                path: "/code/app".into(),
+                main_checkout: true,
+                checkpoint_ref: None,
+            }],
+        }
+    }
+
+    /// The lane has one session, `key`.
+    fn nav(lane_id: i64, key: &str) -> LaneNavigation {
+        let mut session = session(key);
+        session.id = Some(1);
+        session.lane_id = Some(lane_id);
+        LaneNavigation {
+            lane_id,
+            sessions: vec![session],
+            archived_sessions: Vec::new(),
+            work: None,
+            busy_writer: None,
+        }
+    }
+
+    #[test]
+    fn a_project_click_opens_its_main_checkout() {
+        // A project whose main checkout already has a session: that one.
+        let mut owned = session("panoptes:4");
+        owned.lane_id = Some(2);
+        owned.id = Some(4);
+        let navigation = vec![nav(2, "panoptes:4")];
+        let lanes = vec![main_lane(2, 9), main_lane(3, 10)];
+        assert!(matches!(
+            project_open(9, &lanes, &navigation, &[], "/code/app"),
+            Some(ProjectOpen::Open(s)) if s.key == "panoptes:4"
+        ));
+        // Another project's main checkout is not this project's.
+        assert!(matches!(
+            project_open(10, &lanes, &[], &[], "/code/app"),
+            Some(ProjectOpen::Start { lane: 3 })
+        ));
+        // A project with no main-checkout lane at all opens nothing new.
+        let other = vec![Lane {
+            id: 5,
+            worktrees: vec![LaneWorktree {
+                project_id: 9,
+                path: "/lanes/x".into(),
+                main_checkout: false,
+                checkpoint_ref: None,
+            }],
+            ..main_lane(5, 9)
+        }];
+        assert!(project_open(9, &other, &[], &[], "/code/app").is_none());
+    }
+
+    #[test]
+    fn an_empty_main_checkout_adopts_a_conversation_already_in_it() {
+        let lanes = vec![main_lane(2, 9)];
+        let mut unowned = session("pi:abc");
+        unowned.project_id = Some(9);
+        unowned.cwd = "/code/app".into();
+        assert!(matches!(
+            project_open(9, &lanes, &[], &[unowned], "/code/app"),
+            Some(ProjectOpen::Open(s)) if s.key == "pi:abc"
+        ));
     }
 
     fn lane(state: LaneState) -> Lane {
