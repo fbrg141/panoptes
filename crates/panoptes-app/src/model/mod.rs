@@ -9,6 +9,7 @@ pub mod notify;
 pub mod palette;
 pub mod panes;
 pub mod picker;
+pub mod review;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod turns;

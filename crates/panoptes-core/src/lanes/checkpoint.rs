@@ -76,8 +76,9 @@ pub(super) fn gitlink_path(entry: &str) -> Option<&str> {
 /// alike, written through a private copy of the index.
 pub(crate) fn snapshot_tree(path: &Path, lane: &Lane) -> anyhow::Result<String> {
     let index = git_path(path, "index")?;
+    let invocation = SNAPSHOTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temporary = index.with_file_name(format!(
-        "panoptes-archive-{}-{}",
+        "panoptes-archive-{}-{}-{invocation}",
         std::process::id(),
         lane.id
     ));
@@ -93,6 +94,8 @@ pub(crate) fn snapshot_tree(path: &Path, lane: &Lane) -> anyhow::Result<String> 
     reject_new_gitlinks(path, Some(&temporary))?;
     run_index(path, &temporary, &["write-tree"])
 }
+
+static SNAPSHOTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(super) struct TemporaryFile(pub(super) PathBuf);
 

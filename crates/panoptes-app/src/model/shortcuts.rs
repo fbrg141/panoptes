@@ -29,6 +29,7 @@ pub fn shortcut_groups() -> Vec<ShortcutGroup> {
                 entry("Add a project", &["⌘", "N"]),
                 entry("Split pane vertically (side by side)", &["⌘/Ctrl", "D"]),
                 entry("Split pane horizontally (stacked)", &["⌘/Ctrl", "⇧", "D"]),
+                entry("Review changes in current lane", &["Ctrl", "⇧", "R"]),
                 entry("Keyboard shortcuts", &["⌘", "/"]),
             ],
         },
@@ -45,7 +46,12 @@ pub fn shortcut_groups() -> Vec<ShortcutGroup> {
         },
         ShortcutGroup {
             label: "Reading",
-            entries: vec![entry("Jump to the latest output", &["⌘", "↓"])],
+            entries: vec![
+                entry("Jump to the latest output", &["⌘", "↓"]),
+                entry("Review: previous/next file", &["J/K"]),
+                entry("Review: previous/next hunk", &["N/P"]),
+                entry("Close review", &["Esc"]),
+            ],
         },
         ShortcutGroup {
             label: "Zoom",

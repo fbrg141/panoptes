@@ -41,6 +41,8 @@ pub struct Ui {
     pub image: Option<ZoomedImage>,
     pub layout: PaneNode,
     pub focused_pane: String,
+    /// Whether the workspace shows its lane review beside the conversation.
+    pub review_open: bool,
 }
 
 impl Default for Ui {
@@ -52,6 +54,7 @@ impl Default for Ui {
             image: None,
             layout,
             focused_pane,
+            review_open: false,
         }
     }
 }
@@ -156,6 +159,28 @@ pub fn request_open(
             store.preview(session, cx).detach();
         } else {
             store.open(session, cx).detach();
+        }
+    });
+}
+
+/// Opens or closes the workspace review and points its backend state at the
+/// focused lane. Closing keeps its cache for the next opening.
+pub fn toggle_review(
+    store: &Entity<AppStore>,
+    ui: &Entity<Ui>,
+    lane_id: Option<i64>,
+    cx: &mut App,
+) {
+    let open = ui.update(cx, |ui, cx| {
+        ui.review_open = !ui.review_open;
+        cx.notify();
+        ui.review_open
+    });
+    store.update(cx, |store, cx| {
+        if open && let Some(lane_id) = lane_id {
+            store.open_review(lane_id, cx);
+        } else {
+            store.close_review(cx);
         }
     });
 }

@@ -13,6 +13,7 @@ pub mod new_lane;
 pub mod palette;
 pub mod picker;
 pub mod resume;
+pub mod review;
 pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;

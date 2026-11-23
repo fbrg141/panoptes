@@ -225,6 +225,38 @@ impl ChatPane {
         let state = &self.store.read(cx).state;
         let status = state.status(&self.key);
         let session = state.session(&self.key);
+        let review_lane = session.and_then(|session| session.lane_id);
+        let review_label = review_lane.map(|lane_id| {
+            if let Some(review) = state
+                .reviews
+                .get(&lane_id)
+                .and_then(|review| review.data.as_ref())
+            {
+                if review.totals.files == 0 {
+                    "No changes".to_string()
+                } else {
+                    format!(
+                        "{} · +{} −{}",
+                        crate::model::format::plural(review.totals.files, "file", "files"),
+                        review.totals.added,
+                        review.totals.removed
+                    )
+                }
+            } else {
+                let files = state
+                    .navigation
+                    .iter()
+                    .find(|navigation| navigation.lane_id == lane_id)
+                    .and_then(|navigation| navigation.work)
+                    .map_or(0, |work| work.changed_files);
+                if files == 0 {
+                    "Review".to_string()
+                } else {
+                    crate::model::format::plural(files as usize, "file", "files")
+                }
+            }
+        });
+        let review_open = self.ui.read(cx).review_open;
         let renamable = session.is_some_and(|s| s.id.is_some());
         let title: SharedString = session
             .map(|s| s.title.clone())
@@ -268,6 +300,20 @@ impl ChatPane {
             .when(status != SessionStatus::Idle, |el| {
                 el.child(status_pill(status, p))
             })
+            .children(review_lane.zip(review_label).map(|(lane_id, label)| {
+                let store = self.store.clone();
+                let ui = self.ui.clone();
+                Button::new("review-changes")
+                    .ghost()
+                    .small()
+                    .icon("file-diff")
+                    .label(label)
+                    .active(review_open)
+                    .tooltip("Review lane changes (Ctrl-Shift-R)")
+                    .on_click(move |_, _, cx| {
+                        crate::ui::toggle_review(&store, &ui, Some(lane_id), cx)
+                    })
+            }))
             .child(
                 div()
                     .flex()

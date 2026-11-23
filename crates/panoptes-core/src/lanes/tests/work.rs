@@ -72,3 +72,28 @@ fn worktree_status_sees_submodule_changes_hidden_by_config() {
 
     assert!(!worktree_status(&path).unwrap().is_empty());
 }
+
+#[test]
+fn concurrent_snapshots_use_independent_indexes() {
+    let f = fixture(None);
+    let new = create_lane(&f);
+    let lane = lane(&f, 1, &new);
+    let path = PathBuf::from(&new.worktrees[0].path);
+    std::fs::write(path.join("tracked.txt"), "change\n").unwrap();
+    let expected = snapshot_tree(&path, &lane).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let readers: Vec<_> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            let lane = lane.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                snapshot_tree(&path, &lane)
+            })
+        })
+        .collect();
+    for reader in readers {
+        assert_eq!(reader.join().unwrap().unwrap(), expected);
+    }
+}
