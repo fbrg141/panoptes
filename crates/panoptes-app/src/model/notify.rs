@@ -69,6 +69,7 @@ mod tests {
             enabled: true,
             finished,
             needs_attention,
+            sound: true,
         }
     }
 

@@ -955,6 +955,15 @@ impl Settings {
                         toggle(NotificationField::Finished),
                     ))
                     .child(ds::checkbox(
+                        "notify-sound",
+                        notifications.sound,
+                        "Play a sound",
+                        Some("Play the system alert sound with the notification.".into()),
+                        !notifications.enabled,
+                        p,
+                        toggle(NotificationField::Sound),
+                    ))
+                    .child(ds::checkbox(
                         "notify-needs-attention",
                         notifications.needs_attention,
                         "A session needs me",
@@ -966,6 +975,17 @@ impl Settings {
                         p,
                         toggle(NotificationField::NeedsAttention),
                     )),
+            )
+            // Hearing it is the quickest way to know whether to turn it off.
+            .child(
+                div().child(
+                    Button::new("notify-preview-sound")
+                        .ghost()
+                        .small()
+                        .icon("play")
+                        .label("Play the sound")
+                        .on_click(|_, _, _| crate::notify::play_sound()),
+                ),
             )
     }
 }

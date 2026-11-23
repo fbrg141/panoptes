@@ -444,6 +444,9 @@ impl AppStore {
             &label,
         ) {
             crate::notify::post(key, &notice, cx);
+            if self.state.preferences.notifications.sound {
+                crate::notify::play_sound();
+            }
         }
     }
 
