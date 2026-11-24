@@ -443,10 +443,10 @@ impl AppStore {
             attended,
             &label,
         ) {
-            crate::notify::post(key, &notice, cx);
-            if self.state.preferences.notifications.sound {
+            if notice.sound {
                 crate::notify::play_sound();
             }
+            crate::notify::post(key, &notice, cx);
         }
     }
 
