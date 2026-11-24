@@ -11,6 +11,7 @@ use panoptes_core::store::{Lane, LaneState, Project};
 use panoptes_harness::SessionStatus;
 
 use crate::ds::{Button, LoopState, Tab, Type as _, icon, loop_mark, status_word, tabs};
+use crate::model::diagnostics::DiagnosticsFilter;
 use crate::model::format::{now_ms, relative_time};
 use crate::model::sidebar::{
     EmptyLane, MenuEntry, ProjectOpen, empty_lane, is_live, lane_main_session, lane_menu_items,
@@ -240,6 +241,9 @@ impl Sidebar {
                 "cleanup-lanes" => self
                     .ui
                     .update(cx, |ui, cx| ui.open(Overlay::Cleanup { project_id }, cx)),
+                "diagnostics" => self.ui.update(cx, |ui, cx| {
+                    ui.open_diagnostics(DiagnosticsFilter::project(project_id), cx)
+                }),
                 "remove-project" => cx.emit(SidebarEvent::RemoveProject(project_id)),
                 _ => {}
             },
@@ -293,6 +297,21 @@ impl Sidebar {
                     .update(cx, |store, cx| store.restore_lane(lane_id, cx));
             }
             "delete-lane" => cx.emit(SidebarEvent::DeleteLane(lane_id)),
+            "diagnostics" => {
+                let project_id = self
+                    .store
+                    .read(cx)
+                    .state
+                    .lanes
+                    .iter()
+                    .find(|lane| lane.id == lane_id)
+                    .map(|lane| lane.project_id);
+                if let Some(project_id) = project_id {
+                    self.ui.update(cx, |ui, cx| {
+                        ui.open_diagnostics(DiagnosticsFilter::lane(project_id, lane_id), cx)
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -308,7 +327,7 @@ impl Sidebar {
             }
         };
         let this = cx.entity().downgrade();
-        let diagnostics_store = self.store.clone();
+        let diagnostics_ui = self.ui.clone();
         div()
             .flex()
             .flex_none()
@@ -337,9 +356,11 @@ impl Sidebar {
                     .ghost()
                     .small()
                     .icon("watch")
-                    .tooltip("Open diagnostics window")
+                    .tooltip("Open diagnostics pane")
                     .on_click(move |_, _, cx| {
-                        crate::views::diagnostics::open(diagnostics_store.clone(), cx);
+                        diagnostics_ui.update(cx, |ui, cx| {
+                            ui.open_diagnostics(DiagnosticsFilter::default(), cx)
+                        });
                     }),
             )
             .child(

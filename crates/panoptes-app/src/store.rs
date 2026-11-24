@@ -1090,6 +1090,23 @@ impl AppStore {
         .detach();
     }
 
+    pub fn set_toggle(
+        &mut self,
+        key: String,
+        toggle_id: String,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let k = key.clone();
+        let work = self.backend.run("set_session_toggle", move |s| async move {
+            s.set_toggle(&k, toggle_id, enabled).await
+        });
+        self.spawn(cx, work, move |this, settings, cx| {
+            this.keep_settings(&key, settings, cx)
+        })
+        .detach();
+    }
+
     pub fn abort(&mut self, key: String, cx: &mut Context<Self>) {
         let work = self
             .backend

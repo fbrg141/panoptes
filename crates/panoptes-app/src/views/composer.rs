@@ -16,14 +16,14 @@ use panoptes_harness::{CommandInfo, PromptMode};
 
 use crate::ds::{
     Button, CONTROL, CONTROL_SM, RADIUS_MD, RADIUS_SM, RADIUS_XS, Tooltip, Type as _, icon,
-    menu_item, panel,
+    option_toggle, panel,
 };
 use crate::model::composer::{
     LaneRequest, Query, available_commands, command_at, compose_prompt, context_label,
     continue_list, insert_command, insert_mention, lane_request, match_commands, match_files,
     mention_at, mention_label, next_level, restore_unsent, segments,
 };
-use crate::model::picker::{model_groups, short_model_id};
+use crate::model::picker::{model_groups, session_thinking_groups, short_model_id};
 use crate::model::usage::{session_usage_detail, session_usage_label, sum_usage};
 use crate::store::{AppStore, Draft};
 use crate::theme::{Palette, PaletteExt as _};
@@ -90,7 +90,7 @@ pub struct Composer {
     commands: Option<Vec<CommandInfo>>,
     dragging: bool,
     model_picker: Entity<PickerState>,
-    thinking_open: bool,
+    thinking_picker: Entity<PickerState>,
     placeholder_busy: bool,
     /// A New lane composer lists files from the project's checkout.
     file_root: Option<String>,
@@ -118,7 +118,8 @@ impl Composer {
         })
         .detach();
         let focus = input.read(cx).focus_handle(cx);
-        let model_picker = cx.new(|cx| PickerState::new("Model", window, cx).return_focus(focus));
+        let model_picker =
+            cx.new(|cx| PickerState::new("Model", window, cx).return_focus(focus.clone()));
         cx.subscribe(&model_picker, |this, _, event, cx| match event {
             PickerEvent::Opened => {
                 let key = this.key.clone();
@@ -142,6 +143,26 @@ impl Composer {
             }
         })
         .detach();
+        let thinking_picker =
+            cx.new(|cx| PickerState::new("Thinking", window, cx).return_focus(focus));
+        cx.subscribe(&thinking_picker, |this, _, event, cx| {
+            if let PickerEvent::Selected(level) = event {
+                let key = this.key.clone();
+                let current = this
+                    .store
+                    .read(cx)
+                    .state
+                    .settings
+                    .get(&key)
+                    .and_then(|settings| settings.thinking_level.clone());
+                if current.as_deref() != Some(level.as_str()) {
+                    let level = level.clone();
+                    this.store
+                        .update(cx, |store, cx| store.set_thinking_level(key, level, cx));
+                }
+            }
+        })
+        .detach();
         cx.observe(&store, |_, _, cx| cx.notify()).detach();
         Self {
             key,
@@ -157,7 +178,7 @@ impl Composer {
             commands: None,
             dragging: false,
             model_picker,
-            thinking_open: false,
+            thinking_picker,
             placeholder_busy: false,
             file_root: None,
             new_lane: false,
@@ -793,8 +814,28 @@ impl Render for Composer {
                 settings
                     .as_ref()
                     .filter(|s| !s.thinking_levels.is_empty())
-                    .map(|settings| self.thinking_menu(settings, &p, cx)),
+                    .map(|settings| self.thinking_menu(settings, &p)),
             )
+            .children(settings.as_ref().into_iter().flat_map(|settings| {
+                settings.toggles.iter().map(|toggle| {
+                    let toggle_store = store.clone();
+                    let session = key.clone();
+                    let id = toggle.id.clone();
+                    option_toggle(
+                        SharedString::from(format!("session-toggle-{}", toggle.id)),
+                        toggle.label.clone(),
+                        toggle.description.clone().map(SharedString::from),
+                        toggle.enabled,
+                        self.disabled,
+                        &p,
+                        move |enabled, _, cx| {
+                            toggle_store.update(cx, |store, cx| {
+                                store.set_toggle(session.clone(), id.clone(), enabled, cx)
+                            });
+                        },
+                    )
+                })
+            }))
             .child(div().flex_1())
             .children(usage.map(|total| {
                 let detail = session_usage_detail(&total);
@@ -966,89 +1007,33 @@ impl Composer {
         &self,
         settings: &panoptes_harness::SessionSettings,
         p: &Palette,
-        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let fixed = settings.thinking_levels.len() < 2;
         let level = settings.thinking_level.clone();
-        let open = self.thinking_open && !fixed;
-        let this = cx.entity().downgrade();
         let title = if fixed {
             "This model does not think"
         } else {
             "Thinking level (Shift+Tab to cycle)"
         };
-        let toggle = this.clone();
-        let button = toolbar_button(
-            "thinking",
-            div()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .child(format!(
-                    "Thinking: {}",
-                    level.clone().unwrap_or_else(|| "off".into())
-                ))
-                .child(icon("chevron-down", 12.))
-                .into_any_element(),
-            title,
-            fixed,
-            open,
+        Picker::new(
+            "thinking-picker",
+            &self.thinking_picker,
+            session_thinking_groups(
+                &settings.thinking_levels,
+                level.as_deref().unwrap_or_default(),
+            ),
+            div().t_code_sm().child(format!(
+                "Thinking: {}",
+                level.unwrap_or_else(|| "off".into())
+            )),
             p,
-            move |_, cx| {
-                let _ = toggle.update(cx, |this, cx| {
-                    this.thinking_open = !this.thinking_open;
-                    cx.notify();
-                });
-            },
-        );
-        let items = settings.thinking_levels.iter().enumerate().map(|(i, l)| {
-            let current = level.as_deref() == Some(l.as_str());
-            let choose = this.clone();
-            let l = l.clone();
-            menu_item(
-                SharedString::from(format!("thinking-{i}")),
-                current.then_some("check"),
-                l.clone(),
-                current,
-                false,
-                false,
-                p,
-            )
-            .on_click(move |_, window, cx| {
-                let l = l.clone();
-                let _ = choose.update(cx, |this, cx| {
-                    this.thinking_open = false;
-                    if !current {
-                        let key = this.key.clone();
-                        this.store
-                            .update(cx, |store, cx| store.set_thinking_level(key, l, cx));
-                    }
-                    this.focus(window, cx);
-                });
-            })
-        });
-        let dismiss = this.clone();
-        div().relative().child(button).when(open, |el| {
-            el.child(
-                deferred(
-                    div().absolute().bottom_full().left_0().mb(px(4.)).child(
-                        panel(p)
-                            .id("thinking-menu")
-                            .occlude()
-                            .min_w(px(160.))
-                            .p(px(4.))
-                            .on_mouse_down_out(move |_, _, cx| {
-                                let _ = dismiss.update(cx, |this, cx| {
-                                    this.thinking_open = false;
-                                    cx.notify();
-                                });
-                            })
-                            .children(items),
-                    ),
-                )
-                .with_priority(2),
-            )
-        })
+        )
+        .ghost()
+        .up()
+        .width(180.)
+        .searchable(false)
+        .disabled(fixed)
+        .title(title)
     }
 }
 

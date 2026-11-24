@@ -13,11 +13,21 @@ use async_trait::async_trait;
 use panoptes_harness::{
     AgentSession, Answer, CommandInfo, CommandKind, DiscoveredSession, EventSink, Harness,
     HarnessError, HarnessRef, ImageAttachment, Message, ModelInfo, PromptMode, PromptOutcome,
-    SessionSettings, StartSession,
+    SessionSettings, SessionToggle, StartSession,
 };
 use serde_json::{Value, json};
 
 pub use locate::{PiInstall, SUPPORTED_MAJOR_VERSIONS, locate, sessions_dir};
+
+/// Why a session offers no codemode switch: Pi has no such tool, so the switch
+/// would do nothing. A session that never reports at all is a different
+/// fault, [`CONTROLS_MISSING`].
+pub const CODEMODE_MISSING: &str = "Pi has no codemode tool in this session";
+
+/// Panoptes' controls extension never reported itself: the adapter's extension
+/// did not load, which is a bug rather than a Pi without codemode.
+pub const CONTROLS_MISSING: &str =
+    "Panoptes' session controls extension did not report in this session";
 
 pub struct PiHarness {
     install: PiInstall,
@@ -139,6 +149,54 @@ struct PiSession {
     entries: tokio::sync::Mutex<EntryCache>,
     shared: map::Shared,
     read_only: bool,
+}
+
+/// How long to wait for the controls extension to report the new codemode
+/// state after its command was answered.
+const CODEMODE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+const CODEMODE_STEP: std::time::Duration = std::time::Duration::from_millis(10);
+
+impl PiSession {
+    /// The switches the UI offers. Codemode is one only where Pi has the
+    /// tool: offering it elsewhere would fail on every click.
+    fn toggles(&self) -> Vec<SessionToggle> {
+        if self.read_only {
+            return Vec::new();
+        }
+        let enabled = match self.shared.codemode() {
+            map::Codemode::Available { enabled } => enabled,
+            // Not known before the first status line, and not there at all
+            // without the tool: either way there is nothing to switch.
+            map::Codemode::Unknown | map::Codemode::Unavailable => return Vec::new(),
+        };
+        vec![SessionToggle {
+            id: "codemode".into(),
+            label: "Codemode".into(),
+            description: Some(
+                "Let the model run JavaScript that calls tools and non-LLM models".into(),
+            ),
+            enabled,
+        }]
+    }
+
+    /// Waits for the controls extension to report `enabled`. The extension
+    /// writes its status before Pi answers the command, and both travel on
+    /// the same stream, but the reader is a separate task: give it a moment
+    /// rather than report a toggle that worked as unavailable.
+    async fn wait_for_codemode(&self, enabled: bool) -> bool {
+        let deadline = tokio::time::Instant::now() + CODEMODE_WAIT;
+        loop {
+            match self.shared.codemode() {
+                map::Codemode::Available { enabled: actual } if actual == enabled => return true,
+                map::Codemode::Unavailable => return false,
+                _ => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(CODEMODE_STEP).await;
+        }
+    }
 }
 
 #[async_trait]
@@ -268,6 +326,7 @@ impl AgentSession for PiSession {
             model: map::model(&state["model"]),
             thinking_level: state["thinkingLevel"].as_str().map(str::to_string),
             thinking_levels,
+            toggles: self.toggles(),
             // Usage is a nicety: a session without stats still has settings.
             context: stats.ok().as_ref().and_then(map::context_usage),
         })
@@ -291,6 +350,7 @@ impl AgentSession for PiSession {
             .map(|commands| {
                 commands
                     .iter()
+                    .filter(|command| command["name"].as_str() != Some("panoptes-codemode"))
                     .filter_map(|command| {
                         Some(CommandInfo {
                             name: command["name"].as_str()?.to_string(),
@@ -322,6 +382,46 @@ impl AgentSession for PiSession {
             .call(json!({"type": "set_thinking_level", "level": level}))
             .await
             .map(|_| ())
+    }
+
+    async fn set_toggle(&self, toggle_id: String, enabled: bool) -> anyhow::Result<()> {
+        if toggle_id != "codemode" {
+            return Err(
+                HarnessError::rejected(format!("Unknown session toggle {toggle_id}")).into(),
+            );
+        }
+        // A read-only session has no controls extension at all, and codemode
+        // would let the model reach the tools that `--tools` leaves out.
+        if self.read_only {
+            return Err(HarnessError::rejected(
+                "Codemode cannot be changed in a read-only session",
+            )
+            .into());
+        }
+        // Answer without sending anything when the switch is not there. A Pi
+        // without the codemode tool would treat the command as a prompt, and
+        // an extension that never reported is a fault worth naming rather
+        // than hiding behind the same message.
+        match self.shared.codemode() {
+            map::Codemode::Unknown => return Err(anyhow::anyhow!(CONTROLS_MISSING)),
+            map::Codemode::Unavailable => {
+                return Err(HarnessError::rejected(CODEMODE_MISSING).into());
+            }
+            map::Codemode::Available { enabled: current } if current == enabled => return Ok(()),
+            map::Codemode::Available { .. } => {}
+        }
+        let command = format!("/panoptes-codemode {}", if enabled { "on" } else { "off" });
+        let data = self
+            .process
+            .call(json!({"type": "prompt", "message": command}))
+            .await?;
+        // The extension's status is what the switch reports, so it has to
+        // have arrived before this answers; see `wait_for_codemode`.
+        if data["disposition"].as_str() != Some("handled") || !self.wait_for_codemode(enabled).await
+        {
+            return Err(HarnessError::rejected(CODEMODE_MISSING).into());
+        }
+        Ok(())
     }
 
     async fn shutdown(&self) {

@@ -11,6 +11,7 @@ use panoptes_core::store::{AgentProfile, NotificationField, ProfileInput};
 use panoptes_harness::ModelInfo;
 
 use crate::ds::{self, Button, RADIUS_MD, Tab, Type as _};
+use crate::model::diagnostics::DiagnosticsFilter;
 use crate::model::picker::{
     DEFAULT_CHOICE, missing_profile_model, model_groups, short_model_id, thinking_groups,
 };
@@ -811,7 +812,7 @@ impl Settings {
     }
 
     fn diagnostics_tab(&self, p: &Palette) -> Div {
-        let store = self.store.clone();
+        let ui = self.ui.clone();
         div()
             .flex()
             .flex_col()
@@ -823,7 +824,7 @@ impl Settings {
                     .font_weight(FontWeight::NORMAL)
                     .text_color(p.ink_muted)
                     .child(
-                        "Open a dedicated debugging window with the session and fork tree, \
+                        "Open the diagnostics pane with project and lane filters, the session and fork tree, \
                          tool outcomes, token usage, context size, edited files and the complete \
                          structured event log. Logs stay on this machine and are kept for 30 days.",
                     ),
@@ -833,9 +834,11 @@ impl Settings {
                     Button::new("open-diagnostics")
                         .primary()
                         .icon("watch")
-                        .label("Open diagnostics window")
+                        .label("Open diagnostics pane")
                         .on_click(move |_, _, cx| {
-                            crate::views::diagnostics::open(store.clone(), cx);
+                            ui.update(cx, |ui, cx| {
+                                ui.open_diagnostics(DiagnosticsFilter::default(), cx)
+                            });
                         }),
                 ),
             )

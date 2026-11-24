@@ -345,4 +345,13 @@ async fn a_harness_without_models_reports_no_settings() {
         error,
         ServiceError::new(ErrorKind::Rejected, "This harness has no thinking levels")
     );
+    let error = f
+        .service
+        .set_toggle("fake:s1", "scripts".into(), true)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ServiceError::new(ErrorKind::Rejected, "This harness has no session toggles")
+    );
 }
