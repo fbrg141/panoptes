@@ -1,7 +1,11 @@
 //! Pure sidebar logic: status words, row details, a lane's main session, empty
 //! lanes and the row menus.
 
+use std::path::{Path, PathBuf};
+
 use panoptes_core::lanes::LaneWork;
+#[cfg(test)]
+use panoptes_core::service::BusyWriter;
 use panoptes_core::service::{LaneNavigation, Session};
 #[cfg(test)]
 use panoptes_core::store::LaneWorktree;
@@ -10,16 +14,22 @@ use panoptes_harness::SessionStatus;
 
 use super::format::plural;
 
-/// What clicking a project opens: the session in its default main-checkout
-/// lane. Projects have one active lane whose worktree is the repository
-/// itself (the service refuses a second), so the click has an answer.
+/// What clicking a project opens: the session in its main-checkout lane.
+/// A project has at most one active lane whose worktree is the repository
+/// itself (the service refuses a second); without one the click folds.
 #[allow(clippy::large_enum_variant)] // `Session` is what the click opens.
 pub enum ProjectOpen {
     /// Nothing yet: start the first session in the lane.
     Start { lane: i64 },
-    /// There is one: open it, or adopt a conversation running in the lane's
-    /// folder that no lane owns yet.
+    /// The lane's session, the session busy changing its checkout, or an
+    /// open conversation in the checkout that no lane owns yet.
     Open(Session),
+    /// A conversation in the checkout that no lane owns and that is not
+    /// open: adopt it into the lane, then open it.
+    Adopt { session: Session, lane: i64 },
+    /// Another session is changing the checkout and is not listed, so there
+    /// is nothing to open and no session may start.
+    Busy,
 }
 
 /// The main-checkout lane of `project_id`: active, with the repository as its
@@ -37,7 +47,16 @@ pub fn main_checkout_lane(lanes: &[Lane], project_id: i64) -> Option<&Lane> {
     candidates.into_iter().next()
 }
 
-/// What a click on the project opens.
+/// A folder path in the form two spellings of the same folder share: with
+/// symlinks and `..` resolved where the folder exists, and otherwise with
+/// trailing slashes and `.` parts dropped.
+fn folder(path: &str) -> PathBuf {
+    let path = Path::new(path);
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.components().collect())
+}
+
+/// What a click on the project opens, or `None` when it has no
+/// main-checkout lane.
 pub fn project_open(
     project_id: i64,
     lanes: &[Lane],
@@ -46,9 +65,8 @@ pub fn project_open(
     repo: &str,
 ) -> Option<ProjectOpen> {
     let lane = main_checkout_lane(lanes, project_id)?;
-    let owned: Vec<Session> = navigation
-        .iter()
-        .find(|nav| nav.lane_id == lane.id)
+    let nav = navigation.iter().find(|nav| nav.lane_id == lane.id);
+    let owned: Vec<Session> = nav
         .into_iter()
         .flat_map(|nav| nav.sessions.iter().chain(nav.archived_sessions.iter()))
         .cloned()
@@ -56,20 +74,47 @@ pub fn project_open(
     if let Some(session) = lane_main_session(&owned) {
         return Some(ProjectOpen::Open(session.clone()));
     }
+    // A session changing the checkout keeps the lane from starting its own,
+    // as the lane row says, so the click shows that session instead.
+    if let Some(writer) = nav.and_then(|nav| nav.busy_writer.as_ref()) {
+        return Some(
+            match sessions.iter().find(|s| s.key == writer.session_key) {
+                Some(session) => ProjectOpen::Open(session.clone()),
+                None => ProjectOpen::Busy,
+            },
+        );
+    }
     // An empty lane still opens: a conversation sitting in the main checkout
-    // belongs there, and adopting it is what puts it under the lane.
-    let unowned = sessions
+    // belongs there, and adopting it puts it under the lane.
+    let repo = folder(repo);
+    let checkout = lane
+        .worktrees
         .iter()
-        .find(|session| {
+        .find(|tree| tree.main_checkout)
+        .map(|tree| folder(&tree.path));
+    let unowned: Vec<Session> = sessions
+        .iter()
+        .filter(|session| {
             // A conversation from another folder of the same repository is not
             // this lane's work: the lane runs in the checkout itself.
             session.lane_id.is_none()
+                && !session.archived
                 && session.project_id == Some(project_id)
-                && session.cwd == repo
+                && {
+                    let cwd = folder(&session.cwd);
+                    cwd == repo || checkout.as_ref() == Some(&cwd)
+                }
         })
-        .cloned();
-    Some(match unowned {
-        Some(session) => ProjectOpen::Open(session),
+        .cloned()
+        .collect();
+    Some(match lane_main_session(&unowned) {
+        // An open conversation cannot be adopted until it stops (the service
+        // refuses), so the click shows it as it is.
+        Some(session) if session.open => ProjectOpen::Open(session.clone()),
+        Some(session) => ProjectOpen::Adopt {
+            session: session.clone(),
+            lane: lane.id,
+        },
         None => ProjectOpen::Start { lane: lane.id },
     })
 }
@@ -395,9 +440,6 @@ pub(crate) mod tests {
     #[test]
     fn a_project_click_opens_its_main_checkout() {
         // A project whose main checkout already has a session: that one.
-        let mut owned = session("panoptes:4");
-        owned.lane_id = Some(2);
-        owned.id = Some(4);
         let navigation = vec![nav(2, "panoptes:4")];
         let lanes = vec![main_lane(2, 9), main_lane(3, 10)];
         assert!(matches!(
@@ -423,15 +465,119 @@ pub(crate) mod tests {
         assert!(project_open(9, &other, &[], &[], "/code/app").is_none());
     }
 
+    /// An unowned conversation of project 9 in `cwd`, updated at `at`.
+    fn unowned(key: &str, cwd: &str, at: i64) -> Session {
+        let mut s = session(key);
+        s.project_id = Some(9);
+        s.cwd = cwd.into();
+        s.updated_at = at;
+        s
+    }
+
     #[test]
     fn an_empty_main_checkout_adopts_a_conversation_already_in_it() {
         let lanes = vec![main_lane(2, 9)];
-        let mut unowned = session("pi:abc");
-        unowned.project_id = Some(9);
-        unowned.cwd = "/code/app".into();
+        let adopted =
+            |sessions: &[Session]| match project_open(9, &lanes, &[], sessions, "/code/app") {
+                Some(ProjectOpen::Adopt { session, lane: 2 }) => Some(session.key),
+                _ => None,
+            };
+        assert_eq!(
+            adopted(&[unowned("pi:abc", "/code/app", 1)]).as_deref(),
+            Some("pi:abc")
+        );
+        // The same folder written with a trailing slash.
+        assert_eq!(
+            adopted(&[unowned("pi:abc", "/code/app/", 1)]).as_deref(),
+            Some("pi:abc")
+        );
+        // The most recent of several, not the first listed.
+        assert_eq!(
+            adopted(&[
+                unowned("pi:old", "/code/app", 1),
+                unowned("pi:new", "/code/app", 5)
+            ])
+            .as_deref(),
+            Some("pi:new")
+        );
+        // An open one is opened as it is: the service will not adopt it
+        // while it runs.
+        let mut open = unowned("pi:live", "/code/app", 1);
+        open.open = true;
         assert!(matches!(
-            project_open(9, &lanes, &[], &[unowned], "/code/app"),
-            Some(ProjectOpen::Open(s)) if s.key == "pi:abc"
+            project_open(9, &lanes, &[], &[open], "/code/app"),
+            Some(ProjectOpen::Open(s)) if s.key == "pi:live"
+        ));
+        // Another folder of the repository, or an archived one, starts afresh.
+        let mut archived = unowned("pi:gone", "/code/app", 1);
+        archived.archived = true;
+        assert!(matches!(
+            project_open(
+                9,
+                &lanes,
+                &[],
+                &[unowned("pi:sub", "/code/app/crates", 1), archived],
+                "/code/app"
+            ),
+            Some(ProjectOpen::Start { lane: 2 })
+        ));
+    }
+
+    #[test]
+    fn a_conversation_in_the_checkout_is_found_however_its_folder_is_spelled() {
+        // A real checkout reached through a symlink, and written with `..`.
+        let root = std::env::temp_dir().join(format!("panoptes-sidebar-{}", std::process::id()));
+        let repo = root.join("app");
+        let link = root.join("link");
+        std::fs::create_dir_all(repo.join("crates")).unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        let repo_path = repo.to_str().unwrap().to_string();
+        let lanes = vec![Lane {
+            worktrees: vec![LaneWorktree {
+                project_id: 9,
+                path: repo_path.clone(),
+                main_checkout: true,
+                checkpoint_ref: None,
+            }],
+            ..main_lane(2, 9)
+        }];
+        let adopts = |cwd: &str| {
+            matches!(
+                project_open(9, &lanes, &[], &[unowned("pi:abc", cwd, 1)], &repo_path),
+                Some(ProjectOpen::Adopt { session, lane: 2 }) if session.key == "pi:abc"
+            )
+        };
+        let through_link = link.to_str().unwrap();
+        let dotted = format!("{repo_path}/crates/..");
+        let results = (adopts(through_link), adopts(&dotted));
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(results, (true, true));
+    }
+
+    #[test]
+    fn a_busy_main_checkout_shows_its_writer_instead_of_starting() {
+        let lanes = vec![main_lane(2, 9)];
+        let busy = |key: &str| {
+            vec![LaneNavigation {
+                lane_id: 2,
+                sessions: Vec::new(),
+                archived_sessions: Vec::new(),
+                work: None,
+                busy_writer: Some(BusyWriter {
+                    session_key: key.into(),
+                    title: "Writer".into(),
+                }),
+            }]
+        };
+        let writer = unowned("pi:w", "/code/app/crates", 1);
+        assert!(matches!(
+            project_open(9, &lanes, &busy("pi:w"), &[writer], "/code/app"),
+            Some(ProjectOpen::Open(s)) if s.key == "pi:w"
+        ));
+        assert!(matches!(
+            project_open(9, &lanes, &busy("pi:unlisted"), &[], "/code/app"),
+            Some(ProjectOpen::Busy)
         ));
     }
 

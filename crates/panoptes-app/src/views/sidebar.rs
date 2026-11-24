@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use panoptes_core::service::{LaneNavigation, Session};
+use panoptes_core::service::{AdoptionOutcome, LaneNavigation, Session};
 use panoptes_core::store::{Lane, LaneState, Project};
 use panoptes_harness::SessionStatus;
 
@@ -14,8 +14,8 @@ use crate::ds::{Button, LoopState, Tab, Type as _, icon, loop_mark, status_word,
 use crate::model::format::{now_ms, relative_time};
 use crate::model::sidebar::{
     EmptyLane, MenuEntry, ProjectOpen, empty_lane, is_live, lane_main_session, lane_menu_items,
-    primary_action, project_menu_items, project_open, session_detail, session_row_menu_items,
-    work_label,
+    main_checkout_lane, primary_action, project_menu_items, project_open, session_detail,
+    session_row_menu_items, work_label,
 };
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
@@ -91,6 +91,9 @@ pub struct Sidebar {
     archived_lanes_shown: HashSet<i64>,
     expanded: HashSet<i64>,
     archived_sessions_shown: HashSet<i64>,
+    /// Lanes a session is being started or adopted into, so a second click
+    /// before the first lands does not start another.
+    starting: HashSet<i64>,
     menu: Option<OpenMenu<Owner>>,
     scroll: ScrollHandle,
     _clock: Task<()>,
@@ -121,6 +124,7 @@ impl Sidebar {
             archived_lanes_shown: HashSet::new(),
             expanded: HashSet::new(),
             archived_sessions_shown: HashSet::new(),
+            starting: HashSet::new(),
             menu: None,
             scroll: ScrollHandle::new(),
             _clock: clock,
@@ -138,16 +142,59 @@ impl Sidebar {
     }
 
     fn work(&mut self, lane_id: i64, cx: &mut Context<Self>) {
+        if !self.starting.insert(lane_id) {
+            return;
+        }
         let created = self.store.update(cx, |store, cx| {
             store.create(lane_id, Default::default(), cx)
         });
         let ui = self.ui.clone();
         let store = self.store.clone();
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             created.await;
+            // The lane stays guarded until a listing shows its new session;
+            // until then a click would still find it empty and start another.
+            store.update(cx, |store, cx| store.refresh(cx)).await;
+            let _ = this.update(cx, |this, _| this.starting.remove(&lane_id));
             cx.update(|cx| {
                 if let Some(key) = store.read(cx).state.active_key.clone() {
                     ui.update(cx, |ui, cx| ui.show_session(&key, None, cx));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Adopts a conversation into `lane_id`, then opens it under its new key.
+    fn adopt_and_open(&mut self, session: Session, lane_id: i64, cx: &mut Context<Self>) {
+        if !self.starting.insert(lane_id) {
+            return;
+        }
+        let store = self.store.clone();
+        let adopted = store.update(cx, |store, cx| store.adopt(&session, Some(lane_id), cx));
+        cx.spawn(async move |this, cx| {
+            let outcome = adopted.await.flatten();
+            // As in `work`: keep the lane guarded until the listing has the
+            // adopted session, and open the record the listing has for it,
+            // since the service may return a record it already kept.
+            store.update(cx, |store, cx| store.refresh(cx)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.starting.remove(&lane_id);
+                if let Some(AdoptionOutcome::Adopted { key }) = outcome {
+                    let listed = this
+                        .store
+                        .read(cx)
+                        .state
+                        .sessions
+                        .iter()
+                        .find(|s| s.key == key)
+                        .cloned();
+                    let session = listed.unwrap_or(Session {
+                        key,
+                        lane_id: Some(lane_id),
+                        ..session
+                    });
+                    this.request_open(&session, cx);
                 }
             });
         })
@@ -340,26 +387,30 @@ impl Sidebar {
         // Clicking the project name opens its main checkout. The chevron to
         // its left still folds the lane list, and the menu still acts on the
         // project.
+        // Without a main-checkout lane the name folds the list, as before.
+        let opens_checkout = main_checkout_lane(&self.store.read(cx).state.lanes, id).is_some();
         let open_project = {
-            let store = self.store.clone();
-            let ui = self.ui.clone();
+            let this = this.clone();
             let repo = project.repo.clone();
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                let action = {
-                    let state = &store.read(cx).state;
-                    project_open(id, &state.lanes, &state.navigation, &state.sessions, &repo)
-                };
-                match action {
-                    Some(ProjectOpen::Open(session)) => {
-                        crate::ui::request_open(&store, &ui, &session, None, cx)
+                let _ = this.update(cx, |this, cx| {
+                    let action = {
+                        let state = &this.store.read(cx).state;
+                        project_open(id, &state.lanes, &state.navigation, &state.sessions, &repo)
+                    };
+                    match action {
+                        Some(ProjectOpen::Open(session)) => this.request_open(&session, cx),
+                        Some(ProjectOpen::Adopt { session, lane }) => {
+                            this.adopt_and_open(session, lane, cx)
+                        }
+                        Some(ProjectOpen::Start { lane }) => this.work(lane, cx),
+                        Some(ProjectOpen::Busy) => {}
+                        None => {
+                            Self::toggle(&mut this.collapsed, id);
+                            cx.notify();
+                        }
                     }
-                    Some(ProjectOpen::Start { lane }) => {
-                        store.update(cx, |store, cx| {
-                            store.create(lane, Default::default(), cx).detach()
-                        });
-                    }
-                    None => {}
-                }
+                });
             }
         };
         let menu_items = project_menu_items(lanes.len());
@@ -397,6 +448,7 @@ impl Sidebar {
                     .py(px(4.))
                     .t_caption()
                     .child(project.settings.name.to_uppercase())
+                    .when(opens_checkout, |el| el.cursor_pointer())
                     .on_click(open_project),
             )
             .child(reveal(div()).child({
