@@ -67,7 +67,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         committed: |_| {},
     },
     Migration {
-        apply: v12_turn_checkpoints,
+        apply: v12_notification_sound,
+        committed: |_| {},
+    },
+    Migration {
+        apply: v13_turn_checkpoints,
         committed: |_| {},
     },
 ];
@@ -273,10 +277,19 @@ fn v11_appearance_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Notifications can also make a sound.
+fn v12_notification_sound(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE ui_preferences
+            ADD COLUMN notify_sound INTEGER NOT NULL DEFAULT 1 CHECK (notify_sound IN (0, 1));",
+    )?;
+    Ok(())
+}
+
 /// Durable, lane-level turn boundaries. Worktree trees and refs are separate
 /// rows because a future multi-repo lane cannot claim one atomic snapshot.
 /// Human edits between turns are inferred from trees, not copied from events.
-fn v12_turn_checkpoints(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+fn v13_turn_checkpoints(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
     tx.execute_batch(
         "CREATE TABLE turns (
             lane_id INTEGER NOT NULL REFERENCES lanes (id) ON DELETE CASCADE,

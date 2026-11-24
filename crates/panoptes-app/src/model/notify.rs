@@ -9,22 +9,28 @@ use panoptes_harness::SessionStatus;
 pub struct Notice {
     pub title: String,
     pub body: String,
+    /// Whether the notification is accompanied by Panoptes' alert sound.
+    /// Only a notice that is actually posted carries this, so a session the
+    /// user is looking at stays silent.
+    pub sound: bool,
 }
 
 impl Notice {
     /// The notice for `session` finishing its run.
-    fn finished(session: &str) -> Self {
+    fn finished(session: &str, sound: bool) -> Self {
         Self {
             title: "Run finished".into(),
             body: session.into(),
+            sound,
         }
     }
 
     /// The notice for `session` waiting on the user.
-    fn needs_attention(session: &str) -> Self {
+    fn needs_attention(session: &str, sound: bool) -> Self {
         Self {
             title: "Needs you".into(),
             body: session.into(),
+            sound,
         }
     }
 }
@@ -52,9 +58,9 @@ pub fn notice(
         return None;
     }
     match status {
-        SessionStatus::Done if settings.finished => Some(Notice::finished(session)),
+        SessionStatus::Done if settings.finished => Some(Notice::finished(session, settings.sound)),
         SessionStatus::Waiting if settings.needs_attention => {
-            Some(Notice::needs_attention(session))
+            Some(Notice::needs_attention(session, settings.sound))
         }
         _ => None,
     }
@@ -69,6 +75,7 @@ mod tests {
             enabled: true,
             finished,
             needs_attention,
+            sound: true,
         }
     }
 
@@ -93,7 +100,8 @@ mod tests {
             ),
             Some(Notice {
                 title: "Run finished".into(),
-                body: "Fix login".into()
+                body: "Fix login".into(),
+                sound: true
             })
         );
         assert_eq!(
@@ -106,7 +114,8 @@ mod tests {
             ),
             Some(Notice {
                 title: "Needs you".into(),
-                body: "Fix login".into()
+                body: "Fix login".into(),
+                sound: true
             })
         );
     }
@@ -135,6 +144,55 @@ mod tests {
         ] {
             assert_eq!(notice(previous, status, &all, false, "Fix login"), None);
         }
+    }
+
+    #[test]
+    fn the_sound_is_decided_with_the_notice() {
+        // Sound on and off, for both kinds of notice.
+        for (sound, status, expected) in [
+            (true, SessionStatus::Done, true),
+            (false, SessionStatus::Done, false),
+            (true, SessionStatus::Waiting, true),
+            (false, SessionStatus::Waiting, false),
+        ] {
+            let chosen = NotificationPreferences {
+                sound,
+                ..settings(true, true)
+            };
+            let posted = notice(
+                Some(SessionStatus::Running),
+                status,
+                &chosen,
+                false,
+                "Fix login",
+            );
+            assert_eq!(posted.map(|notice| notice.sound), Some(expected));
+        }
+        // The sound only travels with a notice: without one, nothing plays.
+        let quiet = NotificationPreferences {
+            sound: true,
+            ..settings(true, true)
+        };
+        assert_eq!(
+            notice(
+                Some(SessionStatus::Running),
+                SessionStatus::Done,
+                &quiet,
+                true,
+                "Fix login"
+            ),
+            None
+        );
+        assert_eq!(
+            notice(
+                Some(SessionStatus::Running),
+                SessionStatus::Running,
+                &quiet,
+                false,
+                "Fix login"
+            ),
+            None
+        );
     }
 
     #[test]

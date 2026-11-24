@@ -14,6 +14,7 @@ pub(crate) use dialogs::{dialog_response, is_allow};
 pub use history::history;
 pub use live::EventMapper;
 pub use models::{context_usage, model, model_ref};
+pub(crate) use state::Codemode;
 pub use state::{SessionState, Shared};
 
 #[cfg(test)]

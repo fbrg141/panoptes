@@ -5,6 +5,7 @@ use gpui_kit::*;
 
 use panoptes_core::service::Session;
 
+use crate::model::diagnostics::DiagnosticsFilter;
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, single_pane};
 use crate::model::review;
 use crate::model::sidebar::lane_session_to_stop;
@@ -44,6 +45,8 @@ pub struct Ui {
     pub focused_pane: String,
     /// Whether the workspace shows its lane review beside the conversation.
     pub review_open: bool,
+    /// The diagnostics pane and its initial project/lane scope.
+    pub diagnostics: Option<DiagnosticsFilter>,
 }
 
 impl Default for Ui {
@@ -56,6 +59,7 @@ impl Default for Ui {
             layout,
             focused_pane,
             review_open: false,
+            diagnostics: None,
         }
     }
 }
@@ -79,6 +83,27 @@ impl Ui {
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.overlay = None;
         cx.notify();
+    }
+
+    pub fn open_diagnostics(&mut self, filter: DiagnosticsFilter, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.diagnostics = Some(filter);
+        cx.notify();
+    }
+
+    pub fn close_diagnostics(&mut self, cx: &mut Context<Self>) {
+        if self.diagnostics.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Records the scope the pane is showing, so the pane's own pickers and a
+    /// later request for that scope agree on where it is.
+    pub fn set_diagnostics_filter(&mut self, filter: DiagnosticsFilter, cx: &mut Context<Self>) {
+        if self.diagnostics != Some(filter) {
+            self.diagnostics = Some(filter);
+            cx.notify();
+        }
     }
 
     pub fn focus_pane(&mut self, pane_id: &str, cx: &mut Context<Self>) {

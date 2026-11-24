@@ -147,6 +147,17 @@ impl Service {
         session.settings().await.map_err(err)
     }
 
+    pub async fn set_toggle(
+        &self,
+        key: &str,
+        toggle_id: String,
+        enabled: bool,
+    ) -> ServiceResult<SessionSettings> {
+        let session = self.registry.session(key).await?;
+        session.set_toggle(toggle_id, enabled).await.map_err(err)?;
+        session.settings().await.map_err(err)
+    }
+
     pub async fn abort(&self, key: &str) -> ServiceResult<()> {
         self.registry.session(key).await?.abort().await.map_err(err)
     }

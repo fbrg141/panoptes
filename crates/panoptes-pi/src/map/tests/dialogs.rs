@@ -1,5 +1,5 @@
 use super::*;
-use crate::map::state::ApprovalReply;
+use crate::map::state::{ApprovalReply, Codemode};
 
 #[test]
 fn dialogs_become_questions_with_a_deadline() {
@@ -186,6 +186,31 @@ fn other_status_lines_pass_through() {
         0,
     );
     assert!(matches!(&events[..], [HarnessEvent::Raw { .. }]));
+}
+
+#[test]
+fn codemode_status_updates_session_settings_without_a_raw_event() {
+    let mut mapper = EventMapper::default();
+    let events = mapper.ui_request(
+        &json!({"id":"s","method":"setStatus","statusKey":"panoptes.codemode","statusText":"on"}),
+        0,
+    );
+    assert!(events.is_empty());
+    assert_eq!(
+        mapper.shared.codemode(),
+        Codemode::Available { enabled: true }
+    );
+}
+
+#[test]
+fn codemode_is_unavailable_without_the_tool() {
+    let mut mapper = EventMapper::default();
+    let events = mapper.ui_request(
+        &json!({"id":"s","method":"setStatus","statusKey":"panoptes.codemode","statusText":"unavailable"}),
+        0,
+    );
+    assert!(events.is_empty());
+    assert_eq!(mapper.shared.codemode(), Codemode::Unavailable);
 }
 
 #[test]

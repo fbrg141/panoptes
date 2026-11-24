@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use gpui_kit::base::{h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_core::service::SessionEvent;
@@ -10,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::backend::Backend;
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark};
+use crate::model::diagnostics::{DiagnosticsFilter, ScopeChange, scope_change};
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, drop_zone_at};
 use crate::model::review;
 use crate::store::AppStore;
@@ -18,6 +20,7 @@ use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{DraggedSession, Overlay, Ui, split_focused_pane};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
+use crate::views::diagnostics::DiagnosticsPane;
 use crate::views::image_zoom::ImageZoom;
 use crate::views::jump::{Jump, JumpKind};
 use crate::views::lane_dialogs::LaneDialogs;
@@ -45,6 +48,9 @@ pub struct Workspace {
     /// The image shown, and its persistent view. Keeping the entity preserves
     /// focus and the scroll position of tall screenshots across redraws.
     image_zoom: Option<(crate::views::turn::ZoomedImage, AnyView)>,
+    /// The diagnostics pane and the scope it shows. Kept in step with the
+    /// scope `Ui` asks for, the pane's own pickers included.
+    diagnostics: Option<(DiagnosticsFilter, Entity<DiagnosticsPane>)>,
     /// Holds the keyboard when no text field does, so window shortcuts work.
     focus: FocusHandle,
     /// Whether a slow first load has gone on long enough to show a loader.
@@ -90,6 +96,7 @@ impl Workspace {
                 }
                 this.review_was_open = open;
             }
+            this.sync_diagnostics(window, cx);
             cx.notify();
         })
         .detach();
@@ -135,6 +142,7 @@ impl Workspace {
             review,
             overlay: None,
             image_zoom: None,
+            diagnostics: None,
             focus,
             show_loader: false,
             drop_target: None,
@@ -201,6 +209,33 @@ impl Workspace {
                 .into();
             (image, view)
         });
+    }
+
+    /// Builds the diagnostics pane when opened, moves it to a newly requested
+    /// scope, and drops its refresh clock on close.
+    fn sync_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.ui.read(cx).diagnostics;
+        let open = self.diagnostics.as_ref().map(|(filter, _)| *filter);
+        match scope_change(open, wanted) {
+            ScopeChange::Nothing => {}
+            ScopeChange::Open(filter) => {
+                let (store, ui) = (self.store.clone(), self.ui.clone());
+                let view = cx.new(|cx| DiagnosticsPane::new(store, ui, filter, window, cx));
+                self.diagnostics = Some((filter, view));
+            }
+            // A request while the pane is open must move it, even though the
+            // pane may already have left the scope it was opened with.
+            ScopeChange::Rescope(filter) => {
+                if let Some((scope, view)) = self.diagnostics.as_mut() {
+                    view.update(cx, |pane, cx| pane.set_filter(filter, cx));
+                    *scope = filter;
+                }
+            }
+            ScopeChange::Close => {
+                self.diagnostics = None;
+                self.focus_active(window, cx);
+            }
+        }
     }
 
     /// Places a dropped session: in the pane, or in a split beside it.
@@ -545,9 +580,11 @@ impl Render for Workspace {
         let layout = self.ui.read(cx).layout.clone();
         let multiple = layout.leaves().len() > 1;
         let panes = self.render_node(&layout, multiple, &p, window, cx);
+        // The lane review sits beside the panes, or takes their place in a
+        // narrow window.
         let review_open = self.ui.read(cx).review_open;
-        let narrow = window.viewport_size().width < px(1100.);
-        let main_content = if review_open && narrow {
+        let review_narrow = window.viewport_size().width < px(1100.);
+        let conversation = if review_open && review_narrow {
             self.review.clone().into_any_element()
         } else {
             div()
@@ -566,6 +603,34 @@ impl Render for Workspace {
                     )
                 })
                 .into_any_element()
+        };
+        let narrow = window.viewport_size().width < px(1280.);
+        let content: AnyElement = match self.diagnostics.as_ref().map(|(_, view)| view.clone()) {
+            // Diagnostics sits beside the conversation rather than taking its
+            // place: a question the agent asked must not be behind a pane. A
+            // narrow window gets a narrower panel, still resizable.
+            Some(diagnostics) => div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(
+                    h_resizable("conversation-diagnostics")
+                        .child(resizable_panel().child(conversation))
+                        .child(
+                            resizable_panel()
+                                .size(if narrow { px(520.) } else { px(760.) })
+                                .flex_none()
+                                .child(diagnostics),
+                        ),
+                )
+                .into_any_element(),
+            None => div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(conversation)
+                .into_any_element(),
         };
         let store = self.store.clone();
         fn open<A: Action>(
@@ -707,14 +772,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(self.sidebar.clone())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .child(main_content),
-                    ),
+                    .child(content),
             )
             .child(self.dialogs.clone())
             .children(self.overlay.as_ref().map(|(_, view)| view.clone()))

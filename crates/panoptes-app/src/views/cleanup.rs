@@ -10,6 +10,7 @@ use panoptes_core::lanes::ArchivePreservation;
 
 use crate::ds::{self, Button, RADIUS_MD, Type as _, icon};
 use crate::model::format::{format_bytes, idle_label, now_ms, usage_label};
+use crate::model::worktrees::{self, WorktreeTone};
 use crate::store::AppStore;
 use crate::theme::PaletteExt as _;
 use crate::ui::Ui;
@@ -32,6 +33,9 @@ pub struct Cleanup {
     busy: bool,
     outcome: Option<Outcome>,
     generation: u64,
+    show_all_projects: bool,
+    managed_only: bool,
+    pruning: bool,
     focus: FocusHandle,
 }
 
@@ -59,6 +63,9 @@ impl Cleanup {
             busy: false,
             outcome: None,
             generation: 0,
+            show_all_projects: true,
+            managed_only: false,
+            pruning: false,
             focus,
         };
         this.load(cx);
@@ -104,6 +111,23 @@ impl Cleanup {
         cx.notify();
     }
 
+    fn prune(&mut self, cx: &mut Context<Self>) {
+        if self.pruning || self.busy || self.confirming {
+            return;
+        }
+        self.pruning = true;
+        cx.notify();
+        let task = self.store.update(cx, |store, cx| store.prune_worktrees(cx));
+        cx.spawn(async move |this, cx| {
+            let _ = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.pruning = false;
+                this.load(cx);
+            });
+        })
+        .detach();
+    }
+
     fn primary(&mut self, cx: &mut Context<Self>) {
         if !self.confirming {
             self.outcome = None;
@@ -111,7 +135,7 @@ impl Cleanup {
             cx.notify();
             return;
         }
-        if self.busy || self.selected.is_empty() || self.data.is_none() {
+        if self.busy || self.pruning || self.selected.is_empty() || self.data.is_none() {
             return;
         }
         self.busy = true;
@@ -153,7 +177,7 @@ impl Cleanup {
     }
 
     fn close(&self, cx: &mut App) -> bool {
-        if self.busy {
+        if self.busy || self.pruning {
             return false;
         }
         self.ui.update(cx, |ui, cx| ui.close(cx));
@@ -173,7 +197,8 @@ impl Render for Cleanup {
             .iter()
             .find(|p| p.id == self.project_id)
             .map(|p| p.settings.name.clone());
-        let busy = self.busy;
+        let busy = self.busy || self.pruning;
+        let pruning = self.pruning;
         let on_layer_close = {
             let this = this.clone();
             move |_: &mut Window, cx: &mut App| {
@@ -264,6 +289,226 @@ impl Render for Cleanup {
                         ),
                 );
             }
+            let inventory = &data.worktree_inventory;
+            let filtered = worktrees::filter(
+                &inventory.worktrees,
+                self.project_id,
+                self.show_all_projects,
+                self.managed_only,
+            );
+            let (shown_count, shown_bytes) = worktrees::usage(&filtered);
+            // Only what Git will really remove: a locked registration is
+            // stale but unprunable, and counting it would leave a button that
+            // never goes away.
+            let prunable_count = inventory
+                .worktrees
+                .iter()
+                .filter(|worktree| worktrees::is_prunable(worktree))
+                .count();
+            let all_projects_toggle = this.clone();
+            let managed_toggle = this.clone();
+            let prune_this = this.clone();
+            let mut inventory_section = div()
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().t_body_strong().child("Git worktrees"))
+                        .child(div().flex_1())
+                        .child(ds::option_toggle(
+                            SharedString::from("cleanup-all-projects"),
+                            "All projects",
+                            None,
+                            self.show_all_projects,
+                            false,
+                            &p,
+                            move |enabled, _, cx| {
+                                let _ = all_projects_toggle.update(cx, |this, cx| {
+                                    this.show_all_projects = enabled;
+                                    cx.notify();
+                                });
+                            },
+                        ))
+                        .child(ds::option_toggle(
+                            SharedString::from("cleanup-managed-only"),
+                            "Managed only",
+                            None,
+                            self.managed_only,
+                            false,
+                            &p,
+                            move |enabled, _, cx| {
+                                let _ = managed_toggle.update(cx, |this, cx| {
+                                    this.managed_only = enabled;
+                                    cx.notify();
+                                });
+                            },
+                        ))
+                        .when(prunable_count > 0, |el| {
+                            el.child(
+                                Button::new("cleanup-prune-worktrees")
+                                    .ghost()
+                                    .small()
+                                    .icon("trash-2")
+                                    .label(if pruning { "Pruning…" } else { "Prune stale metadata" })
+                                    .disabled(busy || self.loading || self.confirming)
+                                    .tooltip(
+                                        "Remove stale Git registrations; no files are deleted. \
+                                         Locked ones need git worktree unlock first.",
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        let _ = prune_this
+                                            .update(cx, |this, cx| this.prune(cx));
+                                    }),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .mt(px(4.))
+                        .t_label()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(p.ink_muted)
+                        .child(
+                            "All Git checkouts known to registered repositories. Sizes are allocated \
+                             disk blocks, including ignored files; a repository's own checkout is \
+                             not measured, since its worktrees are counted on their own rows. \
+                             Unmanaged worktrees are never deleted by Panoptes; managed lanes can be \
+                             archived above.",
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(8.))
+                        .t_small()
+                        .text_color(p.ink_muted)
+                        .child(format!("Shown: {}", usage_label(shown_count, shown_bytes))),
+                );
+            if !inventory.errors.is_empty() {
+                inventory_section = inventory_section.child(
+                    div()
+                        .mt(px(8.))
+                        .flex()
+                        .items_start()
+                        .gap(px(8.))
+                        .text_color(p.error)
+                        .child(icon("circle-alert", 16.).mt(px(2.)).flex_none())
+                        .child(
+                            div()
+                                .child("Some worktree information is unavailable.")
+                                .children(inventory.errors.iter().map(|message| {
+                                    div().mt(px(4.)).t_code_sm().child(message.clone())
+                                })),
+                        ),
+                );
+            }
+            let rows = if filtered.is_empty() {
+                div()
+                    .py(px(20.))
+                    .text_center()
+                    .text_color(p.ink_muted)
+                    .child("No worktrees match this filter.")
+            } else {
+                div().mt(px(12.)).flex().flex_col().gap(px(8.)).children(
+                    filtered.into_iter().enumerate().map(|(index, worktree)| {
+                        let path = worktree.path.clone();
+                        let copy_path = path.clone();
+                        let reveal_path = path.clone();
+                        let reveal_store = self.store.clone();
+                        let exists = worktree.exists;
+                        let status = worktrees::label(worktree);
+                        let status_color = match worktrees::tone(worktree) {
+                            WorktreeTone::Managed => p.done,
+                            WorktreeTone::Archived => p.ink_faint,
+                            WorktreeTone::Locked => p.waiting,
+                            WorktreeTone::Stale => p.error,
+                            WorktreeTone::Neutral => p.ink_muted,
+                        };
+                        div()
+                            .rounded(px(RADIUS_MD))
+                            .border_1()
+                            .border_color(p.line)
+                            .px(px(12.))
+                            .py(px(8.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .t_code_sm()
+                                            .text_color(p.ink)
+                                            .child(path),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "worktree-copy-{index}"
+                                        )))
+                                        .ghost()
+                                        .small()
+                                        .icon("copy")
+                                        .tooltip("Copy path")
+                                        .on_click(
+                                            move |_, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    copy_path.clone(),
+                                                ));
+                                            },
+                                        ),
+                                    )
+                                    .when(exists, move |el| {
+                                        el.child(
+                                            Button::new(SharedString::from(format!(
+                                                "worktree-reveal-{index}"
+                                            )))
+                                            .ghost()
+                                            .small()
+                                            .icon("folder-open")
+                                            .tooltip("Reveal in Finder")
+                                            .on_click(move |_, _, cx| {
+                                                reveal_store
+                                                    .update(cx, |store, cx| {
+                                                        store.reveal_in_finder(
+                                                            reveal_path.clone(),
+                                                            cx,
+                                                        )
+                                                    })
+                                                    .detach();
+                                            }),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .t_code_sm()
+                                            .text_color(p.ink_muted)
+                                            .child(worktrees::size(worktree)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(4.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(div().t_label().text_color(status_color).child(status))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .t_small()
+                                            .text_color(p.ink_muted)
+                                            .child(worktrees::detail(worktree)),
+                                    ),
+                            )
+                    }),
+                )
+            };
+            body = body.child(inventory_section.child(rows));
             if let Some(outcome) = &self.outcome {
                 body =
                     body.child(
