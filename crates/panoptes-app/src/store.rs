@@ -561,8 +561,8 @@ impl AppStore {
         })
     }
 
-    /// Starts a new session in a lane's worktree, configured and prompted.
-    /// Creates a session in `lane_id` and returns its key once it is open.
+    /// Starts a new session in a lane's worktree, configured and prompted, and
+    /// returns its key once it is open.
     /// The key, not whatever is active by then: a failed start leaves the
     /// previously active session in place, and a click must not jump to it.
     pub fn create(
