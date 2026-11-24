@@ -32,14 +32,15 @@ Why the model is shaped this way is recorded in
 
 ```mermaid
 graph TD
-  G[Group] -->|contains| G2[Group]
-  G -->|references| P[Project]
-  P -->|has| L[Lane]
+  P[Project] -->|has| L[Lane]
   L -->|owns| W[Worktree]
   L -->|runs one| S[Session]
   S -->|references| H[(Harness session)]
   S -->|labelled by| T[Tag]
 ```
+
+*(Groups were designed and then dropped; the section below keeps the
+record.)*
 
 ### Project
 
@@ -308,8 +309,8 @@ Left open on purpose, not forgotten:
 
 ## Storage
 
-The Panoptes store holds projects, lanes, worktrees, sessions, groups and
-tags, with several many-to-many links. It is SQLite in the app data folder,
+The Panoptes store holds projects, lanes, worktrees, session records, tags,
+profiles and model-picker preferences. It is SQLite in the app data folder,
 built in #18 (see [decisions.md](decisions.md)); new tables arrive as
 migrations.
 
@@ -348,8 +349,10 @@ Smaller fixes from the backend review, needed by the model above:
    streamed under while the session is open (the Pi adapter finds each
    history entry's live id by the message's role and timestamp), the harness
    reports its queue with an id per prompt, and image blocks carry their data.
-6. **Typed errors.** Errors cross into the UI as plain strings, so it can't
-   tell "not open" from "the harness rejected it".
+6. **Typed errors.** Done: errors cross into the UI as `{ kind, message }`
+   and adapters mark theirs with `HarnessError`, so the kind survives
+   ("not open" is no longer indistinguishable from "the harness rejected
+   it").
 
 ## Effect on existing issues
 
@@ -381,11 +384,3 @@ Build the spine fast and solid, not polished; the reason is in
 | dropped | #21 | Nested groups and multi-repo lanes |
 
 The contract fixes (#23 to #27) can go in any order alongside.
-
-## Open questions
-
-1. **Group context** (#8): instructions a group gives the agents in its
-   lanes.
-2. **Multi-repo context files.** An agent running in a multi-repo lane folder
-   does not pick up each repo's `AGENTS.md` on its own. Panoptes may need to
-   pass them in.

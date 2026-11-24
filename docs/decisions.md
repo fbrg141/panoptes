@@ -172,12 +172,13 @@ short list is [the gate](backlog.md#the-gate): bug-only intake lasts until it
 is closed, not until every P1 to P4 issue is. The rest is closed and kept as
 one "Later" list in [backlog.md](backlog.md).
 
-**Gate refresh, 2026-11-15.** Every gate fix but CI (#3) is closed, and CI
-waits only on a billing lock, with local `pnpm check` standing in. Bug-only
+**Gate refresh, 2026-11-15; gate closed 2026-11-21.** Every gate fix,
+CI (#3) included, is closed: `check.yml` runs `scripts/check.sh` on every
+pull request and push to `main`. Bug-only
 intake now lasts until the bet review instead of ending with the gate, so the
 review decides from the observation log rather than from a fresh feature
 backlog. The one exception is a small fix for pain hit in daily use that the
-log records, such as clearing finished lanes (#264).
+log records, such as clearing finished lanes (#264, since shipped).
 
 **Event log, 2026-11-13.** An exception to bug-only intake, made by the
 product owner: the 2026-12-05 bet review needs a record of how Panoptes
@@ -213,9 +214,9 @@ when the current session closes.
    worktree.
 4. **A fresh worktree by default, the main checkout on purpose.** A lane
    normally gets its own worktree at `~/Panoptes/lanes/<lane>/<repo>`, on a
-   `panoptes/<lane>` branch; the central folder stays fixed until Settings
-   exists. For big repos it can point at the main checkout instead, as an
-   explicit opt-in that is clearly marked.
+   `panoptes/<lane>` branch; the central folder is fixed (Settings covers
+   appearance and notifications, not this yet). For big repos it can point at
+   the main checkout instead, as an explicit opt-in that is clearly marked.
 5. **Pi subagents stay nested.** Pi's own subagents will appear under the
    lane's session, read-only (#227). The proposed Panoptes subsessions that
    shared the parent's worktree and returned a result were dropped (#58).
@@ -427,19 +428,19 @@ is less stable than the protocol. The scanner sits behind
 
 Model and thinking level belong to the session, as they do in Pi: changing
 them in one session leaves the others and new sessions alone, and a change
-applies from the next message. A global default waits for Settings (#8).
-Shift+Tab cycles the thinking level, as in Pi's terminal UI. While the agent
-runs, Enter steers it and Option+Enter queues a follow-up for when it
-finishes; both show as chips until the agent reads them.
+applies from the next message. A global default is still missing; Settings
+today covers appearance and notifications. Shift+Tab cycles the thinking
+level, as in Pi's terminal UI. While the agent runs, Enter steers it and
+Option+Enter queues a follow-up for when it finishes; both show as chips
+until the agent reads them.
 
 Images go to the model inline. Any other attached file is appended to the
 prompt as an `@path` mention, so the agent reads it with its own tools and no
-harness needs a file-attachment command. @-mentions are plain text drawn as
-chips by a backdrop behind the text field, which keeps the field a native
-`textarea`. Typing `/` as the first token offers the commands the harness
-can run through a normal prompt (Pi's extension commands, prompt templates
-and skills, listed over RPC). Built-in terminal UI commands are not offered,
-since they do not run over RPC.
+harness needs a file-attachment command. @-mentions are plain text in the
+field, drawn as chips by a backdrop behind it. Typing `/` as the first token
+offers the commands the harness can run through a normal prompt (Pi's
+extension commands, prompt templates and skills, listed over RPC). Built-in
+terminal UI commands are not offered, since they do not run over RPC.
 
 ## Open gaps
 
