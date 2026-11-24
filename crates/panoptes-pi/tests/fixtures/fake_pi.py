@@ -20,7 +20,8 @@ for the adapter's tests. Prompts select behaviour:
   "instructions" replies with the additional system prompt it was started with
   instructions "with-permission-extension" simulates the permission extension's
            startup status; "without-codemode" makes it report codemode as
-           unavailable, as a Pi without the tool does
+           unavailable, as a Pi without the tool does; "without-controls"
+           reports nothing at all, as a failed extension load does
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -75,8 +76,12 @@ if instructions == "with-permission-extension":
 # Panoptes' controls extension publishes codemode's state during session start,
 # and "unavailable" where Pi has no codemode tool. The instructions argument
 # stands in for a Pi without it.
+# "without-controls" stands for the extension failing to load at all: nothing
+# reports, which the adapter must not confuse with a Pi without the tool.
 codemode_present = instructions != "without-codemode"
-if codemode_present:
+if instructions == "without-controls":
+    pass
+elif codemode_present:
     send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
           "statusKey": "panoptes.codemode", "statusText": "off"})
 else:
@@ -230,6 +235,12 @@ for line in sys.stdin:
         respond(command, {"contextUsage": {"tokens": 1200, "contextWindow": model["contextWindow"], "percent": 4}})
     elif kind == "prompt":
         if command["message"] in ["/panoptes-codemode on", "/panoptes-codemode off"]:
+            if instructions == "without-controls":
+                # The real Pi would run the text as a prompt: the command does
+                # not exist. Record that it was sent, so a test can prove the
+                # adapter never got here.
+                respond(command, {"disposition": "started"})
+                continue
             if not codemode_present:
                 send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
                       "statusKey": "panoptes.codemode", "statusText": "unavailable"})

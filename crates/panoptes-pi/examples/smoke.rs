@@ -15,7 +15,7 @@ use anyhow::{Context, bail, ensure};
 use panoptes_harness::{
     AgentSession, Block, Harness, HarnessEvent, PromptMode, Role, StartSession,
 };
-use panoptes_pi::{PiHarness, locate};
+use panoptes_pi::{CODEMODE_MISSING, PiHarness, locate};
 
 /// A single short reply should never take longer than this.
 const RUN_LIMIT: Duration = Duration::from_secs(120);
@@ -94,7 +94,19 @@ async fn check(
             "Codemode did not turn off"
         );
     } else {
-        println!("skipped the codemode switch: Pi has no codemode tool");
+        // No switch means either a Pi without the codemode tool or a controls
+        // extension that never reported. Asking settles which: the adapter
+        // answers the first with CODEMODE_MISSING and the second with
+        // CONTROLS_MISSING, without sending anything to Pi.
+        match session.set_toggle("codemode".into(), true).await {
+            Err(error) if format!("{error:#}").contains(CODEMODE_MISSING) => {
+                println!("skipped the codemode switch: Pi has no codemode tool")
+            }
+            Err(error) => {
+                bail!("Panoptes' session controls extension did not load: {error:#}")
+            }
+            Ok(()) => bail!("A session with no codemode switch accepted the toggle"),
+        }
     }
 
     session

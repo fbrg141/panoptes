@@ -670,6 +670,43 @@ async fn a_pi_without_codemode_offers_no_switch() {
 }
 
 #[tokio::test]
+async fn a_controls_extension_that_never_reports_is_named() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.instructions = Some("without-controls".into());
+    let (session, _rx) = start_with(request).await;
+    assert!(session.settings().await.unwrap().toggles.is_empty());
+    // Not the same fault as a Pi without the tool: this one is the adapter's
+    // own extension failing, and it comes back without a harness kind.
+    let error = session
+        .set_toggle("codemode".into(), true)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains(panoptes_pi::CONTROLS_MISSING));
+    assert_ne!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Rejected)
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_missing_tool_says_so_without_prompting_pi() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.instructions = Some("without-codemode".into());
+    let (session, _rx) = start_with(request).await;
+    let error = session
+        .set_toggle("codemode".into(), true)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains(panoptes_pi::CODEMODE_MISSING));
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Rejected)
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_read_only_session_refuses_the_codemode_switch() {
     let mut request = StartSession::new(std::env::temp_dir());
     request.read_only = true;
