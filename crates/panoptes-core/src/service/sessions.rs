@@ -555,6 +555,13 @@ impl Service {
         let fresh = status.is_none();
         let status = status.unwrap_or_default();
         let early_exit = EarlyExit::default();
+        self.turns.session_started(
+            key,
+            generation,
+            launch.lane,
+            panoptes_id(key),
+            !launch.read_only && !launch.preview,
+        );
         if fresh {
             (self.emit)(SessionEvent {
                 key: key.to_string(),
@@ -578,6 +585,7 @@ impl Service {
                 },
                 early_exit: early_exit.clone(),
                 log: self.log.clone(),
+                turns: self.turns.clone(),
             }
             .run(rx),
         );

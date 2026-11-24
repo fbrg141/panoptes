@@ -287,65 +287,67 @@ and reclaimed by the next `git gc`, which is the price of never moving a ref.
 
 Zed informs the ambient change summary, continuous file sections and keyboard
 navigation, but its agent action log is not Panoptes' truth and its editable
-buffers, staging and immediate reject actions are not copied. Turn checkpoints,
-attribution, review marks, comments and checkpointed reverts build on this pane
-in that order.
+buffers, staging and immediate reject actions are not copied. Turn checkpoints
+are built on this pane; attribution, review marks, comments and checkpointed
+reverts remain later work in that order.
 
 ## Per-turn checkpoints on plain git, not Jujutsu
 
-*Decided 2026-11-07; not built yet (#204).*
+*Decided 2026-11-07; implemented with #204.*
 
-A lane will keep a checkpoint of its worktree at every turn, so each prompt has
-its own diff, any turn can be undone and nothing an agent writes is lost.
-The repository stays plain git and Panoptes does not use Jujutsu (jj).
+A turn begins at `Service::prompt`; a harness-only `RunStarted` with no
+prompt does not invent one or block event forwarding. A writable lane session
+keeps a before and after snapshot of every turn. Each snapshot is a complete
+tree written through a private copy of the real index, then made reachable as
+a commit under a generated `refs/panoptes/lanes/<lane>/turns/<n>/{before,after}`
+ref. The repository stays plain git; Panoptes does not use Jujutsu (jj).
 
-**How a checkpoint is taken.** When the lane session's run settles,
-the core copies the worktree's index to a private index file, runs
-`git add -A` against that copy, then `write-tree` and `commit-tree` with the
-previous checkpoint as parent, and points
-`refs/panoptes/lanes/<lane>/turns/<n>` at the result. One is also taken
-before a turn starts, so edits you make between turns are not credited to
-the agent.
+- **Boundary quality is explicit.** An immediate prompt snapshots before the
+  harness receives it, so the boundary is exact. A queued prompt refreshes on
+  its real `RunStarted` and is recorded as observed. A steering prompt modifies
+  the current run and invents no turn. Unavailable boundaries carry an error
+  and are never shown as an empty diff.
+- **Turn identity is lane-level; trees are worktree-level.** A turn spans
+  session history, while `turn_worktrees` holds one tree/ref pair per project.
+  Snapshots are parented to the previous after ref, or HEAD for the first turn,
+  and are never claimed to be atomic across repositories.
+- **Durable state lives in Panoptes' store.** A migration appends `turns` and
+  `turn_worktrees`. Intent and deterministic ref names are written before any
+  Git ref. Startup adopts interrupted refs, snapshots an existing worktree, uses
+  an archive checkpoint when an archived worktree is gone, marks unrecoverable
+  rows, settles them as stopped, and removes only generated orphan refs.
+- **Nothing the user or agent sees changes.** The real index, `HEAD`, branch,
+  stash and config are untouched. The refs are not branches, so a normal push
+  never sends them. Refs survive archive and are removed by the existing lane
+  deletion cleanup.
+- **Snapshots are complete.** Ignored files stay excluded, but large files are
+  retained: skipping them would make later review or undo unsafe. A new nested
+  repository fails the snapshot loudly rather than becoming a bare gitlink.
+  Configured `copyFiles` remain archive concerns, not turn checkpoints.
+- **Failures do not block a prompt.** A snapshot or store failure records an
+  unavailable boundary and the run proceeds. Settled, stopped, failed and
+  exited runs share an idempotent after path, so a late event from a replaced
+  process cannot overwrite a newer turn. Read-only previews and raw sessions
+  take no checkpoints.
 
-- **Nothing the user or agent sees changes.** The real index, `HEAD`, the
-  branch and the stash are untouched, so `git status`, staging and commits
-  in the worktree behave as before. The refs are not branches, so a normal
-  push never sends them.
-- **`.gitignore` is respected.** Ignored files (`.env`, `target/`,
-  `node_modules/`) are never captured in turn snapshots. Files larger than a
-  set limit are skipped and the checkpoint says which. Configured `copyFiles`
-  are preserved separately during archive and restore; they are not added to
-  tracked checkpoints.
-- **One live session per lane (#228) is what makes it sound.** A turn belongs
-  to the current session, so a checkpoint never mixes two agents, and an undo
-  needs an idle lane. Undo covers only that session's turns; earlier sessions'
-  checkpoint refs stay untouched. Starting from a copy of the real index keeps
-  git's stat cache, so a checkpoint costs about as much as `git status`.
-- **The main checkout is the weak case.** You may be editing the same tree,
-  so diffs per turn are approximate there and undo asks first.
-- **Finishing needs no squash.** Checkpoints sit beside the branch, not on
-  it, so the branch holds only the commits that were meant. The refs are
-  removed when a lane is deleted, never when it is archived.
-
-**Why not jj.** jj's operation log gives the same undo for free, but in a
-colocated repo git sees a detached `HEAD`, the agents (trained on git) run
-git commands that jj only picks up on its next command, extra jj workspaces
-are not git worktrees so git tooling inside them fails, bookmarks must be
-moved by hand before `panoptes/<lane>` can be pushed, git hooks don't run, and
-the jj binary (or the unstable `jj-lib` crate) becomes a dependency. All of
-that buys what a few git plumbing calls already give. The two don't
-compose: with jj the checkpoints would be redundant.
+**Why not jj.** jj's operation log gives undo-like history, but in a
+colocated repo git sees a detached `HEAD`, the agents (trained on git) run git
+commands that jj only picks up on its next command, extra jj workspaces are not
+git worktrees so git tooling inside them fails, bookmarks must be moved by
+hand before `panoptes/<lane>` can be pushed, git hooks don't run, and the jj
+binary (or the unstable `jj-lib` crate) becomes a dependency. All of that
+buys what a few git plumbing calls already give. The two don't compose: with
+jj the checkpoints would be redundant.
 
 **What it changes in #20.** Archiving a dirty lane offers commit, stash, or
 **keep as checkpoint**: the tree is saved to a final checkpoint ref and the
-worktree is removed, and restoring creates a fresh worktree and puts the
-tree back as uncommitted changes, leaving the branch where it was. That
-replaces moving the tree aside to a holding area, which answers where the
-holding area lives. #20 reserves the `refs/panoptes/lanes/` namespace,
-keyed by lane name (`refs/panoptes/lanes/<lane>/archive`) rather than store
-id, because debug and release builds keep separate stores that can reuse an
-id in the same repository. Per-turn checkpoints are tracked by #204 and use
-the one-live-session boundary from #228, not #22's removed write lock.
+worktree is removed, and restoring creates a fresh worktree and puts the tree
+back as uncommitted changes, leaving the branch where it was. That replaces
+moving the tree aside to a holding area. #20 reserves the
+`refs/panoptes/lanes/` namespace, keyed by lane name rather than store id,
+because debug and release builds keep separate stores that can reuse an id in
+the same repository. Per-turn checkpoints use the one-live-session boundary
+from #228, not #22's removed write lock.
 
 ## One live session per lane, with retained history
 

@@ -113,6 +113,39 @@ base without fetching and never merges into the actual worktree.
 Turn scopes, per-turn checkpoints, attribution, review marks, comments and
 reverts remain later work in #201.
 
+### Turn checkpoints
+
+A turn begins at `Service::prompt`; a harness-only `RunStarted` with no prompt does not invent one. A lane has durable, lane-wide turn numbers. Each turn is represented once in
+`turns` and once per worktree in `turn_worktrees` (schema v12). A turn owns a
+short prompt label in Panoptes' own store, never the event log, plus a status,
+outcome and timestamps. Each worktree row holds deterministic before/after
+refs, tree ids, boundary quality, human-edit detection, recovery and errors.
+The first UI scope is not part of #204; #205 reads these rows as tree ranges.
+
+An immediate writable prompt takes its before snapshot before the harness
+receives it and records an exact boundary. A queued prompt reserves intent,
+then refreshes on its real `RunStarted` and records an observed boundary; a
+steer does not create a turn. Human edits between turns are detected by
+comparing a new before tree with the previous after tree. A read-only preview,
+raw session, handled command or failed prompt creates no running turn.
+
+```text
+LaneTurn
+├── session id, prompt label, outcome
+└── WorktreeTurn[]
+    ├── project id, deterministic before/after refs
+    ├── before/after trees, parent chain
+    ├── exact | observed | unavailable boundary
+    ├── human edits before, recovered, before/after errors
+    └── no atomic cross-repository claim
+```
+
+Startup reconciles unfinished rows: existing generated refs are adopted, an
+existing active worktree is snapshotted, an archived worktree uses its archive
+checkpoint, unrecoverable rows say unavailable with a reason, and generated
+orphan refs are removed. Attributed edits, review marks, comments and reverts
+remain later work in #201.
+
 ### Profile
 
 A named, reusable setup for a new session, owned by Panoptes rather than the

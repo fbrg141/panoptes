@@ -90,7 +90,11 @@ impl Backend {
                 "harnessErrors": harness_errors,
             }),
         );
-        let service = Arc::new(service.with_event_log(log));
+        let service = service.with_event_log(log);
+        if let Err(error) = runtime.block_on(service.reconcile_turns()) {
+            eprintln!("Could not reconcile turn checkpoints: {error:#}");
+        }
+        let service = Arc::new(service);
         Ok(Started {
             backend: Arc::new(Self {
                 runtime,

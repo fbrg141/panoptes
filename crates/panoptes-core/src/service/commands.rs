@@ -20,7 +20,8 @@ impl Service {
             .map_err(err)
     }
 
-    /// Sends a prompt to the addressed session.
+    /// Sends a prompt to the addressed session. A writable lane session
+    /// reserves its turn boundary before the harness can start editing.
     pub async fn prompt(
         &self,
         key: &str,
@@ -28,12 +29,36 @@ impl Service {
         images: Vec<ImageAttachment>,
         mode: PromptMode,
     ) -> ServiceResult<PromptOutcome> {
-        self.registry
-            .session(key)
-            .await?
-            .prompt(text, images, mode)
+        let session = self.registry.session(key).await?;
+        let generation = self
+            .registry
+            .open()
             .await
-            .map_err(err)
+            .get(key)
+            .map(|open| open.generation);
+        let candidate = match generation {
+            Some(generation) => {
+                match self
+                    .turns
+                    .prepare_prompt(key, generation, &text, mode)
+                    .await
+                {
+                    Ok(turn) => turn,
+                    Err(_) => {
+                        self.log.record("turnPrepareFailed", json!({"key": key}));
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let outcome = session.prompt(text, images, mode).await;
+        if let (Some(generation), Some(turn)) = (generation, candidate) {
+            self.turns
+                .prompt_result(key, generation, turn, &outcome)
+                .await;
+        }
+        outcome.map_err(err)
     }
 
     pub async fn settings(&self, key: &str) -> ServiceResult<SessionSettings> {

@@ -136,11 +136,16 @@ impl AgentSession for FakeSession {
     }
     async fn prompt(
         &self,
-        _: String,
+        text: String,
         _: Vec<ImageAttachment>,
         _: PromptMode,
     ) -> anyhow::Result<PromptOutcome> {
-        Ok(PromptOutcome::Started)
+        match text.as_str() {
+            "queue" => Ok(PromptOutcome::Queued),
+            "handled" => Ok(PromptOutcome::Handled),
+            "fail" => anyhow::bail!("prompt failed"),
+            _ => Ok(PromptOutcome::Started),
+        }
     }
     async fn abort(&self) -> anyhow::Result<()> {
         Ok(())
@@ -299,8 +304,8 @@ pub(super) async fn lane_of(f: &Fixture) -> (tempfile::TempDir, Lane) {
     (code, lane)
 }
 
-pub(super) fn git(dir: &Path, args: &[&str]) {
-    let status = crate::git::command()
+pub(super) fn git(dir: &Path, args: &[&str]) -> String {
+    let output = crate::git::command()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -308,9 +313,14 @@ pub(super) fn git(dir: &Path, args: &[&str]) {
         .env("GIT_AUTHOR_EMAIL", "t@t")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@t")
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success(), "git {args:?}");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 pub(super) async fn two_lanes(f: &Fixture) -> (tempfile::TempDir, Lane, Lane, EventSink) {
