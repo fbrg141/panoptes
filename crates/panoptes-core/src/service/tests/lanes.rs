@@ -13,19 +13,100 @@ async fn lane_changes_and_file_hunks_come_from_the_lane_tree() {
     )
     .unwrap();
     let changes = f.service.lane_changes(lane.id).await.unwrap();
-    assert_eq!(changes.files.len(), 1);
-    assert_eq!(changes.files[0].path, "untracked.txt");
+    assert_eq!(changes.totals.files, 1);
+    assert_eq!(changes.worktrees.len(), 1);
+    let worktree = &changes.worktrees[0];
+    assert_eq!(worktree.project_id, lane.project_id);
+    assert_eq!(worktree.changes.files.len(), 1);
+    assert_eq!(worktree.changes.files[0].path, "untracked.txt");
     let range = TreeRange {
-        from: changes.from,
-        to: changes.to,
+        from: worktree.changes.from.clone(),
+        to: worktree.changes.to.clone(),
     };
+    let wrong_worktree = f
+        .service
+        .file_hunks(
+            lane.id,
+            lane.project_id + 1,
+            "untracked.txt".into(),
+            range.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert!(wrong_worktree.message.contains("has no worktree"));
     let hunks = f
         .service
-        .file_hunks(lane.id, "untracked.txt".into(), range)
+        .file_hunks(lane.id, worktree.project_id, "untracked.txt".into(), range)
         .await
         .unwrap();
     assert_eq!(hunks.len(), 1);
     assert_eq!(hunks[0].lines[0].text, "review me");
+}
+
+#[tokio::test]
+async fn lane_changes_keep_equal_paths_in_separate_worktrees() {
+    let f = fixture(FakeHarness::default());
+    let dir = tempfile::tempdir().unwrap();
+    let mut projects = Vec::new();
+    for name in ["web", "api"] {
+        let repo = dir.path().join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "--initial-branch", "trunk"]);
+        git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "start"],
+        );
+        let project = f
+            .service
+            .add_project(repo.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        projects.push(project);
+    }
+    let for_lane = projects.clone();
+    let lane = {
+        let store = f.service.store.lock();
+        store
+            .add_lane(&crate::store::NewLane {
+                project_id: for_lane[0].id,
+                name: "multi".into(),
+                task: "Review two repositories".into(),
+                branch: "panoptes/multi".into(),
+                worktrees: for_lane
+                    .iter()
+                    .map(|project| crate::store::NewLaneWorktree {
+                        project_id: project.id,
+                        path: project.repo.clone(),
+                        main_checkout: true,
+                    })
+                    .collect(),
+            })
+            .unwrap()
+    };
+    for project in &projects {
+        std::fs::write(
+            Path::new(&project.repo).join("shared.txt"),
+            format!("{}\n", project.settings.name),
+        )
+        .unwrap();
+    }
+
+    let changes = f.service.lane_changes(lane.id).await.unwrap();
+    assert_eq!(changes.totals.files, 2);
+    assert_eq!(changes.worktrees.len(), 2);
+    for worktree in &changes.worktrees {
+        assert_eq!(worktree.changes.files[0].path, "shared.txt");
+        let range = TreeRange {
+            from: worktree.changes.from.clone(),
+            to: worktree.changes.to.clone(),
+        };
+        let hunks = f
+            .service
+            .file_hunks(lane.id, worktree.project_id, "shared.txt".into(), range)
+            .await
+            .unwrap();
+        assert_eq!(hunks[0].lines[0].text, worktree.project_name);
+    }
 }
 
 #[tokio::test]

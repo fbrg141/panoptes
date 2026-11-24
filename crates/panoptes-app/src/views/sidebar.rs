@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use panoptes_core::changes::ChangeTotals;
 use panoptes_core::service::{AdoptionOutcome, LaneNavigation, Session};
 use panoptes_core::store::{Lane, LaneState, Project};
 use panoptes_harness::SessionStatus;
@@ -53,6 +54,7 @@ enum Owner {
 /// Everything a row needs to know about the store, read once per frame.
 struct Snapshot {
     statuses: HashMap<String, SessionStatus>,
+    reviews: HashMap<i64, ChangeTotals>,
     active_key: Option<String>,
     now: i64,
 }
@@ -592,6 +594,11 @@ impl Sidebar {
         let checkpoint = lane.worktrees.iter().any(|w| w.checkpoint_ref.is_some());
         let empty = empty_lane(lane, navigation);
         let work = work_label(navigation.and_then(|n| n.work.as_ref()));
+        let review = snap
+            .reviews
+            .get(&lane.id)
+            .copied()
+            .filter(|totals| totals.files > 0);
         let location = if main_checkout {
             "Main checkout".to_string()
         } else {
@@ -770,12 +777,16 @@ impl Sidebar {
             .child(div().truncate().t_body().child(lane.task.clone()))
             .child(checkout_line)
             .children(work.map(|w| {
+                let text = match review {
+                    Some(totals) => format!("{w} · +{} −{}", totals.added, totals.removed),
+                    None => w,
+                };
                 div()
                     .truncate()
                     .text_size(px(12.))
                     .line_height(px(16.))
                     .text_color(p.ink_muted)
-                    .child(w)
+                    .child(text)
             }));
         let menu = div()
             .absolute()
@@ -867,6 +878,10 @@ impl Sidebar {
         let detail = session_detail(session, row.context.as_deref());
         let time = relative_time(session.updated_at, snap.now.max(session.updated_at));
         let title = row.title.clone().unwrap_or_else(|| session.title.clone());
+        let review = row
+            .lane
+            .and_then(|lane| snap.reviews.get(&lane.id))
+            .filter(|totals| totals.files > 0);
         let group = SharedString::from(format!("session-{key}"));
         let owner = Owner::Session {
             session: Box::new(session.clone()),
@@ -996,6 +1011,18 @@ impl Sidebar {
                         el.group_hover(group.clone(), |s| s.opacity(0.))
                     })
                     .when(has_actions && menu_open, |el| el.opacity(0.))
+                    .children(review.map(|totals| {
+                        div()
+                            .flex()
+                            .flex_none()
+                            .gap(px(5.))
+                            .child(div().text_color(p.done).child(format!("+{}", totals.added)))
+                            .child(
+                                div()
+                                    .text_color(p.error)
+                                    .child(format!("−{}", totals.removed)),
+                            )
+                    }))
                     .when(row.lane.is_none(), |el| el.child(time)),
             );
 
@@ -1166,6 +1193,11 @@ impl Render for Sidebar {
         let state = &self.store.read(cx).state;
         let snap = Snapshot {
             statuses: state.statuses.clone(),
+            reviews: state
+                .reviews
+                .iter()
+                .filter_map(|(id, review)| review.data.as_ref().map(|data| (*id, data.totals)))
+                .collect(),
             active_key: state.active_key.clone(),
             now: now_ms(),
         };

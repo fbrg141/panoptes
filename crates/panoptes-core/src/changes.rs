@@ -34,6 +34,44 @@ impl Default for DiffOptions {
     }
 }
 
+/// Every worktree's lane-scope diff. A lane is the review unit, but each
+/// repository keeps its own range and files; paths are unique only inside a
+/// worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneChanges {
+    pub lane_id: i64,
+    pub worktrees: Vec<WorktreeChanges>,
+    pub totals: ChangeTotals,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeChanges {
+    pub project_id: i64,
+    pub project_name: String,
+    pub base_branch: String,
+    pub base: BaseReview,
+    pub changes: Changes,
+}
+
+/// What the current local base means for this reviewed tree. Unknown is
+/// explicit; an unavailable preview is never presented as a clean merge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaseReview {
+    pub new_commits: Option<u64>,
+    pub preview: MergePreview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", content = "detail", rename_all = "kebab-case")]
+pub enum MergePreview {
+    Clean,
+    Conflicts(Vec<String>),
+    Unavailable(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Changes {
@@ -43,12 +81,20 @@ pub struct Changes {
     pub totals: ChangeTotals,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeTotals {
     pub files: usize,
     pub added: u64,
     pub removed: u64,
+}
+
+impl ChangeTotals {
+    pub fn add(&mut self, other: Self) {
+        self.files += other.files;
+        self.added += other.added;
+        self.removed += other.removed;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -302,6 +348,113 @@ fn resolve(repo: &Path, reference: &str) -> anyhow::Result<String> {
 
 fn merge_base(repo: &Path, base: &str, target: &str) -> anyhow::Result<String> {
     run(repo, &["merge-base", "--end-of-options", base, target])
+}
+
+/// Base freshness and a read-only merge preview for one already resolved lane
+/// range. Failure here never discards an otherwise valid lane diff.
+pub fn base_review(repo: &Path, base_branch: &str, range: &TreeRange) -> BaseReview {
+    let reference = format!("refs/heads/{base_branch}");
+    let base_tip = resolve(repo, &reference);
+    let new_commits = base_tip.as_ref().ok().and_then(|tip| {
+        run(
+            repo,
+            &[
+                "rev-list",
+                "--count",
+                "--end-of-options",
+                &format!("{}..{tip}", range.from),
+            ],
+        )
+        .ok()?
+        .parse::<u64>()
+        .ok()
+    });
+    let preview = match base_tip {
+        Err(error) => MergePreview::Unavailable(format!("{error:#}")),
+        Ok(_) if new_commits == Some(0) => MergePreview::Clean,
+        Ok(tip) => match merge_preview(repo, range, &tip) {
+            Ok(preview) => preview,
+            Err(error) => MergePreview::Unavailable(format!("{error:#}")),
+        },
+    };
+    BaseReview {
+        new_commits,
+        preview,
+    }
+}
+
+/// Gives the reviewed tree a commit identity for merge-tree without creating
+/// a ref or depending on the user's identity/signing configuration.
+fn review_commit(repo: &Path, range: &TreeRange) -> anyhow::Result<String> {
+    let mut command = crate::git::command();
+    command
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            &range.to,
+            "-p",
+            &range.from,
+            "-m",
+            "Panoptes review snapshot",
+        ])
+        .env("GIT_AUTHOR_NAME", "Panoptes")
+        .env("GIT_AUTHOR_EMAIL", "panoptes@localhost")
+        .env("GIT_COMMITTER_NAME", "Panoptes")
+        .env("GIT_COMMITTER_EMAIL", "panoptes@localhost");
+    let output = crate::git::output(&mut command, None)?;
+    if !output.status.success() {
+        bail!(
+            "git commit-tree failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn merge_preview(repo: &Path, range: &TreeRange, base_tip: &str) -> anyhow::Result<MergePreview> {
+    let lane = review_commit(repo, range)?;
+    let merge_base = format!("--merge-base={}", range.from);
+    let output = git_output(
+        repo,
+        &[
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "-z",
+            &merge_base,
+            base_tip,
+            &lane,
+        ],
+        &[],
+    )?;
+    match output.status.code() {
+        Some(0) => Ok(MergePreview::Clean),
+        Some(1) => {
+            let files = parse_merge_conflicts(&String::from_utf8_lossy(&output.stdout));
+            if files.is_empty() {
+                bail!("git merge-tree reported a conflict without naming its files");
+            }
+            Ok(MergePreview::Conflicts(files))
+        }
+        _ => bail!(
+            "git merge-tree failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+}
+
+/// With `-z`, the first record is the result tree and conflict paths follow
+/// it until an empty record introduces the optional diagnostic messages.
+fn parse_merge_conflicts(output: &str) -> Vec<String> {
+    let mut records = output.split('\0');
+    records.next();
+    records
+        .take_while(|record| !record.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -751,6 +904,82 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_base_is_clean_without_a_merge_command() {
+        let (_dir, project, lane) = fixture();
+        let repo = Path::new(&project.repo);
+        std::fs::write(repo.join("tracked.txt"), "lane\n").unwrap();
+        let review = base_review(repo, "trunk", &lane_range(&project, &lane).unwrap());
+        assert_eq!(review.new_commits, Some(0));
+        assert_eq!(review.preview, MergePreview::Clean);
+    }
+
+    #[test]
+    fn an_advanced_compatible_base_is_clean_and_preview_failures_are_explicit() {
+        let (_dir, project, lane) = fixture();
+        let repo = Path::new(&project.repo);
+        std::fs::write(repo.join("lane.txt"), "lane\n").unwrap();
+        commit(repo, "lane");
+        git(repo, &["checkout", "--quiet", "trunk"]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        commit(repo, "base");
+        git(repo, &["checkout", "--quiet", "panoptes/review"]);
+        let range = lane_range(&project, &lane).unwrap();
+
+        let review = base_review(repo, "trunk", &range);
+        assert_eq!(review.new_commits, Some(1));
+        assert_eq!(review.preview, MergePreview::Clean);
+
+        let mut invalid = range.clone();
+        invalid.to = "0".repeat(40);
+        let unavailable = base_review(repo, "trunk", &invalid);
+        assert_eq!(unavailable.new_commits, Some(1));
+        assert!(matches!(unavailable.preview, MergePreview::Unavailable(_)));
+    }
+
+    #[test]
+    fn a_conflict_preview_names_literal_paths_and_changes_no_user_state() {
+        let (_dir, project, lane) = fixture();
+        let repo = Path::new(&project.repo);
+        let conflict = "new file-✓.txt";
+        std::fs::write(repo.join(conflict), "lane\n").unwrap();
+        commit(repo, "lane adds");
+        git(repo, &["checkout", "--quiet", "trunk"]);
+        std::fs::write(repo.join(conflict), "base\n").unwrap();
+        commit(repo, "base adds");
+        git(repo, &["checkout", "--quiet", "panoptes/review"]);
+        std::fs::write(repo.join("uncommitted.txt"), "keep me\n").unwrap();
+        let range = lane_range(&project, &lane).unwrap();
+
+        let head = git(repo, &["rev-parse", "HEAD"]);
+        let refs = git(repo, &["show-ref"]);
+        let status = git(repo, &["status", "--porcelain"]);
+        let stash = git(repo, &["stash", "list"]);
+        let config = git(repo, &["config", "--local", "--list"]);
+        let index = std::fs::read(repo.join(".git/index")).unwrap();
+        let review = base_review(repo, "trunk", &range);
+
+        assert_eq!(review.new_commits, Some(1));
+        assert_eq!(
+            review.preview,
+            MergePreview::Conflicts(vec![conflict.into()])
+        );
+        assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(repo, &["show-ref"]), refs);
+        assert_eq!(git(repo, &["status", "--porcelain"]), status);
+        assert_eq!(git(repo, &["stash", "list"]), stash);
+        assert_eq!(git(repo, &["config", "--local", "--list"]), config);
+        assert_eq!(std::fs::read(repo.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            std::fs::read_to_string(repo.join(conflict)).unwrap(),
+            "lane\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("uncommitted.txt")).unwrap(),
+            "keep me\n"
+        );
+    }
+
+    #[test]
     fn an_advanced_base_does_not_appear_as_lane_work() {
         let (_dir, project, lane) = fixture();
         let repo = Path::new(&project.repo);
@@ -833,7 +1062,7 @@ mod tests {
             },
         };
         assert_eq!(
-            serde_json::to_value(changes).unwrap(),
+            serde_json::to_value(&changes).unwrap(),
             serde_json::json!({
                 "from": "a".repeat(40),
                 "to": "b".repeat(40),
@@ -850,5 +1079,28 @@ mod tests {
                 "totals": { "files": 1, "added": 2, "removed": 1 }
             })
         );
+        let lane = LaneChanges {
+            lane_id: 7,
+            worktrees: vec![WorktreeChanges {
+                project_id: 3,
+                project_name: "web".into(),
+                base_branch: "main".into(),
+                base: BaseReview {
+                    new_commits: Some(0),
+                    preview: MergePreview::Clean,
+                },
+                changes: changes.clone(),
+            }],
+            totals: changes.totals,
+        };
+        let wire = serde_json::to_value(lane).unwrap();
+        assert_eq!(wire["laneId"], 7);
+        assert_eq!(wire["worktrees"][0]["projectId"], 3);
+        assert_eq!(wire["worktrees"][0]["projectName"], "web");
+        assert_eq!(wire["worktrees"][0]["baseBranch"], "main");
+        assert_eq!(wire["worktrees"][0]["base"]["newCommits"], 0);
+        assert_eq!(wire["worktrees"][0]["base"]["preview"]["status"], "clean");
+        assert_eq!(wire["worktrees"][0]["changes"]["totals"]["files"], 1);
+        assert_eq!(wire["totals"]["added"], 2);
     }
 }

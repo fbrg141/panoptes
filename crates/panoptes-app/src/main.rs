@@ -42,6 +42,7 @@ fn main() {
             theme::init(cx, started.preferences.dark_mode);
             views::composer::init(cx);
             views::shortcuts::init(cx);
+            views::review::init(cx);
             let backend = started.backend.clone();
             cx.on_app_quit(move |_| {
                 let backend = backend.clone();

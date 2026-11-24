@@ -7,6 +7,7 @@ use panoptes_core::service::Session;
 
 use crate::model::diagnostics::DiagnosticsFilter;
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, single_pane};
+use crate::model::review;
 use crate::model::sidebar::lane_session_to_stop;
 use crate::store::AppStore;
 use crate::views::turn::ZoomedImage;
@@ -42,6 +43,8 @@ pub struct Ui {
     pub image: Option<ZoomedImage>,
     pub layout: PaneNode,
     pub focused_pane: String,
+    /// Whether the workspace shows its lane review beside the conversation.
+    pub review_open: bool,
     /// The diagnostics pane and its initial project/lane scope.
     pub diagnostics: Option<DiagnosticsFilter>,
 }
@@ -55,6 +58,7 @@ impl Default for Ui {
             image: None,
             layout,
             focused_pane,
+            review_open: false,
             diagnostics: None,
         }
     }
@@ -183,6 +187,46 @@ pub fn request_open(
             store.open(session, cx).detach();
         }
     });
+}
+
+/// Opens, switches or closes the workspace review for `lane_id`. Closing
+/// keeps its cache for the next opening. A lane that is not the one showing
+/// switches the review rather than closing it, so the button in a second pane
+/// acts on its own lane.
+pub fn toggle_review(
+    store: &Entity<AppStore>,
+    ui: &Entity<Ui>,
+    lane_id: Option<i64>,
+    cx: &mut App,
+) {
+    let (open, showing) = (
+        ui.read(cx).review_open,
+        store
+            .read(cx)
+            .state
+            .reviews
+            .values()
+            .find(|review| review.visible)
+            .map(|review| review.lane_id),
+    );
+    match review::review_toggle(open, showing, lane_id) {
+        review::ReviewToggle::Open(lane_id) => {
+            ui.update(cx, |ui, cx| {
+                ui.review_open = true;
+                cx.notify();
+            });
+            store.update(cx, |store, cx| store.open_review(lane_id, cx));
+        }
+        review::ReviewToggle::Close => {
+            ui.update(cx, |ui, cx| {
+                ui.review_open = false;
+                cx.notify();
+            });
+            store.update(cx, |store, cx| store.close_review(cx));
+        }
+        // No lane to review: leave both the flag and the state alone.
+        review::ReviewToggle::Nothing => {}
+    }
 }
 
 /// A session being dragged from the sidebar or a pane header onto a pane.

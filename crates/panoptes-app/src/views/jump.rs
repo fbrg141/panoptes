@@ -179,6 +179,9 @@ impl Jump {
                     );
                 }
             }
+            PaletteTarget::Review => {
+                crate::ui::toggle_review(&store, &ui, self.active_lane(cx), cx);
+            }
             PaletteTarget::NewProject => store.update(cx, |store, cx| store.pick_project(cx)),
             PaletteTarget::Shortcuts => self.show(Overlay::Shortcuts, cx),
             PaletteTarget::ShowLogs => self.ui.update(cx, |ui, cx| {
