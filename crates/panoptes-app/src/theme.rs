@@ -86,7 +86,12 @@ impl Palette {
                 .unwrap_or_else(|| panic!("token {name}"));
             match &token["value"] {
                 Value::String(s) => s.clone(),
-                Value::Object(by_theme) => by_theme[theme].as_str().unwrap().to_string(),
+                Value::Object(by_theme) => {
+                    let value = by_theme[theme]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("token {name} misses theme {theme}"));
+                    value.to_string()
+                }
                 other => panic!("token {name} has value {other}"),
             }
         };
