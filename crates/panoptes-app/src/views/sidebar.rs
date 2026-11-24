@@ -151,16 +151,16 @@ impl Sidebar {
         let ui = self.ui.clone();
         let store = self.store.clone();
         cx.spawn(async move |this, cx| {
-            created.await;
+            // The key the start returned, not whatever is active now: a start
+            // that failed leaves the previously active session in place.
+            let key = created.await;
             // The lane stays guarded until a listing shows its new session;
             // until then a click would still find it empty and start another.
             store.update(cx, |store, cx| store.refresh(cx)).await;
             let _ = this.update(cx, |this, _| this.starting.remove(&lane_id));
-            cx.update(|cx| {
-                if let Some(key) = store.read(cx).state.active_key.clone() {
-                    ui.update(cx, |ui, cx| ui.show_session(&key, None, cx));
-                }
-            });
+            if let Some(key) = key {
+                ui.update(cx, |ui, cx| ui.show_session(&key, None, cx));
+            }
         })
         .detach();
     }
@@ -180,6 +180,13 @@ impl Sidebar {
             store.update(cx, |store, cx| store.refresh(cx)).await;
             let _ = this.update(cx, |this, cx| {
                 this.starting.remove(&lane_id);
+                // A lane that has to be chosen, or an adoption the service
+                // refused, still leaves the user with a conversation to read
+                // rather than a click that did nothing.
+                if !matches!(outcome, Some(AdoptionOutcome::Adopted { .. })) {
+                    this.request_open(&session, cx);
+                    return;
+                }
                 if let Some(AdoptionOutcome::Adopted { key }) = outcome {
                     let listed = this
                         .store
@@ -396,7 +403,14 @@ impl Sidebar {
                 let _ = this.update(cx, |this, cx| {
                     let action = {
                         let state = &this.store.read(cx).state;
-                        project_open(id, &state.lanes, &state.navigation, &state.sessions, &repo)
+                        project_open(
+                            id,
+                            &state.lanes,
+                            &state.navigation,
+                            &state.sessions,
+                            &repo,
+                            &state.folders,
+                        )
                     };
                     match action {
                         Some(ProjectOpen::Open(session)) => this.request_open(&session, cx),
@@ -404,7 +418,12 @@ impl Sidebar {
                             this.adopt_and_open(session, lane, cx)
                         }
                         Some(ProjectOpen::Start { lane }) => this.work(lane, cx),
-                        Some(ProjectOpen::Busy) => {}
+                        // A session is changing this checkout and is not
+                        // listed: the click still shows something happened.
+                        Some(ProjectOpen::Busy) => {
+                            Self::toggle(&mut this.collapsed, id);
+                            cx.notify();
+                        }
                         None => {
                             Self::toggle(&mut this.collapsed, id);
                             cx.notify();
