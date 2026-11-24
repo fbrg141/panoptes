@@ -51,9 +51,12 @@ time. ([Why it's built this way](docs/decisions.md#observe-pi-do-not-orchestrate
   questions from Pi extensions (confirm, select, input, editor) appear right
   above the composer. Allow covers the matching repeats: the decision is kept
   for the lane, so reopening a session does not ask again.
-- **Notifications when it matters.** A macOS notification when a run finishes
-  or a session waits for you, and never for the session you are already
-  reading. Off, or one kind at a time, under Settings → Notifications.
+- **Notifications when it matters.** A macOS notification, with Panoptes' own
+  alert sound if you want it, when a run finishes or a session waits for you,
+  and never for the session you are already reading. Off, or one kind at a
+  time, under Settings → Notifications.
+- **A click on the project opens its main checkout.** The lane that works in
+  the repository itself: its session if there is one, a new one if not.
 - **Cost and timing.** Model, tokens, cost and duration for each turn and
   each session.
 - **Safe cleanup.** Archive clean lanes. Commit, stash or save dirty work as a

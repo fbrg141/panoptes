@@ -13,3 +13,4 @@ pub mod shortcuts;
 pub mod sidebar;
 pub mod turns;
 pub mod usage;
+pub mod worktrees;

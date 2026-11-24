@@ -5,7 +5,7 @@ use anyhow::Context;
 use super::error::err;
 use super::status::now_ms;
 use super::{Service, ServiceResult};
-use crate::cleanup::{self, IdleLane, LaneCleanup};
+use crate::cleanup::{self, IdleLane, LaneCleanup, Pruned};
 use crate::store::{Lane, LaneState, Project};
 
 impl Service {
@@ -36,10 +36,18 @@ impl Service {
                 Some((project.clone(), lane.clone()))
             })
             .collect();
-        let scan = tokio::task::spawn_blocking(move || cleanup::scan(project_id, &active))
-            .await
-            .context("The worktree cleanup scan stopped")
-            .map_err(err)?;
+        let scan_projects = listing.projects.clone();
+        let scan_lanes = listing.lanes.clone();
+        let (scan, inventory) = tokio::task::spawn_blocking(move || {
+            let scan = cleanup::scan(project_id, &active);
+            // The scan has just measured the lane worktrees: measuring them
+            // again would double the dialog's wait for nothing.
+            let inventory = cleanup::inventory(&scan_projects, &scan_lanes, &scan.sizes);
+            (scan, inventory)
+        })
+        .await
+        .context("The worktree cleanup scan stopped")
+        .map_err(err)?;
 
         // Starting sessions are not listed as open yet. Include both sets so
         // cleanup can never archive a lane under a process that is starting.
@@ -105,6 +113,23 @@ impl Service {
             idle_days,
             candidates,
             errors,
+            worktree_inventory: inventory,
         })
+    }
+
+    /// Removes stale Git administrative records for registered projects. A
+    /// live worktree, its files and its branch are never touched. Each
+    /// project is pruned on its own, so one unreachable repository does not
+    /// stop the others.
+    pub async fn prune_worktrees(&self) -> ServiceResult<Pruned> {
+        let projects = self
+            .store
+            .call(move |store| store.projects())
+            .await
+            .map_err(err)?;
+        tokio::task::spawn_blocking(move || cleanup::prune(&projects))
+            .await
+            .context("The worktree prune stopped")
+            .map_err(err)
     }
 }

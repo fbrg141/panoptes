@@ -943,7 +943,10 @@ impl Settings {
                         "notify-enabled",
                         notifications.enabled,
                         "Show notifications",
-                        Some("Turn every notification off without changing the two below.".into()),
+                        Some(
+                            "Turn every notification off without changing the switches below."
+                                .into(),
+                        ),
                         false,
                         p,
                         toggle(NotificationField::Enabled),
@@ -968,7 +971,36 @@ impl Settings {
                         !notifications.enabled,
                         p,
                         toggle(NotificationField::NeedsAttention),
+                    ))
+                    // The kinds of event come first; the sound is what they
+                    // are accompanied by, so it follows them.
+                    .child(ds::checkbox(
+                        "notify-sound",
+                        notifications.sound,
+                        "Play a sound",
+                        Some(
+                            "Play Panoptes' alert sound with the notification. It plays \
+                             even in Focus, where macOS would keep a notification quiet."
+                                .into(),
+                        ),
+                        !notifications.enabled,
+                        p,
+                        toggle(NotificationField::Sound),
                     )),
+            )
+            // Hearing it is the quickest way to know whether to turn it off.
+            // Off when nothing would be heard anyway, and while a preview is
+            // still playing, so clicks cannot stack sounds.
+            .child(
+                div().child(
+                    Button::new("notify-preview-sound")
+                        .ghost()
+                        .small()
+                        .icon("play")
+                        .label("Play the sound")
+                        .disabled(!notifications.enabled || !notifications.sound)
+                        .on_click(|_, _, _| crate::notify::play_sound()),
+                ),
             )
     }
 }
