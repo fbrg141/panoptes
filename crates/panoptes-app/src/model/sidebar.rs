@@ -1,12 +1,13 @@
 //! Pure sidebar logic: status words, row details, a lane's main session, empty
 //! lanes and the row menus.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use panoptes_core::lanes::LaneWork;
 #[cfg(test)]
 use panoptes_core::service::BusyWriter;
-use panoptes_core::service::{LaneNavigation, Session};
+use panoptes_core::service::{LaneNavigation, Listing, Session};
 #[cfg(test)]
 use panoptes_core::store::LaneWorktree;
 use panoptes_core::store::{Lane, LaneState};
@@ -47,12 +48,53 @@ pub fn main_checkout_lane(lanes: &[Lane], project_id: i64) -> Option<&Lane> {
     candidates.into_iter().next()
 }
 
-/// A folder path in the form two spellings of the same folder share: with
-/// symlinks and `..` resolved where the folder exists, and otherwise with
-/// trailing slashes and `.` parts dropped.
-fn folder(path: &str) -> PathBuf {
-    let path = Path::new(path);
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.components().collect())
+/// The canonical spelling of every folder a listing mentions, resolved once
+/// when the listing arrives.
+///
+/// A click compares folders through this and never touches the filesystem:
+/// canonicalizing in the click handler stalls the window on a slow or
+/// unmounted volume, and this module is the pure logic that views render.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Folders(HashMap<String, PathBuf>);
+
+impl Folders {
+    /// The folders worth resolving: each project's repository, each lane
+    /// worktree, and every conversation's folder.
+    pub fn mentioned(listing: &Listing) -> Vec<String> {
+        let mut paths: Vec<String> = listing
+            .projects
+            .iter()
+            .map(|project| project.repo.clone())
+            .collect();
+        paths.extend(
+            listing
+                .lanes
+                .iter()
+                .flat_map(|lane| lane.worktrees.iter())
+                .map(|worktree| worktree.path.clone()),
+        );
+        paths.extend(listing.sessions.iter().map(|session| session.cwd.clone()));
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    /// Records what was resolved off the UI thread.
+    pub fn from_resolved(resolved: impl IntoIterator<Item = (String, PathBuf)>) -> Self {
+        Self(resolved.into_iter().collect())
+    }
+
+    /// The canonical spelling of `path` when the listing mentioned it, and
+    /// otherwise its own spelling with trailing slashes and `.` parts dropped.
+    pub fn canonical(&self, path: &str) -> PathBuf {
+        self.0.get(path).cloned().unwrap_or_else(|| spelling(path))
+    }
+}
+
+/// A folder written the way it was given, less the parts that cannot mean a
+/// different folder.
+fn spelling(path: &str) -> PathBuf {
+    Path::new(path).components().collect()
 }
 
 /// What a click on the project opens, or `None` when it has no
@@ -63,6 +105,7 @@ pub fn project_open(
     navigation: &[LaneNavigation],
     sessions: &[Session],
     repo: &str,
+    folders: &Folders,
 ) -> Option<ProjectOpen> {
     let lane = main_checkout_lane(lanes, project_id)?;
     let nav = navigation.iter().find(|nav| nav.lane_id == lane.id);
@@ -86,12 +129,12 @@ pub fn project_open(
     }
     // An empty lane still opens: a conversation sitting in the main checkout
     // belongs there, and adopting it puts it under the lane.
-    let repo = folder(repo);
+    let repo = folders.canonical(repo);
     let checkout = lane
         .worktrees
         .iter()
         .find(|tree| tree.main_checkout)
-        .map(|tree| folder(&tree.path));
+        .map(|tree| folders.canonical(&tree.path));
     let unowned: Vec<Session> = sessions
         .iter()
         .filter(|session| {
@@ -101,7 +144,7 @@ pub fn project_open(
                 && !session.archived
                 && session.project_id == Some(project_id)
                 && {
-                    let cwd = folder(&session.cwd);
+                    let cwd = folders.canonical(&session.cwd);
                     cwd == repo || checkout.as_ref() == Some(&cwd)
                 }
         })
@@ -445,12 +488,12 @@ pub(crate) mod tests {
         let navigation = vec![nav(2, "panoptes:4")];
         let lanes = vec![main_lane(2, 9), main_lane(3, 10)];
         assert!(matches!(
-            project_open(9, &lanes, &navigation, &[], "/code/app"),
+            project_open(9, &lanes, &navigation, &[], "/code/app", &Folders::default()),
             Some(ProjectOpen::Open(s)) if s.key == "panoptes:4"
         ));
         // Another project's main checkout is not this project's.
         assert!(matches!(
-            project_open(10, &lanes, &[], &[], "/code/app"),
+            project_open(10, &lanes, &[], &[], "/code/app", &Folders::default()),
             Some(ProjectOpen::Start { lane: 3 })
         ));
         // A project with no main-checkout lane at all opens nothing new.
@@ -464,7 +507,7 @@ pub(crate) mod tests {
             }],
             ..main_lane(5, 9)
         }];
-        assert!(project_open(9, &other, &[], &[], "/code/app").is_none());
+        assert!(project_open(9, &other, &[], &[], "/code/app", &Folders::default()).is_none());
     }
 
     /// An unowned conversation of project 9 in `cwd`, updated at `at`.
@@ -479,11 +522,17 @@ pub(crate) mod tests {
     #[test]
     fn an_empty_main_checkout_adopts_a_conversation_already_in_it() {
         let lanes = vec![main_lane(2, 9)];
-        let adopted =
-            |sessions: &[Session]| match project_open(9, &lanes, &[], sessions, "/code/app") {
-                Some(ProjectOpen::Adopt { session, lane: 2 }) => Some(session.key),
-                _ => None,
-            };
+        let adopted = |sessions: &[Session]| match project_open(
+            9,
+            &lanes,
+            &[],
+            sessions,
+            "/code/app",
+            &Folders::default(),
+        ) {
+            Some(ProjectOpen::Adopt { session, lane: 2 }) => Some(session.key),
+            _ => None,
+        };
         assert_eq!(
             adopted(&[unowned("pi:abc", "/code/app", 1)]).as_deref(),
             Some("pi:abc")
@@ -507,7 +556,7 @@ pub(crate) mod tests {
         let mut open = unowned("pi:live", "/code/app", 1);
         open.open = true;
         assert!(matches!(
-            project_open(9, &lanes, &[], &[open], "/code/app"),
+            project_open(9, &lanes, &[], &[open], "/code/app", &Folders::default()),
             Some(ProjectOpen::Open(s)) if s.key == "pi:live"
         ));
         // Another folder of the repository, or an archived one, starts afresh.
@@ -519,10 +568,55 @@ pub(crate) mod tests {
                 &lanes,
                 &[],
                 &[unowned("pi:sub", "/code/app/crates", 1), archived],
-                "/code/app"
+                "/code/app",
+                &Folders::default()
             ),
             Some(ProjectOpen::Start { lane: 2 })
         ));
+    }
+
+    #[test]
+    fn every_folder_a_listing_mentions_is_resolved_with_the_listing() {
+        let listing = Listing {
+            sessions: vec![unowned("pi:abc", "/code/app/crates", 1)],
+            projects: vec![panoptes_core::store::Project {
+                id: 9,
+                repo: "/code/app".into(),
+                settings: panoptes_core::store::ProjectSettings {
+                    name: "App".into(),
+                    base_branch: "trunk".into(),
+                    copy_files: Vec::new(),
+                    setup: None,
+                },
+            }],
+            lanes: vec![main_lane(2, 9)],
+            navigation: Vec::new(),
+            errors: Vec::new(),
+        };
+        let mut mentioned = Folders::mentioned(&listing);
+        mentioned.sort();
+        // The repository, the lane's worktree and the conversation's folder.
+        assert_eq!(
+            mentioned,
+            ["/code/app", "/code/app/crates"]
+                .iter()
+                .map(|path| path.to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // Resolution happens off the UI thread; the comparison is a lookup.
+        let folders =
+            Folders::from_resolved([("/code/app/".into(), std::path::PathBuf::from("/code/app"))]);
+        assert_eq!(folders.canonical("/code/app/"), PathBuf::from("/code/app"));
+        // A folder the listing did not mention keeps its own spelling, less
+        // the `.` parts and doubled slashes that cannot mean a different
+        // folder. `..` is left alone: only real resolution, done with the
+        // listing, can say what it means, and a path the listing mentions is
+        // never compared this way.
+        assert_eq!(
+            folders.canonical("/code/app/./crates//"),
+            PathBuf::from("/code/app/crates")
+        );
     }
 
     #[test]
@@ -544,15 +638,23 @@ pub(crate) mod tests {
             }],
             ..main_lane(2, 9)
         }];
+        let canonical = std::fs::canonicalize(&repo).unwrap();
+        let through_link = link.to_str().unwrap().to_string();
+        let dotted = format!("{repo_path}/crates/..");
+        // As the store does when the listing arrives: every folder resolved
+        // once, so the comparison below never touches the filesystem.
+        let folders = Folders::from_resolved(
+            [repo_path.clone(), through_link.clone(), dotted.clone()]
+                .into_iter()
+                .map(|path| (path, canonical.clone())),
+        );
         let adopts = |cwd: &str| {
             matches!(
-                project_open(9, &lanes, &[], &[unowned("pi:abc", cwd, 1)], &repo_path),
+                project_open(9, &lanes, &[], &[unowned("pi:abc", cwd, 1)], &repo_path, &folders),
                 Some(ProjectOpen::Adopt { session, lane: 2 }) if session.key == "pi:abc"
             )
         };
-        let through_link = link.to_str().unwrap();
-        let dotted = format!("{repo_path}/crates/..");
-        let results = (adopts(through_link), adopts(&dotted));
+        let results = (adopts(&through_link), adopts(&dotted));
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(results, (true, true));
     }
@@ -574,11 +676,18 @@ pub(crate) mod tests {
         };
         let writer = unowned("pi:w", "/code/app/crates", 1);
         assert!(matches!(
-            project_open(9, &lanes, &busy("pi:w"), &[writer], "/code/app"),
+            project_open(9, &lanes, &busy("pi:w"), &[writer], "/code/app", &Folders::default()),
             Some(ProjectOpen::Open(s)) if s.key == "pi:w"
         ));
         assert!(matches!(
-            project_open(9, &lanes, &busy("pi:unlisted"), &[], "/code/app"),
+            project_open(
+                9,
+                &lanes,
+                &busy("pi:unlisted"),
+                &[],
+                "/code/app",
+                &Folders::default()
+            ),
             Some(ProjectOpen::Busy)
         ));
     }

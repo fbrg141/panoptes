@@ -29,6 +29,7 @@ use crate::model::conversation::Conversation;
 use crate::model::format::now_ms;
 use crate::model::notify;
 use crate::model::review::{HunkRequest, ReviewFileId, ReviewState};
+use crate::model::sidebar::Folders;
 
 /// What a composer holds: its text, attachments and picked mentions.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -81,6 +82,9 @@ pub struct State {
     pub lanes: Vec<Lane>,
     /// Backend-owned session membership for each lane.
     pub navigation: Vec<LaneNavigation>,
+    /// Canonical spellings of the folders the listing mentions, resolved once
+    /// off the UI thread so a click never touches the filesystem.
+    pub folders: Folders,
     pub conversations: HashMap<String, Conversation>,
     /// Whether each open session's writable tools have no approval guard.
     pub unguarded_tools: HashMap<String, bool>,
@@ -117,6 +121,7 @@ impl Default for State {
             projects: Vec::new(),
             lanes: Vec::new(),
             navigation: Vec::new(),
+            folders: Folders::default(),
             conversations: HashMap::new(),
             unguarded_tools: HashMap::new(),
             previews: HashSet::new(),
@@ -196,12 +201,13 @@ impl State {
             .or_insert_with(|| Conversation::new(Vec::new()))
     }
 
-    pub fn apply_listing(&mut self, listing: Listing) {
+    pub fn apply_listing(&mut self, listing: Listing, folders: Folders) {
         self.sessions = listing.sessions;
         self.projects = listing.projects;
         self.lanes = listing.lanes;
         self.navigation = listing.navigation;
         self.list_errors = listing.errors;
+        self.folders = folders;
         self.reviews
             .retain(|id, _| self.lanes.iter().any(|lane| &lane.id == id));
     }
@@ -317,6 +323,20 @@ impl State {
     }
 }
 
+/// Canonicalizes the folders a listing mentions. Filesystem work, so it runs
+/// with the listing fetch rather than inside a click.
+async fn listed_folders(listing: &Listing) -> Folders {
+    let paths = Folders::mentioned(listing);
+    tokio::task::spawn_blocking(move || {
+        Folders::from_resolved(paths.into_iter().map(|path| {
+            let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone().into());
+            (path, canonical)
+        }))
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// The session's process is gone; opening it again starts a new one.
 fn needs_reopen(error: &ServiceError) -> bool {
     matches!(error.kind, ErrorKind::NotOpen | ErrorKind::Exited)
@@ -381,7 +401,11 @@ impl AppStore {
 
     pub fn init(&mut self, cx: &mut Context<Self>) {
         self.state.startup = Startup::Loading;
-        let listing = self.backend.call(|s| async move { s.list().await });
+        let listing = self.backend.call(|s| async move {
+            let listing = s.list().await;
+            let folders = listed_folders(&listing).await;
+            (listing, folders)
+        });
         let preferences = self
             .backend
             .run("preferences", |s| async move { s.preferences().await });
@@ -390,8 +414,8 @@ impl AppStore {
             async move { (listing.await, preferences.await) },
             |this, (listing, preferences), cx| {
                 match listing {
-                    Ok(listing) => {
-                        this.state.apply_listing(listing);
+                    Ok((listing, folders)) => {
+                        this.state.apply_listing(listing, folders);
                         this.state.startup = Startup::Ready;
                     }
                     Err(error) => this.state.startup = Startup::Error(format!("{error:#}")),
@@ -406,9 +430,13 @@ impl AppStore {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Task<Option<()>> {
-        let listing = self.backend.call(|s| async move { s.list().await });
+        let listing = self.backend.call(|s| async move {
+            let listing = s.list().await;
+            let folders = listed_folders(&listing).await;
+            (listing, folders)
+        });
         self.spawn(cx, listing, |this, listing, cx| match listing {
-            Ok(listing) => this.state.apply_listing(listing),
+            Ok((listing, folders)) => this.state.apply_listing(listing, folders),
             Err(error) => this.fail(ServiceError::other(format!("{error:#}")), cx),
         })
     }
@@ -693,13 +721,16 @@ impl AppStore {
         })
     }
 
-    /// Starts a new session in a lane's worktree, configured and prompted.
+    /// Starts a new session in a lane's worktree, configured and prompted, and
+    /// returns its key once it is open.
+    /// The key, not whatever is active by then: a failed start leaves the
+    /// previously active session in place, and a click must not jump to it.
     pub fn create(
         &mut self,
         lane_id: i64,
         options: SessionOptions,
         cx: &mut Context<Self>,
-    ) -> Task<Option<()>> {
+    ) -> Task<Option<String>> {
         let instructions = options.instructions.clone();
         let opened = self.backend.run("new_session", move |s| async move {
             s.create_with(lane_id, "pi", instructions).await
@@ -760,7 +791,7 @@ impl AppStore {
                 })
                 .ok()?;
             }
-            Some(())
+            Some(key)
         })
     }
 
