@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use gpui_kit::base::{h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use panoptes_core::service::SessionEvent;
@@ -10,22 +11,27 @@ use tokio::sync::mpsc;
 
 use crate::backend::Backend;
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark};
+use crate::model::diagnostics::{DiagnosticsFilter, ScopeChange, scope_change};
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, drop_zone_at};
+use crate::model::review;
 use crate::store::AppStore;
 use crate::store::Startup;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{DraggedSession, Overlay, Ui, split_focused_pane};
 use crate::views::chat::ChatPane;
 use crate::views::cleanup::Cleanup;
+use crate::views::diagnostics::DiagnosticsPane;
 use crate::views::image_zoom::ImageZoom;
 use crate::views::jump::{Jump, JumpKind};
 use crate::views::lane_dialogs::LaneDialogs;
 use crate::views::new_lane::NewLane;
 use crate::views::resume::ResumeSession;
+use crate::views::review::ReviewPane;
 use crate::views::settings::Settings;
 use crate::views::shortcuts::{
     self as keys, AddProject, JumpToLatest, NewLane as NewLaneAction, NewLaneSession, Search,
-    Shortcuts, ShowShortcuts, SplitHorizontal, SplitVertical, ZoomIn, ZoomOut, ZoomReset,
+    Shortcuts, ShowShortcuts, SplitHorizontal, SplitVertical, ToggleReview, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 use crate::views::startup;
@@ -36,11 +42,15 @@ pub struct Workspace {
     ui: Entity<Ui>,
     sidebar: Entity<Sidebar>,
     dialogs: Entity<LaneDialogs>,
+    review: Entity<ReviewPane>,
     /// The overlay shown, and the view drawing it.
     overlay: Option<(Overlay, AnyView)>,
     /// The image shown, and its persistent view. Keeping the entity preserves
     /// focus and the scroll position of tall screenshots across redraws.
     image_zoom: Option<(crate::views::turn::ZoomedImage, AnyView)>,
+    /// The diagnostics pane and the scope it shows. Kept in step with the
+    /// scope `Ui` asks for, the pane's own pickers included.
+    diagnostics: Option<(DiagnosticsFilter, Entity<DiagnosticsPane>)>,
     /// Holds the keyboard when no text field does, so window shortcuts work.
     focus: FocusHandle,
     /// Whether a slow first load has gone on long enough to show a loader.
@@ -51,6 +61,7 @@ pub struct Workspace {
     /// Open conversations when last seen, to close the panes of ones that went.
     open_keys: HashSet<String>,
     active_key: Option<String>,
+    review_was_open: bool,
 }
 
 impl Workspace {
@@ -64,6 +75,7 @@ impl Workspace {
         let ui = cx.new(|_| Ui::default());
         let sidebar = cx.new(|cx| Sidebar::new(store.clone(), ui.clone(), cx));
         let dialogs = cx.new(|_| LaneDialogs::new(store.clone()));
+        let review = cx.new(|cx| ReviewPane::new(store.clone(), ui.clone(), cx));
         cx.observe(&dialogs, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&sidebar, |this, _, event, cx| {
             this.on_sidebar(event.clone(), cx)
@@ -74,6 +86,17 @@ impl Workspace {
         cx.observe_in(&ui, window, |this, _, window, cx| {
             this.sync_overlay(window, cx);
             this.sync_image_zoom(window, cx);
+            let open = this.ui.read(cx).review_open;
+            if open != this.review_was_open {
+                if open {
+                    this.review
+                        .update(cx, |review, cx| review.focus(window, cx));
+                } else {
+                    this.focus_active(window, cx);
+                }
+                this.review_was_open = open;
+            }
+            this.sync_diagnostics(window, cx);
             cx.notify();
         })
         .detach();
@@ -116,14 +139,17 @@ impl Workspace {
             ui,
             sidebar,
             dialogs,
+            review,
             overlay: None,
             image_zoom: None,
+            diagnostics: None,
             focus,
             show_loader: false,
             drop_target: None,
             panes: HashMap::new(),
             open_keys: HashSet::new(),
             active_key: None,
+            review_was_open: false,
         }
     }
 
@@ -183,6 +209,33 @@ impl Workspace {
                 .into();
             (image, view)
         });
+    }
+
+    /// Builds the diagnostics pane when opened, moves it to a newly requested
+    /// scope, and drops its refresh clock on close.
+    fn sync_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.ui.read(cx).diagnostics;
+        let open = self.diagnostics.as_ref().map(|(filter, _)| *filter);
+        match scope_change(open, wanted) {
+            ScopeChange::Nothing => {}
+            ScopeChange::Open(filter) => {
+                let (store, ui) = (self.store.clone(), self.ui.clone());
+                let view = cx.new(|cx| DiagnosticsPane::new(store, ui, filter, window, cx));
+                self.diagnostics = Some((filter, view));
+            }
+            // A request while the pane is open must move it, even though the
+            // pane may already have left the scope it was opened with.
+            ScopeChange::Rescope(filter) => {
+                if let Some((scope, view)) = self.diagnostics.as_mut() {
+                    view.update(cx, |pane, cx| pane.set_filter(filter, cx));
+                    *scope = filter;
+                }
+            }
+            ScopeChange::Close => {
+                self.diagnostics = None;
+                self.focus_active(window, cx);
+            }
+        }
     }
 
     /// Places a dropped session: in the pane, or in a split beside it.
@@ -256,10 +309,31 @@ impl Workspace {
         let state = &self.store.read(cx).state;
         let active = state.active_key.clone();
         let open: HashSet<String> = state.conversations.keys().cloned().collect();
+        let next_lane = active.as_ref().and_then(|key| {
+            state
+                .sessions
+                .iter()
+                .find(|session| &session.key == key)
+                .and_then(|session| session.lane_id)
+        });
+        let current_review = state
+            .reviews
+            .values()
+            .find(|review| review.visible)
+            .map(|review| review.lane_id);
         if active != self.active_key {
             self.active_key = active.clone();
             if let Some(key) = &active {
                 self.ui.update(cx, |ui, cx| ui.show_session(key, None, cx));
+            }
+            match review::follow_lane(self.ui.read(cx).review_open, current_review, next_lane) {
+                review::FollowLane::Leave => {}
+                review::FollowLane::Open(lane_id) => self
+                    .store
+                    .update(cx, |store, cx| store.open_review(lane_id, cx)),
+                review::FollowLane::Close => {
+                    self.store.update(cx, |store, cx| store.close_review(cx))
+                }
             }
         }
         let gone: Vec<String> = self.open_keys.difference(&open).cloned().collect();
@@ -506,6 +580,58 @@ impl Render for Workspace {
         let layout = self.ui.read(cx).layout.clone();
         let multiple = layout.leaves().len() > 1;
         let panes = self.render_node(&layout, multiple, &p, window, cx);
+        // The lane review sits beside the panes, or takes their place in a
+        // narrow window.
+        let review_open = self.ui.read(cx).review_open;
+        let review_narrow = window.viewport_size().width < px(1100.);
+        let conversation = if review_open && review_narrow {
+            self.review.clone().into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(panes)
+                .when(review_open, |el| {
+                    el.child(div().w(px(1.)).bg(p.line)).child(
+                        div()
+                            .w(px(560.))
+                            .flex_none()
+                            .min_h_0()
+                            .child(self.review.clone()),
+                    )
+                })
+                .into_any_element()
+        };
+        let narrow = window.viewport_size().width < px(1280.);
+        let content: AnyElement = match self.diagnostics.as_ref().map(|(_, view)| view.clone()) {
+            // Diagnostics sits beside the conversation rather than taking its
+            // place: a question the agent asked must not be behind a pane. A
+            // narrow window gets a narrower panel, still resizable.
+            Some(diagnostics) => div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(
+                    h_resizable("conversation-diagnostics")
+                        .child(resizable_panel().child(conversation))
+                        .child(
+                            resizable_panel()
+                                .size(if narrow { px(520.) } else { px(760.) })
+                                .flex_none()
+                                .child(diagnostics),
+                        ),
+                )
+                .into_any_element(),
+            None => div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(conversation)
+                .into_any_element(),
+        };
         let store = self.store.clone();
         fn open<A: Action>(
             ui: &Entity<Ui>,
@@ -536,6 +662,7 @@ impl Render for Workspace {
         let (lane_ui, project_ui) = (self.ui.clone(), self.ui.clone());
         let (zoom_in_store, zoom_out_store, zoom_reset_store) =
             (self.store.clone(), self.store.clone(), self.store.clone());
+        let (review_store, review_ui) = (self.store.clone(), self.ui.clone());
         div()
             .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
@@ -553,6 +680,11 @@ impl Render for Workspace {
                     && lane_ui.read(cx).overlay.is_none()
                 {
                     lane_store.update(cx, |store, cx| store.new_lane_session(lane_id, cx).detach());
+                }
+            })
+            .on_action(move |_: &ToggleReview, _, cx| {
+                if review_ui.read(cx).overlay.is_none() {
+                    crate::ui::toggle_review(&review_store, &review_ui, active_lane, cx);
                 }
             })
             .on_action(cx.listener(|this, _: &JumpToLatest, _, cx| {
@@ -640,7 +772,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(self.sidebar.clone())
-                    .child(div().flex().flex_1().min_w_0().min_h_0().child(panes)),
+                    .child(content),
             )
             .child(self.dialogs.clone())
             .children(self.overlay.as_ref().map(|(_, view)| view.clone()))

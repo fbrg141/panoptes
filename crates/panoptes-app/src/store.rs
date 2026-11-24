@@ -28,6 +28,7 @@ use crate::backend::Backend;
 use crate::model::conversation::Conversation;
 use crate::model::format::now_ms;
 use crate::model::notify;
+use crate::model::review::{HunkRequest, ReviewFileId, ReviewState};
 use crate::model::sidebar::Folders;
 
 /// What a composer holds: its text, attachments and picked mentions.
@@ -67,6 +68,7 @@ pub struct ArchiveLanesResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Refresh,
+    RefreshReview(i64),
     ReloadHistory(String),
     LoadSettings(String),
 }
@@ -88,6 +90,8 @@ pub struct State {
     pub unguarded_tools: HashMap<String, bool>,
     /// Earlier lane sessions shown read-only until their next prompt.
     pub previews: HashSet<String>,
+    /// Lane review data and presentation state, keyed by lane.
+    pub reviews: HashMap<i64, ReviewState>,
     /// A failed first open, shown in its pane instead of loading forever.
     pub open_errors: HashMap<String, String>,
     /// Each open session's status, as the backend reports it.
@@ -121,6 +125,7 @@ impl Default for State {
             conversations: HashMap::new(),
             unguarded_tools: HashMap::new(),
             previews: HashSet::new(),
+            reviews: HashMap::new(),
             open_errors: HashMap::new(),
             statuses: HashMap::new(),
             sending: HashSet::new(),
@@ -203,6 +208,8 @@ impl State {
         self.navigation = listing.navigation;
         self.list_errors = listing.errors;
         self.folders = folders;
+        self.reviews
+            .retain(|id, _| self.lanes.iter().any(|lane| &lane.id == id));
     }
 
     /// Takes an opened session as the active one. `epoch` is the one its
@@ -253,6 +260,17 @@ impl State {
 
     pub fn on_event(&mut self, event: SessionEvent) -> Vec<Effect> {
         let key = event.key;
+        // Only the review on screen follows a run: refreshing hidden ones
+        // would rewrite merge-preview objects nobody is looking at, and the
+        // next opening refreshes anyway.
+        let review_lane = self
+            .session(&key)
+            .and_then(|session| session.lane_id)
+            .filter(|lane_id| {
+                self.reviews
+                    .get(lane_id)
+                    .is_some_and(|review| review.visible)
+            });
         let event = match event.event {
             SessionUpdate::Status(changed) => {
                 self.statuses.insert(key, changed.status);
@@ -269,11 +287,15 @@ impl State {
         match event {
             // The history is authoritative; it keeps the ids the run streamed
             // under. The run also moved the context use.
-            HarnessEvent::RunSettled { .. } => vec![
-                Effect::ReloadHistory(key.clone()),
-                Effect::LoadSettings(key),
-                Effect::Refresh,
-            ],
+            HarnessEvent::RunSettled { .. } => {
+                let mut effects = vec![
+                    Effect::ReloadHistory(key.clone()),
+                    Effect::LoadSettings(key),
+                    Effect::Refresh,
+                ];
+                effects.extend(review_lane.map(Effect::RefreshReview));
+                effects
+            }
             HarnessEvent::Exited { .. } | HarnessEvent::TitleChanged { .. } => {
                 vec![Effect::Refresh]
             }
@@ -419,10 +441,145 @@ impl AppStore {
         })
     }
 
+    /// Makes one lane the visible review and starts a fresh tree comparison.
+    pub fn open_review(&mut self, lane_id: i64, cx: &mut Context<Self>) {
+        for review in self.state.reviews.values_mut() {
+            review.visible = false;
+        }
+        self.state
+            .reviews
+            .entry(lane_id)
+            .or_insert_with(|| ReviewState::new(lane_id))
+            .visible = true;
+        self.refresh_review(lane_id, cx).detach();
+    }
+
+    pub fn close_review(&mut self, cx: &mut Context<Self>) {
+        for review in self.state.reviews.values_mut() {
+            review.visible = false;
+        }
+        cx.notify();
+    }
+
+    pub fn refresh_review(&mut self, lane_id: i64, cx: &mut Context<Self>) -> Task<Option<()>> {
+        let generation = self
+            .state
+            .reviews
+            .entry(lane_id)
+            .or_insert_with(|| ReviewState::new(lane_id))
+            .begin_refresh();
+        cx.notify();
+        let changes = self.backend.run("lane_changes", move |s| async move {
+            s.lane_changes(lane_id).await
+        });
+        self.spawn(cx, changes, move |this, result, cx| {
+            // A lane dropped while this was in flight must not come back: the
+            // entry is gone, so the answer is dropped with it.
+            let Some(review) = this.state.reviews.get_mut(&lane_id) else {
+                return;
+            };
+            let applied = match result {
+                Ok(changes) => review.apply_refresh(generation, changes),
+                Err(error) => review.fail_refresh(generation, error.message),
+            };
+            if applied {
+                let requests = this
+                    .state
+                    .reviews
+                    .get_mut(&lane_id)
+                    .map(ReviewState::expanded_requests)
+                    .unwrap_or_default();
+                for request in requests {
+                    this.fetch_hunks(request, cx).detach();
+                }
+            }
+        })
+    }
+
+    fn fetch_hunks(&mut self, request: HunkRequest, cx: &mut Context<Self>) -> Task<Option<()>> {
+        let file = request.file.clone();
+        let range = request.range.clone();
+        let work = self.backend.run("file_hunks", move |s| async move {
+            s.file_hunks(file.lane_id, file.project_id, file.path, range)
+                .await
+        });
+        self.spawn(cx, work, move |this, result, _| {
+            if let Some(review) = this.state.reviews.get_mut(&request.file.lane_id) {
+                match result {
+                    Ok(hunks) => {
+                        review.apply_hunks(request, hunks);
+                    }
+                    Err(error) => {
+                        review.fail_hunks(request, error.message);
+                    }
+                }
+            }
+        })
+    }
+
+    fn start_file_request(&mut self, request: Option<HunkRequest>, cx: &mut Context<Self>) {
+        if let Some(request) = request {
+            self.fetch_hunks(request, cx).detach();
+        }
+        cx.notify();
+    }
+
+    pub fn select_review_file(&mut self, id: ReviewFileId, cx: &mut Context<Self>) {
+        let request = self
+            .state
+            .reviews
+            .get_mut(&id.lane_id)
+            .and_then(|review| review.select_file(id));
+        self.start_file_request(request, cx);
+    }
+
+    pub fn toggle_review_file(&mut self, id: ReviewFileId, cx: &mut Context<Self>) {
+        let request = self
+            .state
+            .reviews
+            .get_mut(&id.lane_id)
+            .and_then(|review| review.toggle_file(id));
+        self.start_file_request(request, cx);
+    }
+
+    pub fn retry_review_file(&mut self, id: ReviewFileId, cx: &mut Context<Self>) {
+        let request = self
+            .state
+            .reviews
+            .get_mut(&id.lane_id)
+            .and_then(|review| review.begin_hunks(&id));
+        self.start_file_request(request, cx);
+    }
+
+    pub fn move_review_file(&mut self, lane_id: i64, by: isize, cx: &mut Context<Self>) {
+        let request = self
+            .state
+            .reviews
+            .get_mut(&lane_id)
+            .and_then(|review| review.move_file(by));
+        self.start_file_request(request, cx);
+    }
+
+    pub fn move_review_hunk(&mut self, lane_id: i64, by: isize, cx: &mut Context<Self>) {
+        if let Some(review) = self.state.reviews.get_mut(&lane_id) {
+            review.move_hunk(by);
+        }
+        cx.notify();
+    }
+
+    /// Opens a reviewed file with macOS's configured default editor.
+    pub fn open_path(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if let Err(error) = std::process::Command::new("open").arg(&path).spawn() {
+            self.state.error = Some(format!("Could not open {}: {error}", path.display()));
+        }
+        cx.notify();
+    }
+
     fn run_effects(&mut self, effects: Vec<Effect>, cx: &mut Context<Self>) {
         for effect in effects {
             match effect {
                 Effect::Refresh => self.refresh(cx).detach(),
+                Effect::RefreshReview(lane_id) => self.refresh_review(lane_id, cx).detach(),
                 Effect::ReloadHistory(key) => self.reload_history(key, cx),
                 Effect::LoadSettings(key) => self.load_settings(key, cx),
             }
@@ -471,6 +628,9 @@ impl AppStore {
             attended,
             &label,
         ) {
+            if notice.sound {
+                crate::notify::play_sound();
+            }
             crate::notify::post(key, &notice, cx);
         }
     }
@@ -1118,6 +1278,23 @@ impl AppStore {
         .detach();
     }
 
+    pub fn set_toggle(
+        &mut self,
+        key: String,
+        toggle_id: String,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let k = key.clone();
+        let work = self.backend.run("set_session_toggle", move |s| async move {
+            s.set_toggle(&k, toggle_id, enabled).await
+        });
+        self.spawn(cx, work, move |this, settings, cx| {
+            this.keep_settings(&key, settings, cx)
+        })
+        .detach();
+    }
+
     pub fn abort(&mut self, key: String, cx: &mut Context<Self>) {
         let work = self
             .backend
@@ -1373,6 +1550,57 @@ impl AppStore {
         async move { work.await.map_err(|e| e.message) }
     }
 
+    /// Removes stale Git administrative records, never a live worktree. A
+    /// repository that could not be pruned is reported without hiding the
+    /// ones that were.
+    pub fn prune_worktrees(&mut self, cx: &mut Context<Self>) -> Task<Option<bool>> {
+        let work = self.backend.run(
+            "prune_worktrees",
+            |s| async move { s.prune_worktrees().await },
+        );
+        self.spawn(cx, work, |this, done, cx| match done {
+            Ok(pruned) => {
+                if !pruned.errors.is_empty() {
+                    this.show_error(pruned.errors.join(" \u{b7} "), cx);
+                }
+                true
+            }
+            Err(error) => {
+                this.fail(error, cx);
+                false
+            }
+        })
+    }
+
+    /// Shows a worktree in Finder. `open -R` selects it there, and waiting on
+    /// the child in a blocking task keeps it from being left a zombie.
+    pub fn reveal_in_finder(&mut self, path: String, cx: &mut Context<Self>) -> Task<Option<()>> {
+        let opened = self.backend.call(move |_| async move {
+            tokio::task::spawn_blocking(move || {
+                std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(&path)
+                    .status()
+            })
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|status| status.map_err(anyhow::Error::from))
+        });
+        self.spawn(
+            cx,
+            async move { opened.await.and_then(|opened| opened) },
+            |this, opened, cx| match opened {
+                Ok(status) if status.success() => {}
+                Ok(status) => {
+                    this.show_error(format!("Finder could not show the worktree ({status})"), cx)
+                }
+                Err(error) => {
+                    this.show_error(format!("Could not reveal the worktree: {error:#}"), cx)
+                }
+            },
+        )
+    }
+
     /// Archives independently, preserving any dirty lane as a checkpoint.
     pub fn archive_lanes(
         &mut self,
@@ -1571,6 +1799,22 @@ mod tests {
                 Effect::Refresh
             ]
         );
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_settled_run_refreshes_the_lane_review_on_screen() {
+        let mut state = State::default();
+        let mut lane_session = session("k");
+        lane_session.lane_id = Some(7);
+        state.sessions = vec![lane_session.clone()];
+        state.reviews.insert(7, ReviewState::new(7));
+        // A hidden review is not rewritten by a run: the next opening reads
+        // it again, and the comparison costs Git objects nobody asked for.
+        let effects = state.on_event(event("k", HarnessEvent::RunSettled { aborted: false }));
+        assert!(!effects.contains(&Effect::RefreshReview(7)));
+        state.reviews.get_mut(&7).unwrap().visible = true;
+        let effects = state.on_event(event("k", HarnessEvent::RunSettled { aborted: false }));
+        assert!(effects.contains(&Effect::RefreshReview(7)));
     }
 
     #[::core::prelude::v1::test]

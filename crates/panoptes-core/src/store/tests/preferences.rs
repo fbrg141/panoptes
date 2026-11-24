@@ -117,6 +117,9 @@ fn notification_settings_survive_reopening() {
     store
         .set_notification(NotificationField::NeedsAttention, true)
         .unwrap();
+    store
+        .set_notification(NotificationField::Sound, false)
+        .unwrap();
     // Changing one switch must not restore a previous snapshot of another.
     assert_eq!(
         store.preferences().unwrap().notifications,
@@ -124,6 +127,7 @@ fn notification_settings_survive_reopening() {
             enabled: false,
             finished: false,
             needs_attention: true,
+            sound: false,
         }
     );
     drop(store);
@@ -134,6 +138,25 @@ fn notification_settings_survive_reopening() {
             enabled: false,
             finished: false,
             needs_attention: true,
+            sound: false,
+        }
+    );
+}
+
+#[test]
+fn the_notification_sound_defaults_on_and_can_be_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    assert!(store.preferences().unwrap().notifications.sound);
+    store
+        .set_notification(NotificationField::Sound, false)
+        .unwrap();
+    // Only the sound changed.
+    assert_eq!(
+        store.preferences().unwrap().notifications,
+        NotificationPreferences {
+            sound: false,
+            ..NotificationPreferences::default()
         }
     );
 }

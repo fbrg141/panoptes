@@ -179,9 +179,14 @@ impl Jump {
                     );
                 }
             }
+            PaletteTarget::Review => {
+                crate::ui::toggle_review(&store, &ui, self.active_lane(cx), cx);
+            }
             PaletteTarget::NewProject => store.update(cx, |store, cx| store.pick_project(cx)),
             PaletteTarget::Shortcuts => self.show(Overlay::Shortcuts, cx),
-            PaletteTarget::ShowLogs => crate::views::diagnostics::open(self.store.clone(), cx),
+            PaletteTarget::ShowLogs => self.ui.update(cx, |ui, cx| {
+                ui.open_diagnostics(crate::model::diagnostics::DiagnosticsFilter::default(), cx)
+            }),
         }
     }
 }

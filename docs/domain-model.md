@@ -92,6 +92,27 @@ worktree it happens in, and its current and earlier sessions. The name was chose
   with no pending questions, approvals or queued messages. Parallel work means
   separate lanes.
 
+### Lane review
+
+The first review surface is a read-only, workspace-level pane for the lane's
+whole tree against each project's merge-base. The file list and lazy hunks come
+from `changes.rs`, so shell edits and untracked files are included; edit-tool
+records remain explanations in the transcript rather than the lane's source of
+truth. Active lanes snapshot disk without touching the user's index, while
+archived lanes read their checkpoint or clean branch.
+
+Review state is keyed by lane, worktree and path, with explicit tree ranges and
+generation-checked responses. The service already returns one ordered section
+per lane worktree and resolves every hunk request against its named project,
+although lane creation still creates only one worktree. The pane follows the
+focused session, offers stable file and hunk navigation, and refreshes after a
+run settles. Each worktree also carries base freshness and a read-only merge
+preview: clean, named conflicts, or explicitly unavailable. It uses the local
+base without fetching and never merges into the actual worktree.
+
+Turn scopes, per-turn checkpoints, attribution, review marks, comments and
+reverts remain later work in #201.
+
 ### Profile
 
 A named, reusable setup for a new session, owned by Panoptes rather than the

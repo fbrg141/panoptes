@@ -21,6 +21,7 @@ actions!(
         ShowShortcuts,
         SplitVertical,
         SplitHorizontal,
+        ToggleReview,
         JumpToLatest,
         ZoomIn,
         ZoomOut,
@@ -45,6 +46,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-d", SplitVertical, at),
         KeyBinding::new("cmd-shift-d", SplitHorizontal, at),
         KeyBinding::new("ctrl-shift-d", SplitHorizontal, at),
+        KeyBinding::new("ctrl-shift-r", ToggleReview, at),
         // A text field's own ⌘↓ (to the end of its text) wins over this.
         KeyBinding::new("cmd-down", JumpToLatest, at),
         // ⌘= is what macOS reports for the plus key, shifted or not.

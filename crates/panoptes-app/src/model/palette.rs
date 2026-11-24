@@ -52,6 +52,7 @@ pub enum PaletteTarget {
     NewSession,
     NewLaneSession,
     ResumeSession,
+    Review,
     NewProject,
     Shortcuts,
     ShowLogs,
@@ -145,7 +146,16 @@ pub fn palette_groups(
     let has_active_lane = lanes
         .iter()
         .any(|l| Some(l.id) == active_lane && l.state == LaneState::Active);
+    let has_review_lane = active_lane.is_some();
     let mut actions = Vec::new();
+    if has_review_lane {
+        actions.push(action(
+            "review",
+            "Review changes in current lane",
+            "file-diff",
+            &["Ctrl", "⇧", "R"],
+        ));
+    }
     if has_active_lane {
         actions.push(action(
             "newLaneSession",
@@ -168,7 +178,7 @@ pub fn palette_groups(
         "command",
         &["⌘", "/"],
     ));
-    actions.push(action("showLogs", "Open diagnostics window", "watch", &[]));
+    actions.push(action("showLogs", "Open diagnostics pane", "watch", &[]));
     vec![
         PaletteGroup {
             label: "Sessions".into(),
@@ -265,6 +275,7 @@ pub fn palette_target(
             "newSession" => Some(PaletteTarget::NewSession),
             "newLaneSession" => Some(PaletteTarget::NewLaneSession),
             "resumeSession" => Some(PaletteTarget::ResumeSession),
+            "review" => Some(PaletteTarget::Review),
             "newProject" => Some(PaletteTarget::NewProject),
             "shortcuts" => Some(PaletteTarget::Shortcuts),
             "showLogs" => Some(PaletteTarget::ShowLogs),
@@ -418,6 +429,7 @@ mod tests {
         assert_eq!(
             ids(&groups[3]),
             [
+                "action:review",
                 "action:newLaneSession",
                 "action:resumeSession",
                 "action:newSession",
@@ -471,6 +483,10 @@ mod tests {
         assert_eq!(
             palette_target("project:1", &s, &p, &l),
             Some(PaletteTarget::Project(project()))
+        );
+        assert_eq!(
+            palette_target("action:review", &s, &p, &l),
+            Some(PaletteTarget::Review)
         );
         assert_eq!(
             palette_target("action:showLogs", &s, &p, &l),

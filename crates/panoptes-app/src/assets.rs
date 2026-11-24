@@ -104,6 +104,8 @@ mod tests {
             "plus",
             "lock",
             "file-diff",
+            "external-link",
+            "loader-circle",
         ] {
             let svg = Assets.load(&format!("icons/{name}.svg")).unwrap();
             assert!(svg.is_some(), "missing icon {name}");

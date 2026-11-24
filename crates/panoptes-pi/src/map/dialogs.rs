@@ -17,6 +17,8 @@ const REJECT: &[&str] = &["no", "reject", "block", "deny", "cancel", "skip", "ab
 const APPROVAL_TAG: &str = "panoptes.approval";
 /// The permission system publishes this status as soon as the session starts.
 const PERMISSION_GUARD_STATUS: &str = "pi-permission-system";
+/// The controls extension reports whether codemode is active under this key.
+const CODEMODE_STATUS: &str = "panoptes.codemode";
 
 impl EventMapper {
     /// Translates an `extension_ui_request` (see [`extension_ui`]). A
@@ -28,6 +30,10 @@ impl EventMapper {
     pub fn ui_request(&mut self, request: &Value, now: i64) -> Vec<HarnessEvent> {
         if request["method"] == "setStatus" && request["statusKey"] == PERMISSION_GUARD_STATUS {
             self.shared.set_permission_guard();
+            return Vec::new();
+        }
+        if request["method"] == "setStatus" && request["statusKey"] == CODEMODE_STATUS {
+            self.shared.set_codemode(request["statusText"].as_str());
             return Vec::new();
         }
         if request["method"] == "setStatus" && request["statusKey"] == APPROVAL_TAG {

@@ -326,7 +326,8 @@ impl MenuEntry {
 pub fn project_menu_items(lane_count: usize) -> Vec<MenuEntry> {
     vec![
         MenuEntry::item("new-lane", "New lane", Some("git-branch")),
-        MenuEntry::item("cleanup-lanes", "Clean up lanes…", Some("folder")),
+        MenuEntry::item("diagnostics", "Diagnostics", Some("watch")),
+        MenuEntry::item("cleanup-lanes", "Worktrees & cleanup…", Some("folder")),
         MenuEntry::Separator,
         MenuEntry::Item {
             id: "remove-project",
@@ -364,6 +365,7 @@ pub fn lane_menu_items(lane: &Lane) -> Vec<MenuEntry> {
             Some("rotate-ccw"),
         ));
     }
+    items.push(MenuEntry::item("diagnostics", "Diagnostics", Some("watch")));
     items.push(MenuEntry::Separator);
     items.push(MenuEntry::Item {
         id: "delete-lane",
@@ -796,7 +798,7 @@ pub(crate) mod tests {
     #[test]
     fn menus_offer_what_applies() {
         assert!(matches!(
-            &project_menu_items(2)[3],
+            &project_menu_items(2)[4],
             MenuEntry::Item { disabled: true, .. }
         ));
         let ids = |items: Vec<MenuEntry>| -> Vec<&'static str> {
@@ -810,7 +812,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             ids(lane_menu_items(&lane(LaneState::Archived))),
-            ["restore-lane", "delete-lane"]
+            ["restore-lane", "diagnostics", "delete-lane"]
         );
         let mut s = session("k");
         s.open = true;
@@ -832,6 +834,7 @@ pub(crate) mod tests {
                 "new-session",
                 "resume-session",
                 "archive-lane",
+                "diagnostics",
                 "delete-lane"
             ]
         );

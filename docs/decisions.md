@@ -255,6 +255,42 @@ has to come from one chosen bet, picked after two weeks of real use of the
 spine, not before. Until then no bet gets more than the work the spine needs
 anyway.
 
+## Review the lane from tree snapshots
+
+*Lane scope implemented with #203; later scopes remain in #201.*
+
+The review pane is a read-only, workspace-level surface beside the focused
+conversation. Its file list and lazily loaded hunks come from two git trees,
+not from edit-tool records, so shell edits and untracked files cannot disappear
+from review. Active lanes snapshot their worktree through the existing private
+index; archived lanes use their checkpoint or clean branch. The visible scope
+always names its comparison.
+
+A lane review contains ordered worktree sections. Every section resolves its
+own merge-base and tree range, and every hunk request names `(lane, project,
+path, range)`, so equal paths in a future multi-repo lane cannot collide. The
+first UI renders one section without introducing groups or multi-repo creation.
+Pure state in `model/review.rs` owns stable selection, expansion, hunk caching
+and response generations; GPUI views only render it.
+
+Each worktree also reports its local base's new commits and a merge preview
+(#210). An advanced compatible base reports clean; conflicts name literal
+NUL-delimited paths; an unsupported or failed preview says unavailable rather
+than looking clean. The preview uses an ephemeral `commit-tree` object and
+`merge-tree --write-tree` against the reviewed snapshot, never a worktree merge.
+It does not fetch, rebase, update a ref, or touch HEAD, the real index, stash or
+config. Snapshot invocations use unique private indexes so overlapping review
+requests cannot corrupt one another. Each preview whose base has advanced writes
+a loose commit and tree, so only the review on screen is refreshed by a settled
+run; a hidden one is read again when it is opened. The objects are unreachable
+and reclaimed by the next `git gc`, which is the price of never moving a ref.
+
+Zed informs the ambient change summary, continuous file sections and keyboard
+navigation, but its agent action log is not Panoptes' truth and its editable
+buffers, staging and immediate reject actions are not copied. Turn checkpoints,
+attribution, review marks, comments and checkpointed reverts build on this pane
+in that order.
+
 ## Per-turn checkpoints on plain git, not Jujutsu
 
 *Decided 2026-11-07; not built yet (#204).*

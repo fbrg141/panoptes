@@ -52,6 +52,20 @@ async fn cleanup_measures_worktrees_and_offers_only_safe_idle_lanes() {
     assert!(cleanup.project.bytes > 0);
     assert!(cleanup.total.bytes > cleanup.project.bytes);
     assert!(cleanup.errors.is_empty(), "{:?}", cleanup.errors);
+    assert!(
+        cleanup.worktree_inventory.errors.is_empty(),
+        "{:?}",
+        cleanup.worktree_inventory.errors
+    );
+    assert!(cleanup.worktree_inventory.total.worktrees >= 6);
+    assert!(cleanup.worktree_inventory.total.bytes > 0);
+    assert!(
+        cleanup
+            .worktree_inventory
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.managed && worktree.main_checkout)
+    );
     assert_eq!(cleanup.candidates.len(), 2);
     let dirty = cleanup
         .candidates

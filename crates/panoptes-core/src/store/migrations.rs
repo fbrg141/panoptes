@@ -66,6 +66,10 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         apply: v11_appearance_preferences,
         committed: |_| {},
     },
+    Migration {
+        apply: v12_notification_sound,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -266,5 +270,14 @@ fn v11_appearance_preferences(tx: &Transaction, _: &Path) -> anyhow::Result<()> 
          DEFAULT {DEFAULT_FONT_SIZE}
          CHECK (font_size BETWEEN {MIN_FONT_SIZE} AND {MAX_FONT_SIZE} AND font_size % 10 = 0);"
     ))?;
+    Ok(())
+}
+
+/// Notifications can also make a sound.
+fn v12_notification_sound(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE ui_preferences
+            ADD COLUMN notify_sound INTEGER NOT NULL DEFAULT 1 CHECK (notify_sound IN (0, 1));",
+    )?;
     Ok(())
 }
