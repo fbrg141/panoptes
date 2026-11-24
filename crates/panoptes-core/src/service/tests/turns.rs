@@ -504,6 +504,49 @@ async fn queued_turns_are_matched_by_their_whole_prompt_not_their_first_line() {
 }
 
 #[tokio::test]
+async fn identical_prompts_queued_apart_keep_their_own_ids() {
+    let f = fixture(FakeHarness::default());
+    let (_code, lane) = lane_of(&f).await;
+    let opened = f.service.create(lane.id, "fake").await.unwrap();
+    let sink = f.harness.sinks.lock().unwrap()[0].clone();
+    let queued = |id: &str| QueuedPrompt {
+        id: id.into(),
+        text: "queue the fix".into(),
+        mode: PromptMode::FollowUp,
+    };
+    let follow_up = || {
+        f.service.prompt(
+            &opened.key,
+            "queue the fix".into(),
+            Vec::new(),
+            PromptMode::FollowUp,
+        )
+    };
+    assert_eq!(follow_up().await.unwrap(), PromptOutcome::Queued);
+    sink.send(HarnessEvent::QueueChanged {
+        queued: vec![queued("q1")],
+    })
+    .unwrap();
+    wait_for_turn(&f, lane.id, 1, |turn| {
+        turn.message_id.as_deref() == Some("q1")
+    })
+    .await;
+    // The queue lists every prompt still waiting, the first one included. Its
+    // id is already taken, so the same text must not hand it to the second.
+    assert_eq!(follow_up().await.unwrap(), PromptOutcome::Queued);
+    sink.send(HarnessEvent::QueueChanged {
+        queued: vec![queued("q1"), queued("q2")],
+    })
+    .unwrap();
+    wait_for_turn(&f, lane.id, 2, |turn| {
+        turn.message_id.as_deref() == Some("q2")
+    })
+    .await;
+    let first = f.service.store.lock().turn(lane.id, 1).unwrap();
+    assert_eq!(first.message_id.as_deref(), Some("q1"));
+}
+
+#[tokio::test]
 async fn closing_a_session_settles_the_turn_it_held() {
     let f = fixture(FakeHarness::default());
     let (_code, lane) = lane_of(&f).await;

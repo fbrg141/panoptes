@@ -681,6 +681,17 @@ impl TurnCoordinator {
                 // only a label, and two follow-ups can share one. Turns
                 // restored from the store have nothing but the label, so they
                 // fall back to it.
+                //
+                // The queue lists every prompt still waiting, so prompts
+                // matched on an earlier change come round again. One whose id
+                // a turn already holds is done; matching it by text would
+                // hand its id to the next turn with the same words.
+                if entries
+                    .iter()
+                    .any(|prepared| prepared.turn.message_id.as_deref() == Some(prompt.id.as_str()))
+                {
+                    continue;
+                }
                 let unmatched = |prepared: &&mut PreparedTurn| prepared.turn.message_id.is_none();
                 let by_text = entries.iter().position(|prepared| {
                     unmatched(prepared) && prepared.text.as_deref() == Some(prompt.text.as_str())
