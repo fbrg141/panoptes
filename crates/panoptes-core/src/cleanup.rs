@@ -69,6 +69,9 @@ pub struct Scan {
     pub project: WorktreeUsage,
     pub total: WorktreeUsage,
     pub by_lane: HashMap<i64, LaneScan>,
+    /// Sizes already measured, by canonical path, so the worktree inventory
+    /// does not run `du` over the same lane twice.
+    pub sizes: HashMap<PathBuf, u64>,
     pub errors: Vec<String>,
 }
 
@@ -110,6 +113,8 @@ pub fn scan(project_id: i64, lanes: &[(Project, Lane)]) -> Scan {
         {
             match allocated_bytes(Path::new(&worktree.path)) {
                 Ok(Some(size)) => {
+                    scan.sizes
+                        .insert(canonical(Path::new(&worktree.path)), size);
                     scan.total.worktrees += 1;
                     scan.total.bytes += size;
                     if worktree.project_id == project_id {
@@ -141,101 +146,173 @@ pub fn scan(project_id: i64, lanes: &[(Project, Lane)]) -> Scan {
 
 /// Lists every worktree registered by Git for each project. Git worktrees are
 /// per repository, so there is no machine-wide list to scan.
-pub fn inventory(projects: &[Project], lanes: &[Lane]) -> WorktreeInventory {
+///
+/// Projects are read in parallel, because measuring and reading the status of
+/// a large checkout takes seconds and one slow repository must not hold up
+/// the rest. `known` holds sizes measured elsewhere (see [`Scan::sizes`]).
+pub fn inventory(
+    projects: &[Project],
+    lanes: &[Lane],
+    known: &HashMap<PathBuf, u64>,
+) -> WorktreeInventory {
     let mut result = WorktreeInventory::default();
-    for project in projects {
-        let repo = Path::new(&project.repo);
-        let records = match worktree_list(repo) {
-            Ok(records) => records,
-            Err(error) => {
-                result.errors.push(format!(
-                    "Could not list worktrees for {}: {error:#}",
-                    project.settings.name
-                ));
-                continue;
-            }
-        };
-        for record in records {
-            let path = PathBuf::from(&record.path);
-            let exists = std::fs::symlink_metadata(&path).is_ok();
-            let bytes = if exists {
-                match allocated_bytes(&path) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        result
-                            .errors
-                            .push(format!("Could not measure {}: {error:#}", path.display()));
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            let dirty = if exists {
-                match worktree_dirty(&path) {
-                    Ok(dirty) => Some(dirty),
-                    Err(error) => {
-                        result.errors.push(format!(
-                            "Could not read status of {}: {error:#}",
-                            path.display()
-                        ));
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            let canonical_path = canonical(&path);
-            let owned = lanes.iter().find_map(|lane| {
-                lane.worktrees
-                    .iter()
-                    .find(|worktree| canonical(Path::new(&worktree.path)) == canonical_path)
-                    .map(|worktree| (lane, worktree))
-            });
-            let main_checkout = owned
-                .map(|(_, worktree)| worktree.main_checkout)
-                .unwrap_or_else(|| canonical(repo) == canonical_path);
-            let mut info = WorktreeInfo {
-                project_id: project.id,
-                project: project.settings.name.clone(),
-                path: record.path,
-                branch: record.branch,
-                head: record.head,
-                detached: record.detached,
-                locked: record.locked,
-                prunable: record.prunable,
-                bare: record.bare,
-                exists,
-                dirty,
-                bytes,
-                managed: owned.is_some(),
-                main_checkout,
-                ..Default::default()
-            };
-            if let Some((lane, _)) = owned {
-                info.lane_id = Some(lane.id);
-                info.lane = Some(lane.task.clone());
-                info.lane_state = Some(lane.state);
-            }
-            result.total.worktrees += 1;
-            result.total.bytes += info.bytes.unwrap_or(0);
-            result.worktrees.push(info);
-        }
+    let parts: Vec<(Vec<WorktreeInfo>, Vec<String>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = projects
+            .iter()
+            .map(|project| scope.spawn(move || project_worktrees(project, lanes, known)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(part) => part,
+                // One project's listing failing must not cost the others.
+                Err(_) => (
+                    Vec::new(),
+                    vec!["A worktree listing stopped unexpectedly".to_string()],
+                ),
+            })
+            .collect()
+    });
+    for (worktrees, errors) in parts {
+        result.worktrees.extend(worktrees);
+        result.errors.extend(errors);
     }
     result
         .worktrees
         .sort_by(|a, b| a.project.cmp(&b.project).then(a.path.cmp(&b.path)));
+    for worktree in &result.worktrees {
+        result.total.worktrees += 1;
+        result.total.bytes += worktree.bytes.unwrap_or(0);
+    }
     result
+}
+
+/// One project's worktrees, as [`inventory`] reports them.
+fn project_worktrees(
+    project: &Project,
+    lanes: &[Lane],
+    known: &HashMap<PathBuf, u64>,
+) -> (Vec<WorktreeInfo>, Vec<String>) {
+    let mut worktrees = Vec::new();
+    let mut errors = Vec::new();
+    let repo = Path::new(&project.repo);
+    let records = match worktree_list(repo) {
+        Ok(records) => records,
+        Err(error) => {
+            errors.push(format!(
+                "Could not list worktrees for {}: {error:#}",
+                project.settings.name
+            ));
+            return (worktrees, errors);
+        }
+    };
+    for record in records {
+        let path = PathBuf::from(&record.path);
+        let exists = std::fs::symlink_metadata(&path).is_ok();
+        let canonical_path = canonical(&path);
+        let owned = lanes.iter().find_map(|lane| {
+            lane.worktrees
+                .iter()
+                .find(|worktree| canonical(Path::new(&worktree.path)) == canonical_path)
+                .map(|worktree| (lane, worktree))
+        });
+        let main_checkout = owned
+            .map(|(_, worktree)| worktree.main_checkout)
+            .unwrap_or_else(|| canonical(repo) == canonical_path);
+        // A bare repository has no work tree: `git status` there fails with
+        // "must be run in a work tree", and there is nothing to measure.
+        let readable = exists && !record.bare;
+        // The main checkout is the repository itself rather than another copy
+        // of it, and `du` there counts linked worktrees nested inside it (a
+        // `.worktrees/` layout) a second time. Its size stays unknown by
+        // choice: cleanup cannot reclaim it, and a double count is worse than
+        // a blank.
+        let measured = readable && !main_checkout;
+        let bytes = if !measured {
+            None
+        } else if let Some(size) = known.get(&canonical_path) {
+            Some(*size)
+        } else {
+            match allocated_bytes(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    errors.push(format!("Could not measure {}: {error:#}", path.display()));
+                    None
+                }
+            }
+        };
+        let dirty = if !readable {
+            None
+        } else {
+            match worktree_dirty(&path) {
+                Ok(dirty) => Some(dirty),
+                Err(error) => {
+                    errors.push(format!(
+                        "Could not read status of {}: {error:#}",
+                        path.display()
+                    ));
+                    None
+                }
+            }
+        };
+        let mut info = WorktreeInfo {
+            project_id: project.id,
+            project: project.settings.name.clone(),
+            path: record.path,
+            branch: record.branch,
+            head: record.head,
+            detached: record.detached,
+            locked: record.locked,
+            prunable: record.prunable,
+            bare: record.bare,
+            exists,
+            dirty,
+            bytes,
+            managed: owned.is_some(),
+            main_checkout,
+            ..Default::default()
+        };
+        if let Some((lane, _)) = owned {
+            info.lane_id = Some(lane.id);
+            info.lane = Some(lane.task.clone());
+            info.lane_state = Some(lane.state);
+        }
+        worktrees.push(info);
+    }
+    (worktrees, errors)
+}
+
+/// What a prune removed, and the repositories it could not touch.
+#[derive(Debug, Default)]
+pub struct Pruned {
+    /// Registrations Git removed.
+    pub removed: usize,
+    /// Projects whose prune failed. Each is pruned on its own, so one broken
+    /// repository does not stop the others.
+    pub errors: Vec<String>,
 }
 
 /// Removes only stale Git administrative records whose directories are gone.
 /// It never removes a live worktree or any of its files.
-pub fn prune(projects: &[Project]) -> anyhow::Result<usize> {
+pub fn prune(projects: &[Project]) -> Pruned {
+    let mut pruned = Pruned::default();
     for project in projects {
-        crate::git::run(Path::new(&project.repo), &["worktree", "prune"])
-            .with_context(|| format!("Could not prune worktrees for {}", project.settings.name))?;
+        let repo = Path::new(&project.repo);
+        let pruned_now = || -> anyhow::Result<usize> {
+            let before = worktree_list(repo)?.len();
+            crate::git::run(repo, &["worktree", "prune"])?;
+            let after = worktree_list(repo)?.len();
+            Ok(before.saturating_sub(after))
+        };
+        match pruned_now() {
+            Ok(removed) => pruned.removed += removed,
+            Err(error) => pruned.errors.push(format!(
+                "Could not prune worktrees for {}: {error:#}",
+                project.settings.name
+            )),
+        }
     }
-    Ok(projects.len())
+    pruned
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -311,7 +388,11 @@ fn parse_worktrees(output: &[u8]) -> Vec<ParsedWorktree> {
 
 fn worktree_dirty(path: &Path) -> anyhow::Result<bool> {
     let mut command = crate::git::command();
+    // `git status` refreshes the index, which can take `index.lock` in a lane
+    // an agent is writing to. Optional locks off keeps the cleanup dialog from
+    // failing that agent's own `git add` or `commit`.
     command
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(path)
         .args(["status", "--porcelain", "-z"]);
@@ -471,9 +552,15 @@ worktree /tmp/bare\0bare\0\0";
                 checkpoint_ref: None,
             }],
         };
-        let inventory = inventory(&[project(&repo)], std::slice::from_ref(&lane));
+        let inventory = inventory(
+            &[project(&repo)],
+            std::slice::from_ref(&lane),
+            &HashMap::new(),
+        );
         assert!(inventory.errors.is_empty(), "{:?}", inventory.errors);
         assert_eq!(inventory.total.worktrees, 2);
+        // The linked worktree is measured; the main checkout is not, so its
+        // nested worktree cannot be counted twice.
         assert!(inventory.total.bytes > 0);
         let main = inventory
             .worktrees
@@ -483,7 +570,7 @@ worktree /tmp/bare\0bare\0\0";
         assert_eq!(main.branch.as_deref(), Some("trunk"));
         assert!(main.exists);
         assert_eq!(main.dirty, Some(false));
-        assert!(main.bytes.unwrap() > 0);
+        assert_eq!(main.bytes, None);
         let owned = inventory
             .worktrees
             .iter()
@@ -495,6 +582,100 @@ worktree /tmp/bare\0bare\0\0";
         assert!(owned.managed);
         assert_eq!(owned.dirty, Some(true));
         assert!(owned.bytes.unwrap() > 0);
+    }
+
+    #[test]
+    fn a_size_measured_elsewhere_is_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo(dir.path());
+        let linked = dir.path().join("worktrees/fix/app");
+        std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "fix",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let known = HashMap::from([(canonical(&linked), 4_096)]);
+        let inventory = inventory(&[project(&repo)], &[], &known);
+        assert!(inventory.errors.is_empty(), "{:?}", inventory.errors);
+        let found = inventory
+            .worktrees
+            .iter()
+            .find(|worktree| canonical(Path::new(&worktree.path)) == canonical(&linked))
+            .unwrap();
+        // `du` would have said something else: this is the number the scan
+        // measured, not a second measurement.
+        assert_eq!(found.bytes, Some(4_096));
+        assert_eq!(inventory.total.bytes, 4_096);
+    }
+
+    #[test]
+    fn a_bare_repository_is_listed_without_a_status_or_a_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = dir.path().join("bare.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        git(&bare, &["init", "--quiet", "--bare"]);
+        let project = Project {
+            id: 1,
+            repo: canonical(&bare).to_string_lossy().into_owned(),
+            settings: ProjectSettings {
+                name: "Bare".into(),
+                base_branch: "trunk".into(),
+                copy_files: Vec::new(),
+                setup: None,
+            },
+        };
+        let inventory = inventory(&[project], &[], &HashMap::new());
+        // A bare entry has no work tree: `git status` there fails, so it must
+        // not be asked for one.
+        assert!(inventory.errors.is_empty(), "{:?}", inventory.errors);
+        assert_eq!(inventory.worktrees.len(), 1);
+        let entry = &inventory.worktrees[0];
+        assert!(entry.bare);
+        assert_eq!(entry.dirty, None);
+        assert_eq!(entry.bytes, None);
+    }
+
+    #[test]
+    fn prune_carries_on_past_a_project_it_cannot_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo(dir.path());
+        let stale = dir.path().join("worktrees/stale/app");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "stale",
+                stale.to_str().unwrap(),
+            ],
+        );
+        std::fs::remove_dir_all(&stale).unwrap();
+        let missing = Project {
+            id: 2,
+            repo: dir.path().join("gone").to_string_lossy().into_owned(),
+            settings: ProjectSettings {
+                name: "Gone".into(),
+                base_branch: "trunk".into(),
+                copy_files: Vec::new(),
+                setup: None,
+            },
+        };
+        // The unreachable project is reported, and the reachable one is still
+        // pruned afterwards.
+        let pruned = prune(&[missing, project(&repo)]);
+        assert_eq!(pruned.errors.len(), 1, "{:?}", pruned.errors);
+        assert_eq!(pruned.removed, 1);
+        assert_eq!(worktree_list(&repo).unwrap().len(), 1);
     }
 
     #[test]
@@ -515,7 +696,9 @@ worktree /tmp/bare\0bare\0\0";
             ],
         );
         std::fs::remove_dir_all(&stale).unwrap();
-        assert_eq!(prune(&[project(&repo)]).unwrap(), 1);
+        let pruned = prune(&[project(&repo)]);
+        assert_eq!(pruned.removed, 1);
+        assert!(pruned.errors.is_empty(), "{:?}", pruned.errors);
         let remaining = worktree_list(&repo).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].path, repo.to_string_lossy());

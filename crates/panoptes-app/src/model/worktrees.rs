@@ -18,6 +18,13 @@ pub fn is_stale(worktree: &WorktreeInfo) -> bool {
     worktree.prunable || !worktree.exists
 }
 
+/// Whether `git worktree prune` can remove this registration. A locked one is
+/// stale but never pruned by Git, so counting it would leave a Prune button
+/// that can never clear: it needs `git worktree unlock` first.
+pub fn is_prunable(worktree: &WorktreeInfo) -> bool {
+    is_stale(worktree) && !worktree.locked
+}
+
 pub fn label(worktree: &WorktreeInfo) -> &'static str {
     if is_stale(worktree) {
         "Stale registration"
@@ -53,6 +60,10 @@ pub fn tone(worktree: &WorktreeInfo) -> WorktreeTone {
 pub fn size(worktree: &WorktreeInfo) -> String {
     if !worktree.exists {
         "Not on disk".into()
+    } else if worktree.main_checkout && worktree.bytes.is_none() {
+        // The repository itself is not measured: its size includes the
+        // worktrees nested inside it, which are counted on their own rows.
+        "Not measured".into()
     } else {
         worktree
             .bytes
@@ -142,6 +153,26 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_stale_registration_is_not_offered_to_prune() {
+        let mut stale = worktree(1, false);
+        stale.exists = false;
+        assert!(is_stale(&stale));
+        assert!(is_prunable(&stale));
+        // Git never prunes a locked registration, so the button must not
+        // count it.
+        stale.locked = true;
+        assert!(is_stale(&stale));
+        assert!(!is_prunable(&stale));
+        // A prunable-but-locked record is the same case.
+        let mut prunable = worktree(1, false);
+        prunable.prunable = true;
+        prunable.locked = true;
+        assert!(!is_prunable(&prunable));
+        // An unmanaged main checkout that still exists is not stale at all.
+        assert!(!is_prunable(&worktree(1, false)));
+    }
+
+    #[test]
     fn rows_describe_state_size_and_usage() {
         let mut managed = worktree(1, true);
         managed.dirty = Some(false);
@@ -160,6 +191,10 @@ mod tests {
         assert_eq!(label(&stale), "Stale registration");
         assert_eq!(tone(&stale), WorktreeTone::Stale);
         assert_eq!(size(&stale), "Not on disk");
+
+        let mut main = worktree(3, false);
+        main.bytes = None;
+        assert_eq!(size(&main), "Not measured");
         assert_eq!(detail(&stale), "Project 2 \u{b7} trunk \u{b7} abcdef1");
     }
 }

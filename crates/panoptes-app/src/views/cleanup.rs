@@ -297,10 +297,13 @@ impl Render for Cleanup {
                 self.managed_only,
             );
             let (shown_count, shown_bytes) = worktrees::usage(&filtered);
-            let stale_count = inventory
+            // Only what Git will really remove: a locked registration is
+            // stale but unprunable, and counting it would leave a button that
+            // never goes away.
+            let prunable_count = inventory
                 .worktrees
                 .iter()
-                .filter(|worktree| worktrees::is_stale(worktree))
+                .filter(|worktree| worktrees::is_prunable(worktree))
                 .count();
             let all_projects_toggle = this.clone();
             let managed_toggle = this.clone();
@@ -342,7 +345,7 @@ impl Render for Cleanup {
                                 });
                             },
                         ))
-                        .when(stale_count > 0, |el| {
+                        .when(prunable_count > 0, |el| {
                             el.child(
                                 Button::new("cleanup-prune-worktrees")
                                     .ghost()
@@ -350,7 +353,10 @@ impl Render for Cleanup {
                                     .icon("trash-2")
                                     .label(if pruning { "Pruning…" } else { "Prune stale metadata" })
                                     .disabled(busy || self.loading || self.confirming)
-                                    .tooltip("Remove stale Git registrations; no files are deleted")
+                                    .tooltip(
+                                        "Remove stale Git registrations; no files are deleted. \
+                                         Locked ones need git worktree unlock first.",
+                                    )
                                     .on_click(move |_, _, cx| {
                                         let _ = prune_this
                                             .update(cx, |this, cx| this.prune(cx));
@@ -366,8 +372,10 @@ impl Render for Cleanup {
                         .text_color(p.ink_muted)
                         .child(
                             "All Git checkouts known to registered repositories. Sizes are allocated \
-                             disk blocks, including ignored files. Unmanaged worktrees are never \
-                             deleted by Panoptes; managed lanes can be archived above.",
+                             disk blocks, including ignored files; a repository's own checkout is \
+                             not measured, since its worktrees are counted on their own rows. \
+                             Unmanaged worktrees are never deleted by Panoptes; managed lanes can be \
+                             archived above.",
                         ),
                 )
                 .child(
@@ -463,21 +471,14 @@ impl Render for Cleanup {
                                             .icon("folder-open")
                                             .tooltip("Reveal in Finder")
                                             .on_click(move |_, _, cx| {
-                                                if let Err(error) =
-                                                    std::process::Command::new("open")
-                                                        .arg("-R")
-                                                        .arg(&reveal_path)
-                                                        .spawn()
-                                                {
-                                                    reveal_store.update(cx, |store, cx| {
-                                                        store.show_error(
-                                                            format!(
-                                                                "Could not reveal worktree: {error}"
-                                                            ),
+                                                reveal_store
+                                                    .update(cx, |store, cx| {
+                                                        store.reveal_in_finder(
+                                                            reveal_path.clone(),
                                                             cx,
                                                         )
-                                                    });
-                                                }
+                                                    })
+                                                    .detach();
                                             }),
                                         )
                                     })

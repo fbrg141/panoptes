@@ -5,7 +5,7 @@ use anyhow::Context;
 use super::error::err;
 use super::status::now_ms;
 use super::{Service, ServiceResult};
-use crate::cleanup::{self, IdleLane, LaneCleanup};
+use crate::cleanup::{self, IdleLane, LaneCleanup, Pruned};
 use crate::store::{Lane, LaneState, Project};
 
 impl Service {
@@ -40,7 +40,9 @@ impl Service {
         let scan_lanes = listing.lanes.clone();
         let (scan, inventory) = tokio::task::spawn_blocking(move || {
             let scan = cleanup::scan(project_id, &active);
-            let inventory = cleanup::inventory(&scan_projects, &scan_lanes);
+            // The scan has just measured the lane worktrees: measuring them
+            // again would double the dialog's wait for nothing.
+            let inventory = cleanup::inventory(&scan_projects, &scan_lanes, &scan.sizes);
             (scan, inventory)
         })
         .await
@@ -116,8 +118,10 @@ impl Service {
     }
 
     /// Removes stale Git administrative records for registered projects. A
-    /// live worktree, its files and its branch are never touched.
-    pub async fn prune_worktrees(&self) -> ServiceResult<usize> {
+    /// live worktree, its files and its branch are never touched. Each
+    /// project is pruned on its own, so one unreachable repository does not
+    /// stop the others.
+    pub async fn prune_worktrees(&self) -> ServiceResult<Pruned> {
         let projects = self
             .store
             .call(move |store| store.projects())
@@ -126,7 +130,6 @@ impl Service {
         tokio::task::spawn_blocking(move || cleanup::prune(&projects))
             .await
             .context("The worktree prune stopped")
-            .map_err(err)?
             .map_err(err)
     }
 }
