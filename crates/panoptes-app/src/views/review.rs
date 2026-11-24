@@ -14,7 +14,9 @@ use panoptes_core::store::{Lane, LaneState};
 
 use crate::ds::{Button, Type as _, icon};
 use crate::model::format::plural;
-use crate::model::review::{BaseNotice, BaseNoticeKind, Hunks, ReviewFileId, base_notices};
+use crate::model::review::{
+    BaseNotice, BaseNoticeKind, Hunks, ReviewFileId, base_notices, hunk_scroll_offset,
+};
 use crate::store::AppStore;
 use crate::theme::{Palette, PaletteExt as _};
 use crate::ui::{Ui, toggle_review};
@@ -341,11 +343,17 @@ impl ReviewPane {
         else {
             return;
         };
-        let bounds = self.scroll.bounds();
-        let offset = (bounds.top() - top)
-            .min(Pixels::ZERO)
-            .max(-self.scroll.max_offset().y);
-        self.scroll.set_offset(point(Pixels::ZERO, offset));
+        // The measured tops already include the offset the pane is scrolled
+        // by, so the decision needs it to find the hunk's place in the
+        // content; without it every press after the first lands a screen too
+        // short.
+        let offset = hunk_scroll_offset(
+            self.scroll.bounds().top().as_f32(),
+            top.as_f32(),
+            self.scroll.offset().y.as_f32(),
+            self.scroll.max_offset().y.as_f32(),
+        );
+        self.scroll.set_offset(point(Pixels::ZERO, px(offset)));
     }
 
     fn file_row(

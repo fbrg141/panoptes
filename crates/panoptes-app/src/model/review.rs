@@ -132,6 +132,16 @@ pub fn follow_lane(open: bool, showing: Option<i64>, lane_id: Option<i64>) -> Fo
     }
 }
 
+/// The scroll offset that brings a hunk to the top of the sections view.
+///
+/// `viewport_top` is the top of the scroll container and `hunk_top` the top
+/// the hunk had in the last layout, both in window space; `current` is the
+/// offset the pane is scrolled by now, which the last layout already included.
+/// The result is clamped to the content, never above the top.
+pub fn hunk_scroll_offset(viewport_top: f32, hunk_top: f32, current: f32, max_offset: f32) -> f32 {
+    (viewport_top - hunk_top + current).clamp(-max_offset.max(0.0), 0.0)
+}
+
 /// The review button's label for one lane: the cached comparison when there
 /// is one, otherwise how many files the lane's work lists, and "Review" until
 /// that is known.
@@ -572,6 +582,23 @@ mod tests {
         assert_eq!(follow_lane(true, Some(7), Some(7)), FollowLane::Leave);
         assert_eq!(follow_lane(true, Some(8), Some(7)), FollowLane::Open(7));
         assert_eq!(follow_lane(true, Some(7), None), FollowLane::Close);
+    }
+
+    #[test]
+    fn a_hunk_scrolls_to_the_top_from_any_scrolled_position() {
+        // Unscrolled: the hunk's window position is its content position, so
+        // the offset is simply how far below the viewport top it sits.
+        assert_eq!(hunk_scroll_offset(0.0, 400.0, 0.0, 2_000.0), -400.0);
+        // Scrolled by 300: the last layout put the hunk 100 below the
+        // viewport top, but its content position is still 400, so the offset
+        // must not move (the old arithmetic said -100, jumping 300 too far).
+        assert_eq!(hunk_scroll_offset(0.0, 100.0, -300.0, 2_000.0), -400.0);
+        // A hunk above the current scroll position goes backwards.
+        assert_eq!(hunk_scroll_offset(0.0, -200.0, -300.0, 2_000.0), -100.0);
+        // Never above the top, never past the end of the content.
+        assert_eq!(hunk_scroll_offset(0.0, -200.0, 0.0, 2_000.0), 0.0);
+        assert_eq!(hunk_scroll_offset(0.0, 5_000.0, 0.0, 2_000.0), -2_000.0);
+        assert_eq!(hunk_scroll_offset(0.0, 5_000.0, 0.0, 0.0), 0.0);
     }
 
     #[test]
