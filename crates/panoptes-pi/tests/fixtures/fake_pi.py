@@ -19,7 +19,8 @@ for the adapter's tests. Prompts select behaviour:
   "tools"  replies with the tools it was started with ("all" by default)
   "instructions" replies with the additional system prompt it was started with
   instructions "with-permission-extension" simulates the permission extension's
-           startup status
+           startup status; "without-codemode" makes it report codemode as
+           unavailable, as a Pi without the tool does
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -70,6 +71,17 @@ def respond(command, data=None, success=True, error=None):
 if instructions == "with-permission-extension":
     send({"type": "extension_ui_request", "id": "permission", "method": "setStatus",
           "statusKey": "pi-permission-system", "statusText": "enabled"})
+
+# Panoptes' controls extension publishes codemode's state during session start,
+# and "unavailable" where Pi has no codemode tool. The instructions argument
+# stands in for a Pi without it.
+codemode_present = instructions != "without-codemode"
+if codemode_present:
+    send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+          "statusKey": "panoptes.codemode", "statusText": "off"})
+else:
+    send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+          "statusKey": "panoptes.codemode", "statusText": "unavailable"})
 
 
 def append(message):
@@ -218,6 +230,11 @@ for line in sys.stdin:
         respond(command, {"contextUsage": {"tokens": 1200, "contextWindow": model["contextWindow"], "percent": 4}})
     elif kind == "prompt":
         if command["message"] in ["/panoptes-codemode on", "/panoptes-codemode off"]:
+            if not codemode_present:
+                send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+                      "statusKey": "panoptes.codemode", "statusText": "unavailable"})
+                respond(command, {"disposition": "handled"})
+                continue
             codemode = command["message"].endswith(" on")
             send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
                   "statusKey": "panoptes.codemode", "statusText": "on" if codemode else "off"})

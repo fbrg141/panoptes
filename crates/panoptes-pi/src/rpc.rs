@@ -113,9 +113,13 @@ impl RpcProcess {
         command
             .arg("--extension")
             .arg(extension("approvals.js", APPROVALS_JS)?);
-        command
-            .arg("--extension")
-            .arg(extension("controls.js", CONTROLS_JS)?);
+        // The controls extension adds the codemode tool, which a read-only
+        // session must not have, so it only loads where sessions can write.
+        if !read_only {
+            command
+                .arg("--extension")
+                .arg(extension("controls.js", CONTROLS_JS)?);
+        }
         if let Some(file) = session_file {
             command.args(["--session", file]);
         }

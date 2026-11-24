@@ -241,13 +241,11 @@ impl DiagnosticsPane {
         let project_picker = cx.new(|cx| PickerState::new("Project", window, cx));
         cx.subscribe(&project_picker, |this, _, event, cx| {
             if let PickerEvent::Selected(id) = event {
-                this.filter = DiagnosticsFilter {
+                let filter = DiagnosticsFilter {
                     project_id: id.parse().ok(),
                     lane_id: None,
                 };
-                this.selected_key = None;
-                this.selected_event = None;
-                cx.notify();
+                this.set_filter(filter, cx);
             }
         })
         .detach();
@@ -255,9 +253,10 @@ impl DiagnosticsPane {
         cx.subscribe(&lane_picker, |this, _, event, cx| {
             if let PickerEvent::Selected(id) = event {
                 let lane_id = id.parse().ok();
-                this.filter.lane_id = lane_id;
+                let mut filter = this.filter;
+                filter.lane_id = lane_id;
                 if let Some(lane_id) = lane_id {
-                    this.filter.project_id = this
+                    filter.project_id = this
                         .store
                         .read(cx)
                         .state
@@ -266,9 +265,7 @@ impl DiagnosticsPane {
                         .find(|lane| lane.id == lane_id)
                         .map(|lane| lane.project_id);
                 }
-                this.selected_key = None;
-                this.selected_event = None;
-                cx.notify();
+                this.set_filter(filter, cx);
             }
         })
         .detach();
@@ -316,6 +313,22 @@ impl DiagnosticsPane {
         this
     }
 
+    /// Changes the scope from outside the pane's own pickers. The selection
+    /// is dropped with it: the session or event it names may not be in the
+    /// new scope at all.
+    pub fn set_filter(&mut self, filter: DiagnosticsFilter, cx: &mut Context<Self>) {
+        let scope = filter;
+        if self.filter == scope {
+            return;
+        }
+        self.filter = scope;
+        self.selected_key = None;
+        self.selected_event = None;
+        self.ui
+            .update(cx, |ui, cx| ui.set_diagnostics_filter(scope, cx));
+        cx.notify();
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.loading {
             return;
@@ -352,15 +365,11 @@ impl DiagnosticsPane {
         cx.notify();
     }
 
-    fn filtered_events(&self, diagnostics: &Diagnostics, query: &str) -> Vec<usize> {
-        let indices = diagnostic_event_indices(
-            diagnostics,
-            self.events.len(),
-            self.filter,
-            self.selected_key.as_deref(),
-        );
+    /// The events of `indices` that match the search, newest first.
+    fn filtered_events(&self, indices: &[usize], query: &str) -> Vec<usize> {
         indices
-            .into_iter()
+            .iter()
+            .copied()
             .rev()
             .filter(|index| {
                 query.is_empty()
@@ -421,14 +430,7 @@ impl DiagnosticsPane {
             )
     }
 
-    fn activity(
-        &self,
-        diagnostics: &Diagnostics,
-        query: &str,
-        p: &Palette,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let indices = self.filtered_events(diagnostics, query);
+    fn activity(&self, indices: &[usize], p: &Palette, cx: &mut Context<Self>) -> Div {
         let mut list = div()
             .id("diagnostic-events")
             .h(px(360.))
@@ -446,7 +448,7 @@ impl DiagnosticsPane {
                 },
             ));
         }
-        for index in &indices {
+        for index in indices {
             let event = &self.events[*index];
             let index = *index;
             let event_name = event
@@ -766,12 +768,11 @@ impl DiagnosticsPane {
     fn session_tree(
         &self,
         diagnostics: &Diagnostics,
+        event_count: usize,
         query: &str,
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let event_count =
-            diagnostic_event_indices(diagnostics, self.events.len(), self.filter, None).len();
         let mut tree = div()
             .id("diagnostic-sessions")
             .flex_1()
@@ -943,7 +944,12 @@ impl DiagnosticsPane {
             )
     }
 
-    fn detail_header(&self, session: Option<&SessionDiagnostics>, cx: &mut Context<Self>) -> Div {
+    fn detail_header(
+        &self,
+        session: Option<&SessionDiagnostics>,
+        event_count: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let p = *cx.palette();
         match session {
             Some(session) => {
@@ -1077,9 +1083,6 @@ impl DiagnosticsPane {
                             .map(|project| project.settings.name.clone())
                     })
                     .unwrap_or_else(|| "All activity".into());
-                let event_count =
-                    diagnostic_event_indices(&self.analysis, self.events.len(), self.filter, None)
-                        .len();
                 div()
                     .flex_none()
                     .child(div().t_title().child(title))
@@ -1157,14 +1160,20 @@ impl Render for DiagnosticsPane {
         let p = *cx.palette();
         let query = self.search.read(cx).value().trim().to_lowercase();
         self.reanalyze(cx);
-        if matches!(self.tab, DetailTab::Activity | DetailTab::Raw) {
-            let indices = self.filtered_events(&self.analysis, &query);
-            if self
+        // One pass over the log per render: the scope's events (whose count
+        // the tree and the header both show) and the ones the search keeps.
+        let scoped = diagnostic_event_indices(&self.analysis, self.events.len(), self.filter, None);
+        let scoped_count = scoped.len();
+        let selected_scope = self.selected_key.as_deref().map(|key| {
+            diagnostic_event_indices(&self.analysis, self.events.len(), self.filter, Some(key))
+        });
+        let visible = self.filtered_events(selected_scope.as_deref().unwrap_or(&scoped), &query);
+        if matches!(self.tab, DetailTab::Activity | DetailTab::Raw)
+            && self
                 .selected_event
-                .is_none_or(|selected| !indices.contains(&selected))
-            {
-                self.selected_event = indices.first().copied();
-            }
+                .is_none_or(|selected| !visible.contains(&selected))
+        {
+            self.selected_event = visible.first().copied();
         }
         let diagnostics = &self.analysis;
         let selected = self
@@ -1223,9 +1232,7 @@ impl Render for DiagnosticsPane {
             },
         );
         let body = match self.tab {
-            DetailTab::Activity => self
-                .activity(diagnostics, &query, &p, cx)
-                .into_any_element(),
+            DetailTab::Activity => self.activity(&visible, &p, cx).into_any_element(),
             DetailTab::Tools => self.tools(selected, &query, &p, cx).into_any_element(),
             DetailTab::Changes => self.changes(selected, &query, &p, cx).into_any_element(),
             DetailTab::Raw => self.raw_panel(selected_event, &p).into_any_element(),
@@ -1339,7 +1346,7 @@ impl Render for DiagnosticsPane {
                                         .child(Input::new(&self.search).appearance(false).t_body()),
                                 ),
                             )
-                            .child(self.session_tree(diagnostics, &query, &p, cx)),
+                            .child(self.session_tree(diagnostics, scoped_count, &query, &p, cx)),
                     )
                     .child(
                         div()
@@ -1350,7 +1357,7 @@ impl Render for DiagnosticsPane {
                             .flex_col()
                             .gap(px(14.))
                             .p(px(20.))
-                            .child(self.detail_header(selected, cx))
+                            .child(self.detail_header(selected, scoped_count, cx))
                             .child(div().flex_none().child(tabs))
                             .child(body),
                     ),

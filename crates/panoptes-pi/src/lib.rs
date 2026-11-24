@@ -141,6 +141,54 @@ struct PiSession {
     read_only: bool,
 }
 
+/// How long to wait for the controls extension to report the new codemode
+/// state after its command was answered.
+const CODEMODE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+const CODEMODE_STEP: std::time::Duration = std::time::Duration::from_millis(10);
+
+impl PiSession {
+    /// The switches the UI offers. Codemode is one only where Pi has the
+    /// tool: offering it elsewhere would fail on every click.
+    fn toggles(&self) -> Vec<SessionToggle> {
+        if self.read_only {
+            return Vec::new();
+        }
+        let enabled = match self.shared.codemode() {
+            map::Codemode::Available { enabled } => enabled,
+            // Not known before the first status line, and not there at all
+            // without the tool: either way there is nothing to switch.
+            map::Codemode::Unknown | map::Codemode::Unavailable => return Vec::new(),
+        };
+        vec![SessionToggle {
+            id: "codemode".into(),
+            label: "Codemode".into(),
+            description: Some(
+                "Let the model run JavaScript that calls tools and non-LLM models".into(),
+            ),
+            enabled,
+        }]
+    }
+
+    /// Waits for the controls extension to report `enabled`. The extension
+    /// writes its status before Pi answers the command, and both travel on
+    /// the same stream, but the reader is a separate task: give it a moment
+    /// rather than report a toggle that worked as unavailable.
+    async fn wait_for_codemode(&self, enabled: bool) -> bool {
+        let deadline = tokio::time::Instant::now() + CODEMODE_WAIT;
+        loop {
+            match self.shared.codemode() {
+                map::Codemode::Available { enabled: actual } if actual == enabled => return true,
+                map::Codemode::Unavailable => return false,
+                _ => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(CODEMODE_STEP).await;
+        }
+    }
+}
+
 #[async_trait]
 impl AgentSession for PiSession {
     fn harness_ref(&self) -> HarnessRef {
@@ -268,18 +316,7 @@ impl AgentSession for PiSession {
             model: map::model(&state["model"]),
             thinking_level: state["thinkingLevel"].as_str().map(str::to_string),
             thinking_levels,
-            toggles: if self.read_only {
-                Vec::new()
-            } else {
-                vec![SessionToggle {
-                    id: "codemode".into(),
-                    label: "Codemode".into(),
-                    description: Some(
-                        "Let the model run JavaScript that calls tools and non-LLM models".into(),
-                    ),
-                    enabled: self.shared.codemode(),
-                }]
-            },
+            toggles: self.toggles(),
             // Usage is a nicety: a session without stats still has settings.
             context: stats.ok().as_ref().and_then(map::context_usage),
         })
@@ -343,12 +380,23 @@ impl AgentSession for PiSession {
                 HarnessError::rejected(format!("Unknown session toggle {toggle_id}")).into(),
             );
         }
+        // A read-only session has no controls extension at all, and codemode
+        // would let the model reach the tools that `--tools` leaves out.
+        if self.read_only {
+            return Err(HarnessError::rejected(
+                "Codemode cannot be changed in a read-only session",
+            )
+            .into());
+        }
         let command = format!("/panoptes-codemode {}", if enabled { "on" } else { "off" });
         let data = self
             .process
             .call(json!({"type": "prompt", "message": command}))
             .await?;
-        if data["disposition"].as_str() != Some("handled") || self.shared.codemode() != enabled {
+        // The extension's status is what the switch reports, so it has to
+        // have arrived before this answers; see `wait_for_codemode`.
+        if data["disposition"].as_str() != Some("handled") || !self.wait_for_codemode(enabled).await
+        {
             return Err(
                 HarnessError::rejected("Codemode is not available for this session").into(),
             );

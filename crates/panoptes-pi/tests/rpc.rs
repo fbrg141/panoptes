@@ -650,6 +650,43 @@ async fn codemode_can_be_toggled() {
 }
 
 #[tokio::test]
+async fn a_pi_without_codemode_offers_no_switch() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.instructions = Some("without-codemode".into());
+    let (session, _rx) = start_with(request).await;
+    assert!(session.settings().await.unwrap().toggles.is_empty());
+    // The command still exists behind the scenes; asking anyway is refused
+    // rather than reported as on.
+    let error = session
+        .set_toggle("codemode".into(), true)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Rejected)
+    );
+    assert!(session.settings().await.unwrap().toggles.is_empty());
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_read_only_session_refuses_the_codemode_switch() {
+    let mut request = StartSession::new(std::env::temp_dir());
+    request.read_only = true;
+    let (session, _rx) = start_with(request).await;
+    assert!(session.settings().await.unwrap().toggles.is_empty());
+    let error = session
+        .set_toggle("codemode".into(), true)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        HarnessError::kind_of(&error),
+        Some(HarnessErrorKind::Rejected)
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn model_and_thinking_level_can_be_changed() {
     let (session, _rx) = start().await;
     let settings = session.settings().await.unwrap();

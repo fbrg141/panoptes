@@ -44,6 +44,34 @@ impl DiagnosticsFilter {
     }
 }
 
+/// What an open diagnostics pane does when a new scope is asked for. The
+/// pane's own pickers change the scope too, so a request can arrive that the
+/// pane already shows, and one can arrive for an open pane showing another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeChange {
+    /// Nothing to do: no pane and nothing asked for.
+    Nothing,
+    /// Open a pane on the requested scope.
+    Open(DiagnosticsFilter),
+    /// Move the open pane to the requested scope.
+    Rescope(DiagnosticsFilter),
+    /// Close the open pane.
+    Close,
+}
+
+pub fn scope_change(
+    open: Option<DiagnosticsFilter>,
+    wanted: Option<DiagnosticsFilter>,
+) -> ScopeChange {
+    match (open, wanted) {
+        (None, None) => ScopeChange::Nothing,
+        (None, Some(filter)) => ScopeChange::Open(filter),
+        (Some(_), None) => ScopeChange::Close,
+        (Some(open), Some(wanted)) if open == wanted => ScopeChange::Nothing,
+        (Some(_), Some(wanted)) => ScopeChange::Rescope(wanted),
+    }
+}
+
 pub fn project_filter_groups(projects: &[Project], filter: DiagnosticsFilter) -> Vec<PickerGroup> {
     let mut items = vec![PickerItem {
         id: String::new(),
@@ -670,6 +698,27 @@ mod tests {
             ["", "10"]
         );
         assert!(lane_items[0].current);
+    }
+
+    #[test]
+    fn asking_for_a_scope_moves_an_open_pane_to_it() {
+        let first = DiagnosticsFilter::project(1);
+        let second = DiagnosticsFilter::project(2);
+        assert_eq!(scope_change(None, None), ScopeChange::Nothing);
+        assert_eq!(scope_change(None, Some(first)), ScopeChange::Open(first));
+        assert_eq!(scope_change(Some(first), None), ScopeChange::Close);
+        // The pane's own pickers may have moved it: asking for what it shows
+        // changes nothing.
+        assert_eq!(
+            scope_change(Some(second), Some(second)),
+            ScopeChange::Nothing
+        );
+        // ...and asking for another scope must still move it, which is what
+        // used to be lost because only the opened scope was remembered.
+        assert_eq!(
+            scope_change(Some(second), Some(first)),
+            ScopeChange::Rescope(first)
+        );
     }
 
     #[test]

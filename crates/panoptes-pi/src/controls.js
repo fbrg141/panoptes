@@ -6,7 +6,18 @@ const STATUS = "panoptes.codemode";
 const COMMAND = "panoptes-codemode";
 
 export default function (pi) {
+	// A Pi without the codemode extension has no such tool, and adding the
+	// name would be ignored or fail. Report that instead of a switch that
+	// cannot work. An older Pi without getAllTools keeps the old behaviour.
+	const available = () =>
+		typeof pi.getAllTools !== "function" ||
+		pi.getAllTools().some((tool) => tool.name === CODEMODE);
+
 	const publish = (ctx) => {
+		if (!available()) {
+			ctx.ui.setStatus(STATUS, "unavailable");
+			return;
+		}
 		const enabled = pi.getActiveTools().includes(CODEMODE);
 		ctx.ui.setStatus(STATUS, enabled ? "on" : "off");
 	};
@@ -19,6 +30,10 @@ export default function (pi) {
 	pi.registerCommand(COMMAND, {
 		description: "Toggle codemode for this session",
 		handler: async (args, ctx) => {
+			if (!available()) {
+				publish(ctx);
+				return;
+			}
 			const enabled = args.trim() === "on";
 			const active = pi.getActiveTools();
 			const next = enabled

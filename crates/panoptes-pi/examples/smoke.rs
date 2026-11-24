@@ -1,7 +1,8 @@
 //! End-to-end check against the installed Pi. The test suite only talks to a
 //! scripted stand-in, so this is the one place the real protocol is proven:
 //! it starts a new session in a temporary folder (with Panoptes' extensions
-//! loaded, as the app does), toggles codemode, sends one prompt, and fails unless
+//! loaded, as the app does), toggles codemode where Pi has it, sends one
+//! prompt, and fails unless
 //! the events and the history keep the contract the UI relies on. The
 //! session it creates is deleted again at the end.
 //!
@@ -64,34 +65,37 @@ async fn check(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>,
     prompt: String,
 ) -> anyhow::Result<()> {
+    // Codemode is a session switch only where Pi has the tool, so its absence
+    // is a Pi without the codemode extension rather than a broken contract.
     let settings = session.settings().await?;
-    ensure!(
-        settings
-            .toggles
-            .iter()
-            .any(|toggle| toggle.id == "codemode"),
-        "Pi did not offer the codemode session toggle"
-    );
-    session.set_toggle("codemode".into(), true).await?;
-    ensure!(
-        session
-            .settings()
-            .await?
-            .toggles
-            .iter()
-            .any(|toggle| toggle.id == "codemode" && toggle.enabled),
-        "Codemode did not turn on"
-    );
-    session.set_toggle("codemode".into(), false).await?;
-    ensure!(
-        session
-            .settings()
-            .await?
-            .toggles
-            .iter()
-            .any(|toggle| toggle.id == "codemode" && !toggle.enabled),
-        "Codemode did not turn off"
-    );
+    if settings
+        .toggles
+        .iter()
+        .any(|toggle| toggle.id == "codemode")
+    {
+        session.set_toggle("codemode".into(), true).await?;
+        ensure!(
+            session
+                .settings()
+                .await?
+                .toggles
+                .iter()
+                .any(|toggle| toggle.id == "codemode" && toggle.enabled),
+            "Codemode did not turn on"
+        );
+        session.set_toggle("codemode".into(), false).await?;
+        ensure!(
+            session
+                .settings()
+                .await?
+                .toggles
+                .iter()
+                .any(|toggle| toggle.id == "codemode" && !toggle.enabled),
+            "Codemode did not turn off"
+        );
+    } else {
+        println!("skipped the codemode switch: Pi has no codemode tool");
+    }
 
     session
         .prompt(prompt, Vec::new(), PromptMode::Start)

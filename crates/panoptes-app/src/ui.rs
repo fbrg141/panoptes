@@ -93,6 +93,15 @@ impl Ui {
         }
     }
 
+    /// Records the scope the pane is showing, so the pane's own pickers and a
+    /// later request for that scope agree on where it is.
+    pub fn set_diagnostics_filter(&mut self, filter: DiagnosticsFilter, cx: &mut Context<Self>) {
+        if self.diagnostics != Some(filter) {
+            self.diagnostics = Some(filter);
+            cx.notify();
+        }
+    }
+
     pub fn focus_pane(&mut self, pane_id: &str, cx: &mut Context<Self>) {
         if self.layout.find(pane_id).is_some() && self.focused_pane != pane_id {
             self.focused_pane = pane_id.to_string();

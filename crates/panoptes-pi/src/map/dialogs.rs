@@ -33,8 +33,7 @@ impl EventMapper {
             return Vec::new();
         }
         if request["method"] == "setStatus" && request["statusKey"] == CODEMODE_STATUS {
-            self.shared
-                .set_codemode(request["statusText"].as_str() == Some("on"));
+            self.shared.set_codemode(request["statusText"].as_str());
             return Vec::new();
         }
         if request["method"] == "setStatus" && request["statusKey"] == APPROVAL_TAG {

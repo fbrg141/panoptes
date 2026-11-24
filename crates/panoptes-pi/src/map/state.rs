@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::Value;
@@ -14,6 +14,21 @@ pub(crate) struct ApprovalReply {
     pub subject: Option<String>,
 }
 
+/// What the controls extension reports about the `codemode` tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Codemode {
+    /// No status line yet: the session has not finished starting.
+    Unknown,
+    /// Pi has the tool; `enabled` says whether it is active.
+    Available { enabled: bool },
+    /// Pi has no `codemode` tool, so the switch would do nothing.
+    Unavailable,
+}
+
+const CODEMODE_OFF: u8 = 1;
+const CODEMODE_ON: u8 = 2;
+const CODEMODE_UNAVAILABLE: u8 = 3;
+
 /// What the live event stream learns that a session's history needs too,
 /// shared between the [`EventMapper`](super::EventMapper) and the session.
 ///
@@ -24,8 +39,8 @@ pub(crate) struct ApprovalReply {
 pub struct SessionState {
     /// Set by the permission extension's startup status.
     permission_guard: AtomicBool,
-    /// Whether Panoptes' controls extension reports codemode as active.
-    codemode: AtomicBool,
+    /// What Panoptes' controls extension reports about codemode.
+    codemode: AtomicU8,
     /// When each tool call started and ended, as seen live. Pi's history has
     /// no such times, so history reloads borrow them from here and give the
     /// same values the live events did.
@@ -62,12 +77,24 @@ impl SessionState {
         self.permission_guard.load(Ordering::Relaxed)
     }
 
-    pub(super) fn set_codemode(&self, enabled: bool) {
-        self.codemode.store(enabled, Ordering::Relaxed);
+    /// Records what `panoptes.codemode` says: `on`, `off`, or nothing else,
+    /// which means the tool is not there.
+    pub(super) fn set_codemode(&self, status: Option<&str>) {
+        let value = match status {
+            Some("on") => CODEMODE_ON,
+            Some("off") => CODEMODE_OFF,
+            _ => CODEMODE_UNAVAILABLE,
+        };
+        self.codemode.store(value, Ordering::Relaxed);
     }
 
-    pub(crate) fn codemode(&self) -> bool {
-        self.codemode.load(Ordering::Relaxed)
+    pub(crate) fn codemode(&self) -> Codemode {
+        match self.codemode.load(Ordering::Relaxed) {
+            CODEMODE_ON => Codemode::Available { enabled: true },
+            CODEMODE_OFF => Codemode::Available { enabled: false },
+            CODEMODE_UNAVAILABLE => Codemode::Unavailable,
+            _ => Codemode::Unknown,
+        }
     }
 
     pub(super) fn record_tool_time(&self, call_id: &str, started: i64, ended: Option<i64>) {

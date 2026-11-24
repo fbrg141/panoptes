@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import install from "./controls.js";
 
-function fakePi(activeTools) {
+function fakePi(activeTools, available = ["codemode"]) {
 	const handlers = new Map();
 	const commands = new Map();
 	const statuses = [];
 	return {
 		activeTools,
+		available,
 		handlers,
 		commands,
 		statuses,
@@ -19,6 +20,9 @@ function fakePi(activeTools) {
 		},
 		getActiveTools() {
 			return [...this.activeTools];
+		},
+		getAllTools() {
+			return this.available.map((name) => ({ name }));
 		},
 		setActiveTools(next) {
 			this.activeTools = next;
@@ -60,6 +64,20 @@ describe("controls.js", () => {
 		assert.deepEqual(pi.statuses, [
 			["panoptes.codemode", "off"],
 			["panoptes.codemode", "off"],
+		]);
+	});
+
+	it("says so when Pi has no codemode tool", async () => {
+		const pi = fakePi(["read"], []);
+		install(pi);
+		pi.handlers.get("session_start")({}, context(pi));
+		assert.deepEqual(pi.statuses, [["panoptes.codemode", "unavailable"]]);
+		// The command must not add a tool that does not exist.
+		await pi.commands.get("panoptes-codemode").handler("on", context(pi));
+		assert.deepEqual(pi.activeTools, ["read"]);
+		assert.deepEqual(pi.statuses, [
+			["panoptes.codemode", "unavailable"],
+			["panoptes.codemode", "unavailable"],
 		]);
 	});
 
