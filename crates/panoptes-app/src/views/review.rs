@@ -353,7 +353,10 @@ impl ReviewPane {
             self.scroll.offset().y.as_f32(),
             self.scroll.max_offset().y.as_f32(),
         );
-        self.scroll.set_offset(point(Pixels::ZERO, px(offset)));
+        // The offset comes from measured layout, so it is already in window
+        // pixels: the zoomed `px` would scale it a second time.
+        self.scroll
+            .set_offset(point(Pixels::ZERO, gpui_kit::px(offset)));
     }
 
     fn file_row(
