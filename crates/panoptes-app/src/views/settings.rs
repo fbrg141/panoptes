@@ -975,7 +975,11 @@ impl Settings {
                         "notify-sound",
                         notifications.sound,
                         "Play a sound",
-                        Some("Play Panoptes' alert sound with the notification.".into()),
+                        Some(
+                            "Play Panoptes' alert sound with the notification. It plays \
+                             even in Focus, where macOS would keep a notification quiet."
+                                .into(),
+                        ),
                         !notifications.enabled,
                         p,
                         toggle(NotificationField::Sound),
