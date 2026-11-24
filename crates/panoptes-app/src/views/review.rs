@@ -1,8 +1,10 @@
 //! The workspace's read-only lane review. Data and transitions live in the
 //! store and `model::review`; this module only renders them.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::prelude::*;
@@ -49,6 +51,10 @@ pub struct ReviewPane {
     scroll: ScrollHandle,
     files_scroll: ScrollHandle,
     target: Option<(ReviewFileId, usize)>,
+    /// Where each expanded file's hunks sat in the last layout, in window
+    /// space. The hunk selected by `n`/`p` needs its own position: the
+    /// sections scroll container only knows where whole files are.
+    hunk_tops: Rc<RefCell<HashMap<ReviewFileId, Vec<Pixels>>>>,
 }
 
 impl ReviewPane {
@@ -62,6 +68,7 @@ impl ReviewPane {
             scroll: ScrollHandle::new(),
             files_scroll: ScrollHandle::new(),
             target: None,
+            hunk_tops: Rc::default(),
         }
     }
 
@@ -173,16 +180,24 @@ impl ReviewPane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if review.totals.files == 0 {
-            return centered_message(
-                "file-diff",
-                if loading {
-                    "Checking for changes…"
-                } else {
-                    "No changes"
-                },
-                "The lane's worktree matches its comparison base.",
-                p,
-            );
+            // The last good listing may be empty while this refresh failed: a
+            // silent "No changes" would hide the error.
+            return div()
+                .relative()
+                .flex()
+                .flex_1()
+                .child(centered_message(
+                    "file-diff",
+                    if loading {
+                        "Checking for changes…"
+                    } else {
+                        "No changes"
+                    },
+                    "The lane's worktree matches its comparison base.",
+                    p,
+                ))
+                .children(error.map(|error| error_banner(error, p)))
+                .into_any_element();
         }
 
         let multiple = review.worktrees.len() > 1;
@@ -243,11 +258,21 @@ impl ReviewPane {
         if let Some(id) = selected {
             let target = (id.clone(), hunk);
             if self.target.as_ref() != Some(&target) {
-                if let Some(row) = section_rows.get(id) {
-                    self.scroll.scroll_to_item(*row);
-                }
-                if let Some(row) = file_rows.get(id) {
-                    self.files_scroll.scroll_to_item(*row);
+                let hunk_moved = self
+                    .target
+                    .as_ref()
+                    .is_some_and(|(previous, _)| previous == id && hunk > 0);
+                if hunk_moved {
+                    self.scroll_to_hunk(id, hunk);
+                } else {
+                    // A new file: show its first hunk from the header down,
+                    // and its row in the file list.
+                    if let Some(row) = section_rows.get(id) {
+                        self.scroll.scroll_to_top_of_item(*row);
+                    }
+                    if let Some(row) = file_rows.get(id) {
+                        self.files_scroll.scroll_to_item(*row);
+                    }
                 }
                 self.target = Some(target);
             }
@@ -260,20 +285,7 @@ impl ReviewPane {
             .flex()
             .flex_1()
             .min_h_0()
-            .children(error.map(|error| {
-                div()
-                    .absolute()
-                    .top(px(8.))
-                    .right(px(12.))
-                    .left(px(12.))
-                    .p(px(8.))
-                    .rounded(px(4.))
-                    .bg(p.error_soft)
-                    .text_color(p.error)
-                    .t_small()
-                    .child(error.to_string())
-                    .into_any_element()
-            }))
+            .children(error.map(|error| error_banner(error, p)))
             .child(
                 div()
                     .id("review-files")
@@ -315,6 +327,25 @@ impl ReviewPane {
                 )
             })
             .into_any_element()
+    }
+
+    /// Brings the selected hunk to the top of the sections view. Its position
+    /// comes from the last layout; until one has happened there is nothing to
+    /// aim at.
+    fn scroll_to_hunk(&self, id: &ReviewFileId, hunk: usize) {
+        let Some(top) = self
+            .hunk_tops
+            .borrow()
+            .get(id)
+            .and_then(|tops| tops.get(hunk).copied())
+        else {
+            return;
+        };
+        let bounds = self.scroll.bounds();
+        let offset = (bounds.top() - top)
+            .min(Pixels::ZERO)
+            .max(-self.scroll.max_offset().y);
+        self.scroll.set_offset(point(Pixels::ZERO, offset));
     }
 
     fn file_row(
@@ -517,7 +548,16 @@ impl ReviewPane {
                     notice("No textual hunks in this file.", p)
                 }
                 Some(Hunks::Ready(hunks)) => {
-                    hunks_view(&hunks, if selected { selected_hunk } else { usize::MAX }, p)
+                    let tops = self.hunk_tops.clone();
+                    let key = id.clone();
+                    hunks_view(
+                        &hunks,
+                        if selected { selected_hunk } else { usize::MAX },
+                        p,
+                        move |found| {
+                            tops.borrow_mut().insert(key.clone(), found);
+                        },
+                    )
                 }
             });
         }
@@ -786,10 +826,20 @@ fn notice(text: &str, p: &Palette) -> AnyElement {
         .into_any_element()
 }
 
-fn hunks_view(hunks: &[CoreHunk], selected: usize, p: &Palette) -> AnyElement {
+/// Renders the hunks and reports where each one was laid out, so the pane can
+/// scroll to the selected one.
+fn hunks_view(
+    hunks: &[CoreHunk],
+    selected: usize,
+    p: &Palette,
+    record: impl Fn(Vec<Pixels>) + 'static,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
+        .on_children_prepainted(move |bounds, _, _| {
+            record(bounds.iter().map(|bounds| bounds.top()).collect())
+        })
         .overflow_x_scrollbar()
         .children(hunks.iter().enumerate().map(|(index, hunk)| {
             let mut view = div()
@@ -841,6 +891,22 @@ fn hunks_view(hunks: &[CoreHunk], selected: usize, p: &Palette) -> AnyElement {
             }
             view.into_any_element()
         }))
+        .into_any_element()
+}
+
+/// The refresh error, over whatever the pane shows.
+fn error_banner(error: &str, p: &Palette) -> AnyElement {
+    div()
+        .absolute()
+        .top(px(8.))
+        .right(px(12.))
+        .left(px(12.))
+        .p(px(8.))
+        .rounded(px(4.))
+        .bg(p.error_soft)
+        .text_color(p.error)
+        .t_small()
+        .child(error.to_string())
         .into_any_element()
 }
 

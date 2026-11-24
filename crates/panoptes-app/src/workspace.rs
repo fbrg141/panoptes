@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use crate::backend::Backend;
 use crate::ds::{Button, LoopState, Type as _, icon, loop_mark};
 use crate::model::panes::{DropZone, PaneNode, SplitDirection, drop_zone_at};
+use crate::model::review;
 use crate::store::AppStore;
 use crate::store::Startup;
 use crate::theme::{Palette, PaletteExt as _};
@@ -290,11 +291,14 @@ impl Workspace {
             if let Some(key) = &active {
                 self.ui.update(cx, |ui, cx| ui.show_session(key, None, cx));
             }
-            if self.ui.read(cx).review_open && next_lane != current_review {
-                self.store.update(cx, |store, cx| match next_lane {
-                    Some(lane_id) => store.open_review(lane_id, cx),
-                    None => store.close_review(cx),
-                });
+            match review::follow_lane(self.ui.read(cx).review_open, current_review, next_lane) {
+                review::FollowLane::Leave => {}
+                review::FollowLane::Open(lane_id) => self
+                    .store
+                    .update(cx, |store, cx| store.open_review(lane_id, cx)),
+                review::FollowLane::Close => {
+                    self.store.update(cx, |store, cx| store.close_review(cx))
+                }
             }
         }
         let gone: Vec<String> = self.open_keys.difference(&open).cloned().collect();

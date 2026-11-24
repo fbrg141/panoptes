@@ -254,10 +254,17 @@ impl State {
 
     pub fn on_event(&mut self, event: SessionEvent) -> Vec<Effect> {
         let key = event.key;
+        // Only the review on screen follows a run: refreshing hidden ones
+        // would rewrite merge-preview objects nobody is looking at, and the
+        // next opening refreshes anyway.
         let review_lane = self
             .session(&key)
             .and_then(|session| session.lane_id)
-            .filter(|lane_id| self.reviews.contains_key(lane_id));
+            .filter(|lane_id| {
+                self.reviews
+                    .get(lane_id)
+                    .is_some_and(|review| review.visible)
+            });
         let event = match event.event {
             SessionUpdate::Status(changed) => {
                 self.statuses.insert(key, changed.status);
@@ -438,16 +445,14 @@ impl AppStore {
             s.lane_changes(lane_id).await
         });
         self.spawn(cx, changes, move |this, result, cx| {
-            let applied = {
-                let review = this
-                    .state
-                    .reviews
-                    .entry(lane_id)
-                    .or_insert_with(|| ReviewState::new(lane_id));
-                match result {
-                    Ok(changes) => review.apply_refresh(generation, changes),
-                    Err(error) => review.fail_refresh(generation, error.message),
-                }
+            // A lane dropped while this was in flight must not come back: the
+            // entry is gone, so the answer is dropped with it.
+            let Some(review) = this.state.reviews.get_mut(&lane_id) else {
+                return;
+            };
+            let applied = match result {
+                Ok(changes) => review.apply_refresh(generation, changes),
+                Err(error) => review.fail_refresh(generation, error.message),
             };
             if applied {
                 let requests = this
@@ -1695,12 +1700,17 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn a_settled_run_refreshes_a_loaded_lane_review() {
+    fn a_settled_run_refreshes_the_lane_review_on_screen() {
         let mut state = State::default();
         let mut lane_session = session("k");
         lane_session.lane_id = Some(7);
-        state.sessions = vec![lane_session];
+        state.sessions = vec![lane_session.clone()];
         state.reviews.insert(7, ReviewState::new(7));
+        // A hidden review is not rewritten by a run: the next opening reads
+        // it again, and the comparison costs Git objects nobody asked for.
+        let effects = state.on_event(event("k", HarnessEvent::RunSettled { aborted: false }));
+        assert!(!effects.contains(&Effect::RefreshReview(7)));
+        state.reviews.get_mut(&7).unwrap().visible = true;
         let effects = state.on_event(event("k", HarnessEvent::RunSettled { aborted: false }));
         assert!(effects.contains(&Effect::RefreshReview(7)));
     }

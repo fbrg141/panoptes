@@ -48,8 +48,8 @@ pub fn shortcut_groups() -> Vec<ShortcutGroup> {
             label: "Reading",
             entries: vec![
                 entry("Jump to the latest output", &["⌘", "↓"]),
-                entry("Review: previous/next file", &["J/K"]),
-                entry("Review: previous/next hunk", &["N/P"]),
+                entry("Review: next/previous file", &["J/K"]),
+                entry("Review: next/previous hunk", &["N/P"]),
                 entry("Close review", &["Esc"]),
             ],
         },

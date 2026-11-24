@@ -280,7 +280,10 @@ than looking clean. The preview uses an ephemeral `commit-tree` object and
 `merge-tree --write-tree` against the reviewed snapshot, never a worktree merge.
 It does not fetch, rebase, update a ref, or touch HEAD, the real index, stash or
 config. Snapshot invocations use unique private indexes so overlapping review
-requests cannot corrupt one another.
+requests cannot corrupt one another. Each preview whose base has advanced writes
+a loose commit and tree, so only the review on screen is refreshed by a settled
+run; a hidden one is read again when it is opened. The objects are unreachable
+and reclaimed by the next `git gc`, which is the price of never moving a ref.
 
 Zed informs the ambient change summary, continuous file sections and keyboard
 navigation, but its agent action log is not Panoptes' truth and its editable

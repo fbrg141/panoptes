@@ -227,36 +227,29 @@ impl ChatPane {
         let session = state.session(&self.key);
         let review_lane = session.and_then(|session| session.lane_id);
         let review_label = review_lane.map(|lane_id| {
-            if let Some(review) = state
+            let cached = state
                 .reviews
                 .get(&lane_id)
-                .and_then(|review| review.data.as_ref())
-            {
-                if review.totals.files == 0 {
-                    "No changes".to_string()
-                } else {
-                    format!(
-                        "{} · +{} −{}",
-                        crate::model::format::plural(review.totals.files, "file", "files"),
-                        review.totals.added,
-                        review.totals.removed
-                    )
-                }
-            } else {
-                let files = state
-                    .navigation
-                    .iter()
-                    .find(|navigation| navigation.lane_id == lane_id)
-                    .and_then(|navigation| navigation.work)
-                    .map_or(0, |work| work.changed_files);
-                if files == 0 {
-                    "Review".to_string()
-                } else {
-                    crate::model::format::plural(files as usize, "file", "files")
-                }
-            }
+                .and_then(|review| review.data.as_deref());
+            let files = state
+                .navigation
+                .iter()
+                .find(|navigation| navigation.lane_id == lane_id)
+                .and_then(|navigation| navigation.work)
+                .map_or(0, |work| work.changed_files);
+            crate::model::review::review_button_label(cached, files)
         });
-        let review_open = self.ui.read(cx).review_open;
+        // The button is active only for the review that is on screen: another
+        // pane's lane has its own review.
+        let review_open = crate::model::review::review_shown(
+            self.ui.read(cx).review_open,
+            state
+                .reviews
+                .values()
+                .find(|review| review.visible)
+                .map(|review| review.lane_id),
+            review_lane,
+        );
         let renamable = session.is_some_and(|s| s.id.is_some());
         let title: SharedString = session
             .map(|s| s.title.clone())
