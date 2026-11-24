@@ -41,6 +41,7 @@ pub enum NotificationField {
     Enabled,
     Finished,
     NeedsAttention,
+    Sound,
 }
 
 /// When Panoptes posts a macOS notification about a session.
@@ -53,6 +54,8 @@ pub struct NotificationPreferences {
     pub finished: bool,
     /// When a session waits for the user (Waiting).
     pub needs_attention: bool,
+    /// Play a sound with the notification, as well as showing it.
+    pub sound: bool,
 }
 
 impl Default for NotificationPreferences {
@@ -61,6 +64,7 @@ impl Default for NotificationPreferences {
             enabled: true,
             finished: true,
             needs_attention: true,
+            sound: true,
         }
     }
 }
@@ -71,6 +75,7 @@ impl NotificationPreferences {
             NotificationField::Enabled => self.enabled = value,
             NotificationField::Finished => self.finished = value,
             NotificationField::NeedsAttention => self.needs_attention = value,
+            NotificationField::Sound => self.sound = value,
         }
     }
 }
@@ -148,7 +153,7 @@ impl Store {
         let (permission_warning_dismissed, notifications, dark_mode, font_size) =
             self.conn.query_row(
                 "SELECT permission_warning_dismissed, notify_enabled, notify_finished,
-                    notify_needs_attention, dark_mode, font_size
+                    notify_needs_attention, dark_mode, font_size, notify_sound
              FROM ui_preferences WHERE singleton = 1",
                 [],
                 |row| {
@@ -158,6 +163,7 @@ impl Store {
                             enabled: row.get(1)?,
                             finished: row.get(2)?,
                             needs_attention: row.get(3)?,
+                            sound: row.get(6)?,
                         },
                         row.get(4)?,
                         row.get(5)?,
@@ -274,6 +280,7 @@ impl Store {
             NotificationField::Enabled => "notify_enabled",
             NotificationField::Finished => "notify_finished",
             NotificationField::NeedsAttention => "notify_needs_attention",
+            NotificationField::Sound => "notify_sound",
         };
         self.conn.execute(
             &format!("UPDATE ui_preferences SET {column} = ?1 WHERE singleton = 1"),

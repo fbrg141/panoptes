@@ -443,6 +443,9 @@ impl AppStore {
             attended,
             &label,
         ) {
+            if notice.sound {
+                crate::notify::play_sound();
+            }
             crate::notify::post(key, &notice, cx);
         }
     }
