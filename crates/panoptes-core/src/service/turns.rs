@@ -30,6 +30,10 @@ struct PreparedTurn {
     turn: Turn,
     lane: Lane,
     worktrees: Vec<PreparedWorktree>,
+    /// The prompt as it was typed. The store keeps only a short label, and a
+    /// label is not an identity: two follow-ups can open with the same words.
+    /// `None` for a turn restored from the store after a restart.
+    text: Option<String>,
 }
 
 #[derive(Clone)]
@@ -201,7 +205,7 @@ impl TurnCoordinator {
                 _ => return Ok(None),
             }
         };
-        let prepared = self
+        let mut prepared = self
             .create_prepared(
                 lane_id,
                 session_id,
@@ -211,6 +215,7 @@ impl TurnCoordinator {
                 Boundary::Unavailable,
             )
             .await?;
+        prepared.text = Some(prompt.to_string());
         let turn = prepared.turn.turn;
         let prepared = {
             let mut all = self.state.lock().unwrap();
@@ -483,13 +488,11 @@ impl TurnCoordinator {
     async fn run_started(&self, key: &str, generation: u64) {
         // A run that starts now belongs either to a turn whose prompt already
         // answered Started while an earlier turn was still active, or to a
-        // prompt the harness queued. A prompt whose answer has not arrived is
-        // not touched here: it already holds its exact pre-prompt boundary,
-        // and re-snapshotting could catch the agent mid-edit.
-        enum Next {
-            Ready(PreparedTurn),
-            Refresh(PreparedTurn),
-        }
+        // prompt the harness queued. Neither holds a usable boundary yet: the
+        // worktree was snapshotted before the turn ahead of them finished, and
+        // the run they belong to starts now. A prompt whose answer has not
+        // arrived is not touched here: it already holds its exact pre-prompt
+        // boundary, and re-snapshotting could catch the agent mid-edit.
         let pending = {
             let mut all = self.state.lock().unwrap();
             let Some(state) = all.get_mut(key).filter(|state| state.matches(generation)) else {
@@ -498,23 +501,21 @@ impl TurnCoordinator {
             if state.active.is_some() {
                 return;
             }
-            match state.waiting.pop_front() {
-                Some(prepared) => Some(Next::Ready(prepared)),
-                None => state.queued.pop_front().map(Next::Refresh),
-            }
+            state
+                .waiting
+                .pop_front()
+                .or_else(|| state.queued.pop_front())
         };
         // A turn begins at Service::prompt. A harness-only RunStarted with no
         // prompt does not invent one, and never blocks event forwarding.
         let Some(pending) = pending else {
             return;
         };
-        let prepared = match pending {
-            Next::Ready(prepared) => prepared,
-            Next::Refresh(prepared) => {
-                self.refresh_before(&prepared).await;
-                prepared
-            }
-        };
+        // `refresh_before` re-reads the previous after snapshot, so the new
+        // boundary is parented to the turn this one follows and its agent's
+        // edits are not mistaken for the user's.
+        self.refresh_before(&pending).await;
+        let prepared = pending;
         let mut all = self.state.lock().unwrap();
         if let Some(state) = all.get_mut(key).filter(|state| state.matches(generation)) {
             state.active = Some(prepared);
@@ -663,26 +664,36 @@ impl TurnCoordinator {
             let Some(state) = all.get_mut(key).filter(|state| state.matches(generation)) else {
                 return;
             };
+            let mut entries: Vec<&mut PreparedTurn> = state.queued.iter_mut().collect();
+            if let Some(candidate) = state
+                .candidate
+                .as_mut()
+                .filter(|prepared| prepared.turn.queued)
+            {
+                entries.push(candidate);
+            }
             let mut updates = Vec::new();
             for prompt in queued
                 .iter()
                 .filter(|prompt| prompt.mode != PromptMode::Steer)
             {
+                // The whole prompt identifies a queued turn; its first line is
+                // only a label, and two follow-ups can share one. Turns
+                // restored from the store have nothing but the label, so they
+                // fall back to it.
+                let unmatched = |prepared: &&mut PreparedTurn| prepared.turn.message_id.is_none();
+                let by_text = entries.iter().position(|prepared| {
+                    unmatched(prepared) && prepared.text.as_deref() == Some(prompt.text.as_str())
+                });
                 let label = first_line(&prompt.text);
-                if let Some(prepared) = state
-                    .queued
-                    .iter_mut()
-                    .find(|prepared| prepared.turn.prompt == label)
-                {
-                    prepared.turn.message_id = Some(prompt.id.clone());
-                    updates.push((prepared.turn.lane_id, prepared.turn.turn, prompt.id.clone()));
-                    continue;
-                }
-                if let Some(prepared) = state
-                    .candidate
-                    .as_mut()
-                    .filter(|prepared| prepared.turn.queued && prepared.turn.prompt == label)
-                {
+                let index = by_text.or_else(|| {
+                    entries.iter().position(|prepared| {
+                        unmatched(prepared)
+                            && prepared.text.is_none()
+                            && prepared.turn.prompt == label
+                    })
+                });
+                if let Some(prepared) = index.and_then(|index| entries.get_mut(index)) {
                     prepared.turn.message_id = Some(prompt.id.clone());
                     updates.push((prepared.turn.lane_id, prepared.turn.turn, prompt.id.clone()));
                 }
@@ -839,6 +850,7 @@ fn hydrate(store: &Store, turn: Turn) -> anyhow::Result<PreparedTurn> {
         turn,
         lane,
         worktrees,
+        text: None,
     })
 }
 

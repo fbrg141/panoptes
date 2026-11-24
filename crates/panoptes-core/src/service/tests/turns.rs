@@ -303,10 +303,12 @@ async fn a_prompt_while_a_turn_runs_waits_instead_of_replacing_it() {
         turn.outcome == Some(TurnOutcome::Done)
     })
     .await;
-    // The second turn was not overwritten and runs when its own run starts.
+    // The second turn was not overwritten and runs when its own run starts,
+    // where it takes its boundary: the one it held was from inside the first
+    // turn's run.
     sink.send(HarnessEvent::RunStarted).unwrap();
     wait_for_turn(&f, lane.id, 2, |turn| {
-        turn.worktrees[0].boundary == Boundary::Exact
+        turn.worktrees[0].boundary == Boundary::Observed
     })
     .await;
     fs::write(repo.join("agent-2.txt"), "agent\n").unwrap();
@@ -403,6 +405,102 @@ async fn a_queued_turn_is_parented_to_the_previous_after_snapshot() {
         git(&repo, &["rev-parse", &previous_after])
     );
     assert!(!turn.worktrees[0].human_edits_before);
+}
+
+#[tokio::test]
+async fn a_turn_that_waited_is_parented_to_the_turn_it_follows() {
+    let f = fixture(FakeHarness::default());
+    let (_code, lane) = lane_of(&f).await;
+    let opened = f.service.create(lane.id, "fake").await.unwrap();
+    let repo = PathBuf::from(&lane.worktrees[0].path);
+    let sink = f.harness.sinks.lock().unwrap()[0].clone();
+
+    assert_eq!(
+        f.service
+            .prompt(&opened.key, "First".into(), Vec::new(), PromptMode::Start)
+            .await
+            .unwrap(),
+        PromptOutcome::Started
+    );
+    sink.send(HarnessEvent::RunStarted).unwrap();
+    settle().await;
+    // Answered Started while the first turn is still running, so it waits and
+    // its before snapshot is compared with the turn before last.
+    assert_eq!(
+        f.service
+            .prompt(&opened.key, "Second".into(), Vec::new(), PromptMode::Start)
+            .await
+            .unwrap(),
+        PromptOutcome::Started
+    );
+    fs::write(repo.join("agent-1.txt"), "agent\n").unwrap();
+    sink.send(HarnessEvent::RunSettled { aborted: false })
+        .unwrap();
+    wait_for_turn(&f, lane.id, 1, |turn| {
+        turn.outcome == Some(TurnOutcome::Done)
+    })
+    .await;
+    sink.send(HarnessEvent::RunStarted).unwrap();
+    wait_for_turn(&f, lane.id, 2, |turn| {
+        turn.worktrees[0].boundary == Boundary::Observed
+    })
+    .await;
+
+    let turn = f.service.store.lock().turn(lane.id, 2).unwrap();
+    let previous_after = f.service.store.lock().turn(lane.id, 1).unwrap().worktrees[0]
+        .after_ref
+        .clone();
+    // The waiting turn's snapshot is taken when its own run begins, so it hangs
+    // off the turn it followed and the agent's own edits are not human edits.
+    assert_eq!(
+        git(
+            &repo,
+            &["rev-parse", &format!("{}^", turn.worktrees[0].before_ref)]
+        ),
+        git(&repo, &["rev-parse", &previous_after])
+    );
+    assert!(!turn.worktrees[0].human_edits_before);
+}
+
+#[tokio::test]
+async fn queued_turns_are_matched_by_their_whole_prompt_not_their_first_line() {
+    let f = fixture(FakeHarness::default());
+    let (_code, lane) = lane_of(&f).await;
+    let opened = f.service.create(lane.id, "fake").await.unwrap();
+    for text in ["queue first", "queue second"] {
+        assert_eq!(
+            f.service
+                .prompt(&opened.key, text.into(), Vec::new(), PromptMode::FollowUp)
+                .await
+                .unwrap(),
+            PromptOutcome::Queued
+        );
+    }
+    let sink = f.harness.sinks.lock().unwrap()[0].clone();
+    sink.send(HarnessEvent::QueueChanged {
+        queued: vec![
+            QueuedPrompt {
+                id: "q1".into(),
+                text: "queue first".into(),
+                mode: PromptMode::FollowUp,
+            },
+            QueuedPrompt {
+                id: "q2".into(),
+                text: "queue second".into(),
+                mode: PromptMode::FollowUp,
+            },
+        ],
+    })
+    .unwrap();
+    // Both share the label "queue"; each still gets its own prompt id.
+    wait_for_turn(&f, lane.id, 1, |turn| {
+        turn.message_id.as_deref() == Some("q1")
+    })
+    .await;
+    wait_for_turn(&f, lane.id, 2, |turn| {
+        turn.message_id.as_deref() == Some("q2")
+    })
+    .await;
 }
 
 #[tokio::test]

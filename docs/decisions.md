@@ -321,6 +321,9 @@ ref. The repository stays plain git; Panoptes does not use Jujutsu (jj).
 - **Only a turn that ran is settled by a run.** A settled run closes the turn it
   ran, never a follow-up still waiting in the harness's queue, and a prompt
   answered while another turn is active waits its turn instead of replacing it.
+  A turn that waited, like one the harness queued, takes its boundary at its own
+  `RunStarted` and is recorded as observed: the snapshot taken at prompt time
+  belongs to the run still going.
   Closing or replacing a session settles the turns it held from the worktree as
   it is then, and drops the ones that never started.
 - **Nothing the user or agent sees changes.** The real index, `HEAD`, branch,

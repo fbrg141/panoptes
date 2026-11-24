@@ -141,7 +141,9 @@ impl AgentSession for FakeSession {
         _: PromptMode,
     ) -> anyhow::Result<PromptOutcome> {
         match text.as_str() {
-            "queue" => Ok(PromptOutcome::Queued),
+            // Any prompt opening with "queue" is held by the harness, which
+            // lets a test queue two with the same first line.
+            text if text.starts_with("queue") => Ok(PromptOutcome::Queued),
             "handled" => Ok(PromptOutcome::Handled),
             "fail" => anyhow::bail!("prompt failed"),
             // Reports the run before the prompt is answered, as a harness
