@@ -1342,6 +1342,21 @@ impl AppStore {
         async move { work.await.map_err(|e| e.message) }
     }
 
+    /// Removes stale Git administrative records, never a live worktree.
+    pub fn prune_worktrees(&mut self, cx: &mut Context<Self>) -> Task<Option<bool>> {
+        let work = self.backend.run(
+            "prune_worktrees",
+            |s| async move { s.prune_worktrees().await },
+        );
+        self.spawn(cx, work, |this, done, cx| match done {
+            Ok(_) => true,
+            Err(error) => {
+                this.fail(error, cx);
+                false
+            }
+        })
+    }
+
     /// Archives independently, preserving any dirty lane as a checkpoint.
     pub fn archive_lanes(
         &mut self,

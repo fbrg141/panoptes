@@ -36,10 +36,16 @@ impl Service {
                 Some((project.clone(), lane.clone()))
             })
             .collect();
-        let scan = tokio::task::spawn_blocking(move || cleanup::scan(project_id, &active))
-            .await
-            .context("The worktree cleanup scan stopped")
-            .map_err(err)?;
+        let scan_projects = listing.projects.clone();
+        let scan_lanes = listing.lanes.clone();
+        let (scan, inventory) = tokio::task::spawn_blocking(move || {
+            let scan = cleanup::scan(project_id, &active);
+            let inventory = cleanup::inventory(&scan_projects, &scan_lanes);
+            (scan, inventory)
+        })
+        .await
+        .context("The worktree cleanup scan stopped")
+        .map_err(err)?;
 
         // Starting sessions are not listed as open yet. Include both sets so
         // cleanup can never archive a lane under a process that is starting.
@@ -105,6 +111,22 @@ impl Service {
             idle_days,
             candidates,
             errors,
+            worktree_inventory: inventory,
         })
+    }
+
+    /// Removes stale Git administrative records for registered projects. A
+    /// live worktree, its files and its branch are never touched.
+    pub async fn prune_worktrees(&self) -> ServiceResult<usize> {
+        let projects = self
+            .store
+            .call(move |store| store.projects())
+            .await
+            .map_err(err)?;
+        tokio::task::spawn_blocking(move || cleanup::prune(&projects))
+            .await
+            .context("The worktree prune stopped")
+            .map_err(err)?
+            .map_err(err)
     }
 }
