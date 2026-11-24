@@ -19,7 +19,9 @@ for the adapter's tests. Prompts select behaviour:
   "tools"  replies with the tools it was started with ("all" by default)
   "instructions" replies with the additional system prompt it was started with
   instructions "with-permission-extension" simulates the permission extension's
-           startup status
+           startup status; "without-codemode" makes it report codemode as
+           unavailable, as a Pi without the tool does; "without-controls"
+           reports nothing at all, as a failed extension load does
   other    replies with "echo: <prompt>" plus a U+2028 inside the text,
            and the MIME types of any images sent with it
 """
@@ -44,6 +46,7 @@ models = [
 ]
 model = models[0]
 thinking_level = "medium"
+codemode = False
 gates = 0
 
 
@@ -69,6 +72,21 @@ def respond(command, data=None, success=True, error=None):
 if instructions == "with-permission-extension":
     send({"type": "extension_ui_request", "id": "permission", "method": "setStatus",
           "statusKey": "pi-permission-system", "statusText": "enabled"})
+
+# Panoptes' controls extension publishes codemode's state during session start,
+# and "unavailable" where Pi has no codemode tool. The instructions argument
+# stands in for a Pi without it.
+# "without-controls" stands for the extension failing to load at all: nothing
+# reports, which the adapter must not confuse with a Pi without the tool.
+codemode_present = instructions != "without-codemode"
+if instructions == "without-controls":
+    pass
+elif codemode_present:
+    send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+          "statusKey": "panoptes.codemode", "statusText": "off"})
+else:
+    send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+          "statusKey": "panoptes.codemode", "statusText": "unavailable"})
 
 
 def append(message):
@@ -199,6 +217,7 @@ for line in sys.stdin:
             {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt"},
             {"name": "review", "description": None, "source": "extension"},
             {"name": "skill:review", "description": "Review with a skill", "source": "skill"},
+            {"name": "panoptes-codemode", "description": "Internal session control", "source": "extension"},
         ]})
     elif kind == "set_model":
         found = [m for m in models if (m["provider"], m["id"]) == (command["provider"], command["modelId"])]
@@ -215,6 +234,23 @@ for line in sys.stdin:
     elif kind == "get_session_stats":
         respond(command, {"contextUsage": {"tokens": 1200, "contextWindow": model["contextWindow"], "percent": 4}})
     elif kind == "prompt":
+        if command["message"] in ["/panoptes-codemode on", "/panoptes-codemode off"]:
+            if instructions == "without-controls":
+                # The real Pi would run the text as a prompt: the command does
+                # not exist. Record that it was sent, so a test can prove the
+                # adapter never got here.
+                respond(command, {"disposition": "started"})
+                continue
+            if not codemode_present:
+                send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+                      "statusKey": "panoptes.codemode", "statusText": "unavailable"})
+                respond(command, {"disposition": "handled"})
+                continue
+            codemode = command["message"].endswith(" on")
+            send({"type": "extension_ui_request", "id": "codemode", "method": "setStatus",
+                  "statusKey": "panoptes.codemode", "statusText": "on" if codemode else "off"})
+            respond(command, {"disposition": "handled"})
+            continue
         if command["message"] == "crash":
             # The command may already be part of the conversation even though
             # its caller never gets a response. Retrying it could duplicate it.

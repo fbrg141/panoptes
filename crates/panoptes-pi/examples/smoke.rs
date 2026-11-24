@@ -1,7 +1,8 @@
 //! End-to-end check against the installed Pi. The test suite only talks to a
 //! scripted stand-in, so this is the one place the real protocol is proven:
-//! it starts a new session in a temporary folder (with Panoptes' approvals
-//! extension loaded, as the app does), sends one prompt, and fails unless
+//! it starts a new session in a temporary folder (with Panoptes' extensions
+//! loaded, as the app does), toggles codemode where Pi has it, sends one
+//! prompt, and fails unless
 //! the events and the history keep the contract the UI relies on. The
 //! session it creates is deleted again at the end.
 //!
@@ -14,7 +15,7 @@ use anyhow::{Context, bail, ensure};
 use panoptes_harness::{
     AgentSession, Block, Harness, HarnessEvent, PromptMode, Role, StartSession,
 };
-use panoptes_pi::{PiHarness, locate};
+use panoptes_pi::{CODEMODE_MISSING, PiHarness, locate};
 
 /// A single short reply should never take longer than this.
 const RUN_LIMIT: Duration = Duration::from_secs(120);
@@ -42,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let session = harness
         .start_session(StartSession::new(cwd), tx)
         .await
-        .context("Pi did not start a session with the approvals extension loaded")?;
+        .context("Pi did not start a session with Panoptes' extensions loaded")?;
     println!("started {:?}", session.harness_ref());
 
     let checked = check(session.as_ref(), &mut rx, prompt).await;
@@ -64,6 +65,50 @@ async fn check(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>,
     prompt: String,
 ) -> anyhow::Result<()> {
+    // Codemode is a session switch only where Pi has the tool, so its absence
+    // is a Pi without the codemode extension rather than a broken contract.
+    let settings = session.settings().await?;
+    if settings
+        .toggles
+        .iter()
+        .any(|toggle| toggle.id == "codemode")
+    {
+        session.set_toggle("codemode".into(), true).await?;
+        ensure!(
+            session
+                .settings()
+                .await?
+                .toggles
+                .iter()
+                .any(|toggle| toggle.id == "codemode" && toggle.enabled),
+            "Codemode did not turn on"
+        );
+        session.set_toggle("codemode".into(), false).await?;
+        ensure!(
+            session
+                .settings()
+                .await?
+                .toggles
+                .iter()
+                .any(|toggle| toggle.id == "codemode" && !toggle.enabled),
+            "Codemode did not turn off"
+        );
+    } else {
+        // No switch means either a Pi without the codemode tool or a controls
+        // extension that never reported. Asking settles which: the adapter
+        // answers the first with CODEMODE_MISSING and the second with
+        // CONTROLS_MISSING, without sending anything to Pi.
+        match session.set_toggle("codemode".into(), true).await {
+            Err(error) if format!("{error:#}").contains(CODEMODE_MISSING) => {
+                println!("skipped the codemode switch: Pi has no codemode tool")
+            }
+            Err(error) => {
+                bail!("Panoptes' session controls extension did not load: {error:#}")
+            }
+            Ok(()) => bail!("A session with no codemode switch accepted the toggle"),
+        }
+    }
+
     session
         .prompt(prompt, Vec::new(), PromptMode::Start)
         .await?;
