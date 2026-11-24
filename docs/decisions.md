@@ -315,7 +315,14 @@ ref. The repository stays plain git; Panoptes does not use Jujutsu (jj).
   `turn_worktrees`. Intent and deterministic ref names are written before any
   Git ref. Startup adopts interrupted refs, snapshots an existing worktree, uses
   an archive checkpoint when an archived worktree is gone, marks unrecoverable
-  rows, settles them as stopped, and removes only generated orphan refs.
+  rows, settles them as stopped, and removes only generated orphan refs. One
+  turn that cannot be restored is settled as failed with its reason rather than
+  blocking the rest at every launch.
+- **Only a turn that ran is settled by a run.** A settled run closes the turn it
+  ran, never a follow-up still waiting in the harness's queue, and a prompt
+  answered while another turn is active waits its turn instead of replacing it.
+  Closing or replacing a session settles the turns it held from the worktree as
+  it is then, and drops the ones that never started.
 - **Nothing the user or agent sees changes.** The real index, `HEAD`, branch,
   stash and config are untouched. The refs are not branches, so a normal push
   never sends them. Refs survive archive and are removed by the existing lane

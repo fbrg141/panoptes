@@ -139,6 +139,57 @@ fn before_and_after_snapshots_settle_and_detect_human_edits() {
 }
 
 #[test]
+fn a_failed_before_snapshot_keeps_its_boundary_unavailable() {
+    let (_dir, store, lane, project, session) = fixture();
+    let turn = store
+        .create_turn(lane.id, session, None, "Prompt", false)
+        .unwrap()
+        .turn;
+    store
+        .fail_turn_before(lane.id, turn, project, "no snapshot")
+        .unwrap();
+    // The prompt still answers Started, but a boundary without a before tree
+    // has nothing to compare against: promoting it would show a diff that is
+    // empty rather than unknown.
+    store
+        .mark_turn_boundary(lane.id, turn, Boundary::Exact)
+        .unwrap();
+    let row = &store.turn(lane.id, turn).unwrap().worktrees[0];
+    assert_eq!(row.boundary, Boundary::Unavailable);
+    assert_eq!(row.error.as_deref(), Some("no snapshot"));
+}
+
+#[test]
+fn an_abandoned_turn_settles_with_its_reason() {
+    let (_dir, store, lane, project, session) = fixture();
+    let turn = store
+        .create_turn(lane.id, session, None, "Prompt", false)
+        .unwrap()
+        .turn;
+    store
+        .set_turn_before(
+            lane.id,
+            turn,
+            &before(project, &"a".repeat(40), false),
+            Boundary::Exact,
+            None,
+        )
+        .unwrap();
+    store
+        .abandon_turn(lane.id, turn, "the lane lost its worktree")
+        .unwrap();
+    let abandoned = store.turn(lane.id, turn).unwrap();
+    // Settled, so it is not retried at every launch, and the reason is kept.
+    assert_eq!(abandoned.outcome, Some(TurnOutcome::Failed));
+    assert_eq!(
+        abandoned.worktrees[0].after_error.as_deref(),
+        Some("the lane lost its worktree")
+    );
+    assert!(abandoned.worktrees[0].after_tree.is_none());
+    assert!(store.unfinished_turns().unwrap().is_empty());
+}
+
+#[test]
 fn settling_waits_for_every_worktree_and_after_is_idempotent() {
     let (_dir, store, _, project, _session) = fixture();
     let another = store

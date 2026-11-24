@@ -54,14 +54,47 @@ struct SessionTurns {
     generation: Option<u64>,
     lane_id: Option<i64>,
     session_id: Option<i64>,
+    /// The turn whose run is going on now.
     active: Option<PreparedTurn>,
+    /// Turns whose prompt returned Started while another turn was still
+    /// active. Ordered, because a harness that accepted a second prompt
+    /// before the first settled runs them in that order.
+    waiting: VecDeque<PreparedTurn>,
+    /// A prompt whose response has not been returned yet.
     candidate: Option<PreparedTurn>,
+    /// Prompts the harness has queued, in its order.
     queued: VecDeque<PreparedTurn>,
 }
 
 impl SessionTurns {
     fn matches(&self, generation: u64) -> bool {
         self.generation == Some(generation)
+    }
+
+    /// The turn a message belongs to: the running one, then one that has
+    /// started, then the prompt in flight, then the one waiting its turn.
+    fn current(&self) -> Option<&PreparedTurn> {
+        self.active
+            .as_ref()
+            .or_else(|| self.waiting.front())
+            .or(self.candidate.as_ref())
+            .or_else(|| self.queued.front())
+    }
+
+    /// Every turn this generation still holds, running ones first.
+    fn drain(
+        &mut self,
+    ) -> (
+        Vec<PreparedTurn>, /* started */
+        Vec<PreparedTurn>, /* never ran */
+    ) {
+        let mut started = Vec::new();
+        started.extend(self.active.take());
+        started.extend(self.waiting.drain(..));
+        let mut never_ran = Vec::new();
+        never_ran.extend(self.candidate.take());
+        never_ran.extend(self.queued.drain(..));
+        (started, never_ran)
     }
 }
 
@@ -74,8 +107,10 @@ impl TurnCoordinator {
     }
 
     /// A new process generation replaces any state a late event from its
-    /// predecessor might try to settle.
-    pub(super) fn session_started(
+    /// predecessor might try to settle. Turns the predecessor still held are
+    /// finished here, with the worktree as it is now: waiting for startup
+    /// reconciliation would credit their edits to whoever comes next.
+    pub(super) async fn session_started(
         &self,
         key: &str,
         generation: u64,
@@ -83,16 +118,31 @@ impl TurnCoordinator {
         session_id: Option<i64>,
         writable: bool,
     ) {
-        let active_lane = lane_id.and_then(|id| {
-            self.store
-                .lock()
-                .lane(id)
-                .ok()
-                .filter(|lane| lane.state == LaneState::Active)
-        });
+        // Read through the store's own thread: SQLite never runs on the async
+        // runtime, and a snapshot may be holding the same lock.
+        let active_lane = match lane_id {
+            Some(id) => self
+                .store
+                .call(move |store| {
+                    Ok(store
+                        .lane(id)
+                        .ok()
+                        .filter(|lane| lane.state == LaneState::Active))
+                })
+                .await
+                .unwrap_or(None),
+            None => None,
+        };
         let writable = writable && active_lane.is_some() && session_id.is_some();
-        let mut all = self.state.lock().unwrap();
+        let previous = {
+            let mut all = self.state.lock().unwrap();
+            all.remove(key)
+        };
+        if let Some(previous) = previous {
+            self.finish_dropped(previous).await;
+        }
         if writable {
+            let mut all = self.state.lock().unwrap();
             all.insert(
                 key.to_string(),
                 SessionTurns {
@@ -102,8 +152,29 @@ impl TurnCoordinator {
                     ..Default::default()
                 },
             );
-        } else {
-            all.remove(key);
+        }
+    }
+
+    /// Finishes the turns a replaced or closed session left behind: the ones
+    /// that started are settled from the worktree as it is now, and the ones
+    /// that never ran leave nothing to settle.
+    async fn finish_dropped(&self, mut state: SessionTurns) {
+        let (started, never_ran) = state.drain();
+        for prepared in started {
+            let _ = self
+                .write_after(prepared, TurnOutcome::Stopped, false)
+                .await;
+        }
+        for prepared in never_ran {
+            self.discard(prepared).await;
+        }
+    }
+
+    /// A session's process went away without a new one replacing it.
+    pub(super) async fn session_closed(&self, key: &str) {
+        let previous = self.state.lock().unwrap().remove(key);
+        if let Some(previous) = previous {
+            self.finish_dropped(previous).await;
         }
     }
 
@@ -188,7 +259,15 @@ impl TurnCoordinator {
                 let _ = self.set_queued(&prepared, false).await;
                 let mut all = self.state.lock().unwrap();
                 if let Some(state) = all.get_mut(key).filter(|s| s.matches(generation)) {
-                    state.active = Some(prepared);
+                    // A run that has not settled yet keeps its turn: the new
+                    // one waits behind it rather than replacing it, which
+                    // would leave the first turn unsettled and the late
+                    // RunSettled settling the wrong one.
+                    if state.active.is_none() {
+                        state.active = Some(prepared);
+                    } else {
+                        state.waiting.push_back(prepared);
+                    }
                 }
             }
             Ok(PromptOutcome::Queued) => {
@@ -240,18 +319,36 @@ impl TurnCoordinator {
     }
 
     /// Startup adoption of interrupted rows and cleanup of generated orphans.
+    /// One turn that cannot be restored is given up on rather than left to
+    /// fail again at every launch, and the rest still run.
     pub(super) async fn reconcile(&self) -> anyhow::Result<()> {
+        let mut problems = Vec::new();
         let unfinished = self.store.call(|store| store.unfinished_turns()).await?;
         for turn in unfinished {
-            let prepared = {
-                let store = self.store.clone();
-                spawn_blocking(move || {
-                    let store = store.lock();
-                    hydrate(&store, turn.clone())
-                })
-                .await??
+            let (lane_id, number) = (turn.lane_id, turn.turn);
+            let store = self.store.clone();
+            let prepared = spawn_blocking(move || {
+                let store = store.lock();
+                hydrate(&store, turn)
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.into()));
+            let restored = match prepared {
+                Ok(prepared) => self.reconcile_one(prepared).await,
+                Err(error) => Err(error),
             };
-            self.reconcile_one(prepared).await?;
+            if let Err(error) = restored {
+                let reason = format!("{error:#}");
+                if let Err(error) = self
+                    .store
+                    .call(move |store| store.abandon_turn(lane_id, number, &reason))
+                    .await
+                {
+                    problems.push(format!(
+                        "Turn {number} of lane {lane_id} could not be settled: {error}"
+                    ));
+                }
+            }
         }
         let owned: HashSet<String> = self
             .store
@@ -261,20 +358,41 @@ impl TurnCoordinator {
             .collect();
         let lanes = self.store.call(|store| store.lanes()).await?;
         let store = self.store.clone();
-        spawn_blocking(move || {
+        let errors = spawn_blocking(move || {
             let store = store.lock();
-            let mut repos = HashSet::new();
+            let mut seen = HashSet::new();
+            let mut errors = Vec::new();
             for lane in lanes {
                 for worktree in &lane.worktrees {
-                    let repo = PathBuf::from(&store.project(worktree.project_id)?.repo);
-                    if repos.insert(repo.clone()) {
-                        remove_orphan_turn_refs(&repo, &lane, &owned)?;
+                    let repo = match store.project(worktree.project_id) {
+                        Ok(project) => PathBuf::from(&project.repo),
+                        Err(error) => {
+                            errors.push(format!("Could not read a turn's project: {error:#}"));
+                            continue;
+                        }
+                    };
+                    // Generated refs live under the lane's own prefix, so each
+                    // lane in a repository needs its own pass. Keying on the
+                    // repository alone skipped every lane after the first.
+                    if !seen.insert((repo.clone(), lane.name.clone())) {
+                        continue;
+                    }
+                    if let Err(error) = remove_orphan_turn_refs(&repo, &lane, &owned) {
+                        errors.push(format!(
+                            "Could not clean up turn refs in {}: {error:#}",
+                            repo.display()
+                        ));
                     }
                 }
             }
-            Ok::<(), anyhow::Error>(())
+            errors
         })
-        .await??;
+        .await
+        .unwrap_or_else(|_| vec!["Turn ref cleanup stopped unexpectedly".to_string()]);
+        problems.extend(errors);
+        if !problems.is_empty() {
+            anyhow::bail!(problems.join("; "));
+        }
         Ok(())
     }
 
@@ -294,41 +412,17 @@ impl TurnCoordinator {
             let store = store.lock();
             let turn =
                 store.create_turn(lane_id, session_id, message_id.as_deref(), &prompt, queued)?;
-            let prepared = hydrate(&store, turn)?;
-            for worktree in &prepared.worktrees {
-                match write_turn_snapshot(
-                    &worktree.path,
-                    &worktree.repo,
-                    &prepared.lane,
-                    &worktree.before_ref,
-                    worktree.previous_ref.as_deref(),
-                ) {
-                    Ok(tree) => {
-                        let human = worktree
-                            .previous_tree
-                            .as_deref()
-                            .is_some_and(|previous| previous != tree);
-                        store.set_turn_before(
-                            lane_id,
-                            prepared.turn.turn,
-                            &SnapshotResult {
-                                project_id: worktree.project_id,
-                                tree,
-                                human_edits_before: human,
-                            },
-                            boundary,
-                            None,
-                        )?;
-                    }
-                    Err(error) => store.fail_turn_before(
-                        lane_id,
-                        prepared.turn.turn,
-                        worktree.project_id,
-                        &format!("{error:#}"),
-                    )?,
+            match prepare_turn(&store, turn.clone(), boundary) {
+                Ok(prepared) => Ok(prepared),
+                Err(error) => {
+                    // The row is committed already, so a preparation that
+                    // fails must take it back: leaving it would consume a turn
+                    // number and be settled as Stopped at the next launch,
+                    // with an after snapshot taken long after the fact.
+                    let _ = discard_generated_turn(&store, &turn);
+                    Err(error)
                 }
             }
-            Ok(prepared)
         })
         .await?
     }
@@ -340,16 +434,25 @@ impl TurnCoordinator {
             let store = store.lock();
             let (lane_id, turn) = (prepared.turn.lane_id, prepared.turn.turn);
             for worktree in &prepared.worktrees {
+                // The parent and the comparison base are read again here: when
+                // this prompt was queued the turn ahead of it had no after
+                // tree, so the values from `hydrate` were the turn before's.
+                // Its agent edits would then count as the human's, and the
+                // snapshot would be parented to the wrong ref.
+                let previous = store.previous_after(lane_id, turn, worktree.project_id)?;
+                let (previous_ref, previous_tree) = match previous {
+                    Some((reference, tree)) => (Some(reference), Some(tree)),
+                    None => (None, None),
+                };
                 match write_turn_snapshot(
                     &worktree.path,
                     &worktree.repo,
                     &prepared.lane,
                     &worktree.before_ref,
-                    worktree.previous_ref.as_deref(),
+                    previous_ref.as_deref(),
                 ) {
                     Ok(tree) => {
-                        let human = worktree
-                            .previous_tree
+                        let human = previous_tree
                             .as_deref()
                             .is_some_and(|previous| previous != tree);
                         store.set_turn_before(
@@ -378,6 +481,15 @@ impl TurnCoordinator {
     }
 
     async fn run_started(&self, key: &str, generation: u64) {
+        // A run that starts now belongs either to a turn whose prompt already
+        // answered Started while an earlier turn was still active, or to a
+        // prompt the harness queued. A prompt whose answer has not arrived is
+        // not touched here: it already holds its exact pre-prompt boundary,
+        // and re-snapshotting could catch the agent mid-edit.
+        enum Next {
+            Ready(PreparedTurn),
+            Refresh(PreparedTurn),
+        }
         let pending = {
             let mut all = self.state.lock().unwrap();
             let Some(state) = all.get_mut(key).filter(|state| state.matches(generation)) else {
@@ -386,14 +498,23 @@ impl TurnCoordinator {
             if state.active.is_some() {
                 return;
             }
-            state.candidate.take().or_else(|| state.queued.pop_front())
+            match state.waiting.pop_front() {
+                Some(prepared) => Some(Next::Ready(prepared)),
+                None => state.queued.pop_front().map(Next::Refresh),
+            }
         };
         // A turn begins at Service::prompt. A harness-only RunStarted with no
         // prompt does not invent one, and never blocks event forwarding.
-        let Some(prepared) = pending else {
+        let Some(pending) = pending else {
             return;
         };
-        self.refresh_before(&prepared).await;
+        let prepared = match pending {
+            Next::Ready(prepared) => prepared,
+            Next::Refresh(prepared) => {
+                self.refresh_before(&prepared).await;
+                prepared
+            }
+        };
         let mut all = self.state.lock().unwrap();
         if let Some(state) = all.get_mut(key).filter(|state| state.matches(generation)) {
             state.active = Some(prepared);
@@ -406,11 +527,9 @@ impl TurnCoordinator {
             let Some(state) = all.get_mut(key).filter(|state| state.matches(generation)) else {
                 return;
             };
-            state
-                .active
-                .take()
-                .or_else(|| state.candidate.take())
-                .or_else(|| state.queued.pop_front())
+            // Only turns that ran: a queued follow-up that never started must
+            // not be given this run's after snapshot.
+            state.active.take().or_else(|| state.waiting.pop_front())
         };
         if let Some(prepared) = prepared {
             let _ = self.write_after(prepared, outcome, false).await;
@@ -585,10 +704,7 @@ impl TurnCoordinator {
                 return;
             };
             state
-                .active
-                .as_ref()
-                .or(state.candidate.as_ref())
-                .or_else(|| state.queued.front())
+                .current()
                 .map(|prepared| (prepared.turn.lane_id, prepared.turn.turn))
         };
         if let Some((lane_id, turn)) = update {
@@ -621,13 +737,8 @@ impl TurnCoordinator {
     async fn discard(&self, prepared: PreparedTurn) {
         let store = self.store.clone();
         let _ = spawn_blocking(move || {
-            for worktree in &prepared.worktrees {
-                let _ = remove_turn_ref(&worktree.repo, &worktree.before_ref);
-                let _ = remove_turn_ref(&worktree.repo, &worktree.after_ref);
-            }
-            store
-                .lock()
-                .discard_turn(prepared.turn.lane_id, prepared.turn.turn)
+            let store = store.lock();
+            discard_generated_turn(&store, &prepared.turn)
         })
         .await;
     }
@@ -639,6 +750,58 @@ impl Service {
     pub async fn reconcile_turns(&self) -> anyhow::Result<()> {
         self.turns.reconcile().await
     }
+}
+
+/// Takes the pre-prompt snapshot of every worktree of a turn it just created.
+fn prepare_turn(store: &Store, turn: Turn, boundary: Boundary) -> anyhow::Result<PreparedTurn> {
+    let prepared = hydrate(store, turn)?;
+    for worktree in &prepared.worktrees {
+        match write_turn_snapshot(
+            &worktree.path,
+            &worktree.repo,
+            &prepared.lane,
+            &worktree.before_ref,
+            worktree.previous_ref.as_deref(),
+        ) {
+            Ok(tree) => {
+                let human = worktree
+                    .previous_tree
+                    .as_deref()
+                    .is_some_and(|previous| previous != tree);
+                store.set_turn_before(
+                    prepared.turn.lane_id,
+                    prepared.turn.turn,
+                    &SnapshotResult {
+                        project_id: worktree.project_id,
+                        tree,
+                        human_edits_before: human,
+                    },
+                    boundary,
+                    None,
+                )?;
+            }
+            Err(error) => store.fail_turn_before(
+                prepared.turn.lane_id,
+                prepared.turn.turn,
+                worktree.project_id,
+                &format!("{error:#}"),
+            )?,
+        }
+    }
+    Ok(prepared)
+}
+
+/// Drops a turn that never became a run: its rows, and any refs already
+/// written for it. Errors are ignored; there is nothing left to fix.
+fn discard_generated_turn(store: &Store, turn: &Turn) -> anyhow::Result<()> {
+    for worktree in &turn.worktrees {
+        if let Ok(project) = store.project(worktree.project_id) {
+            let repo = PathBuf::from(&project.repo);
+            let _ = remove_turn_ref(&repo, &worktree.before_ref);
+            let _ = remove_turn_ref(&repo, &worktree.after_ref);
+        }
+    }
+    store.discard_turn(turn.lane_id, turn.turn)
 }
 
 fn hydrate(store: &Store, turn: Turn) -> anyhow::Result<PreparedTurn> {

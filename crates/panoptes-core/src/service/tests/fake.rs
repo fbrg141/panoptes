@@ -1,6 +1,6 @@
 use super::super::*;
 use async_trait::async_trait;
-use panoptes_harness::{EventSink, Role};
+use panoptes_harness::{EventSink, HarnessEvent, Role};
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
@@ -144,6 +144,13 @@ impl AgentSession for FakeSession {
             "queue" => Ok(PromptOutcome::Queued),
             "handled" => Ok(PromptOutcome::Handled),
             "fail" => anyhow::bail!("prompt failed"),
+            // Reports the run before the prompt is answered, as a harness
+            // whose forwarder runs ahead of the prompt call does.
+            "eager" => {
+                let _ = self.events.send(HarnessEvent::RunStarted);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(PromptOutcome::Started)
+            }
             _ => Ok(PromptOutcome::Started),
         }
     }

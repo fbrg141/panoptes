@@ -235,6 +235,9 @@ impl Store {
         Ok(())
     }
 
+    /// Upgrades a boundary to the one the prompt's answer allows. A worktree
+    /// whose before snapshot failed has no tree to compare against, so it
+    /// stays `unavailable`: an empty or valid-looking diff would be a lie.
     pub(crate) fn mark_turn_boundary(
         &self,
         lane_id: i64,
@@ -242,10 +245,25 @@ impl Store {
         boundary: Boundary,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "UPDATE turn_worktrees SET boundary = ?3 WHERE lane_id = ?1 AND turn = ?2",
+            "UPDATE turn_worktrees SET boundary = ?3
+             WHERE lane_id = ?1 AND turn = ?2 AND before_tree IS NOT NULL",
             rusqlite::params![lane_id, turn, boundary.sql()],
         )?;
         Ok(())
+    }
+
+    /// Gives up on a turn that cannot be restored, so the same row is not
+    /// retried at every launch. Every worktree without an after snapshot gets
+    /// the reason, which is what lets the turn settle.
+    pub(crate) fn abandon_turn(&self, lane_id: i64, turn: u32, error: &str) -> anyhow::Result<()> {
+        let tx = self.write()?;
+        tx.execute(
+            "UPDATE turn_worktrees SET after_error = COALESCE(after_error, ?3)
+             WHERE lane_id = ?1 AND turn = ?2 AND after_tree IS NULL",
+            rusqlite::params![lane_id, turn, error],
+        )?;
+        tx.commit()?;
+        self.settle_turn(lane_id, turn, TurnOutcome::Failed)
     }
 
     pub(crate) fn set_turn_queued(

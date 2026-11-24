@@ -555,13 +555,15 @@ impl Service {
         let fresh = status.is_none();
         let status = status.unwrap_or_default();
         let early_exit = EarlyExit::default();
-        self.turns.session_started(
-            key,
-            generation,
-            launch.lane,
-            panoptes_id(key),
-            !launch.read_only && !launch.preview,
-        );
+        self.turns
+            .session_started(
+                key,
+                generation,
+                launch.lane,
+                panoptes_id(key),
+                !launch.read_only && !launch.preview,
+            )
+            .await;
         if fresh {
             (self.emit)(SessionEvent {
                 key: key.to_string(),
@@ -699,6 +701,10 @@ impl Service {
             self.log.record("sessionClosed", json!({"key": key}));
             open.session.shutdown().await;
         }
+        // A turn left in memory is finished here, with the worktree as it is
+        // now, rather than at the next launch when later sessions have edited
+        // it.
+        self.turns.session_closed(key).await;
     }
 
     /// Closes lane `id`'s open sessions so the lane can be archived or
@@ -741,6 +747,7 @@ impl Service {
             if let Some(session) = session {
                 self.log.record("sessionClosed", json!({"key": key}));
                 session.session.shutdown().await;
+                self.turns.session_closed(&key).await;
                 closed.push(key);
             }
         }
@@ -754,11 +761,15 @@ impl Service {
             .open()
             .await
             .drain()
-            .map(|(_, o)| o.session)
+            .map(|(key, o)| (key, o.session))
             .collect();
         let mut shutdowns = tokio::task::JoinSet::new();
-        for session in sessions {
-            shutdowns.spawn(async move { session.shutdown().await });
+        for (key, session) in sessions {
+            let turns = self.turns.clone();
+            shutdowns.spawn(async move {
+                session.shutdown().await;
+                turns.session_closed(&key).await;
+            });
         }
         shutdowns.join_all().await;
     }
