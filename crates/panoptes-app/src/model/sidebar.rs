@@ -283,7 +283,7 @@ impl MenuEntry {
 pub fn project_menu_items(lane_count: usize) -> Vec<MenuEntry> {
     vec![
         MenuEntry::item("new-lane", "New lane", Some("git-branch")),
-        MenuEntry::item("cleanup-lanes", "Clean up lanes…", Some("folder")),
+        MenuEntry::item("cleanup-lanes", "Worktrees & cleanup…", Some("folder")),
         MenuEntry::Separator,
         MenuEntry::Item {
             id: "remove-project",

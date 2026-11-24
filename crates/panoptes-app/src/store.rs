@@ -1342,6 +1342,57 @@ impl AppStore {
         async move { work.await.map_err(|e| e.message) }
     }
 
+    /// Removes stale Git administrative records, never a live worktree. A
+    /// repository that could not be pruned is reported without hiding the
+    /// ones that were.
+    pub fn prune_worktrees(&mut self, cx: &mut Context<Self>) -> Task<Option<bool>> {
+        let work = self.backend.run(
+            "prune_worktrees",
+            |s| async move { s.prune_worktrees().await },
+        );
+        self.spawn(cx, work, |this, done, cx| match done {
+            Ok(pruned) => {
+                if !pruned.errors.is_empty() {
+                    this.show_error(pruned.errors.join(" \u{b7} "), cx);
+                }
+                true
+            }
+            Err(error) => {
+                this.fail(error, cx);
+                false
+            }
+        })
+    }
+
+    /// Shows a worktree in Finder. `open -R` selects it there, and waiting on
+    /// the child in a blocking task keeps it from being left a zombie.
+    pub fn reveal_in_finder(&mut self, path: String, cx: &mut Context<Self>) -> Task<Option<()>> {
+        let opened = self.backend.call(move |_| async move {
+            tokio::task::spawn_blocking(move || {
+                std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(&path)
+                    .status()
+            })
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|status| status.map_err(anyhow::Error::from))
+        });
+        self.spawn(
+            cx,
+            async move { opened.await.and_then(|opened| opened) },
+            |this, opened, cx| match opened {
+                Ok(status) if status.success() => {}
+                Ok(status) => {
+                    this.show_error(format!("Finder could not show the worktree ({status})"), cx)
+                }
+                Err(error) => {
+                    this.show_error(format!("Could not reveal the worktree: {error:#}"), cx)
+                }
+            },
+        )
+    }
+
     /// Archives independently, preserving any dirty lane as a checkpoint.
     pub fn archive_lanes(
         &mut self,
