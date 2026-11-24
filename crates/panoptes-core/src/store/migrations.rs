@@ -70,6 +70,10 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         apply: v12_notification_sound,
         committed: |_| {},
     },
+    Migration {
+        apply: v13_turn_checkpoints,
+        committed: |_| {},
+    },
 ];
 
 fn v1_pins(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
@@ -278,6 +282,44 @@ fn v12_notification_sound(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
     tx.execute_batch(
         "ALTER TABLE ui_preferences
             ADD COLUMN notify_sound INTEGER NOT NULL DEFAULT 1 CHECK (notify_sound IN (0, 1));",
+    )?;
+    Ok(())
+}
+
+/// Durable, lane-level turn boundaries. Worktree trees and refs are separate
+/// rows because a future multi-repo lane cannot claim one atomic snapshot.
+/// Human edits between turns are inferred from trees, not copied from events.
+fn v13_turn_checkpoints(tx: &Transaction, _: &Path) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE turns (
+            lane_id INTEGER NOT NULL REFERENCES lanes (id) ON DELETE CASCADE,
+            turn INTEGER NOT NULL,
+            session_id INTEGER NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+            message_id TEXT CHECK (message_id IS NULL OR message_id <> ''),
+            prompt TEXT NOT NULL CHECK (prompt <> ''),
+            queued INTEGER NOT NULL DEFAULT 0 CHECK (queued IN (0, 1)),
+            started_at INTEGER NOT NULL,
+            settled_at INTEGER,
+            outcome TEXT CHECK (outcome IS NULL OR outcome IN ('done', 'failed', 'stopped')),
+            PRIMARY KEY (lane_id, turn)
+        ) STRICT;
+        CREATE TABLE turn_worktrees (
+            lane_id INTEGER NOT NULL,
+            turn INTEGER NOT NULL,
+            project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
+            before_ref TEXT NOT NULL CHECK (before_ref <> ''),
+            after_ref TEXT NOT NULL CHECK (after_ref <> ''),
+            before_tree TEXT CHECK (before_tree IS NULL OR before_tree <> ''),
+            after_tree TEXT CHECK (after_tree IS NULL OR after_tree <> ''),
+            boundary TEXT NOT NULL CHECK (boundary IN ('unavailable', 'observed', 'exact')),
+            human_edits_before INTEGER NOT NULL DEFAULT 0 CHECK (human_edits_before IN (0, 1)),
+            recovered INTEGER NOT NULL DEFAULT 0 CHECK (recovered IN (0, 1)),
+            error TEXT CHECK (error IS NULL OR error <> ''),
+            after_error TEXT CHECK (after_error IS NULL OR after_error <> ''),
+            PRIMARY KEY (lane_id, turn, project_id),
+            FOREIGN KEY (lane_id, turn) REFERENCES turns (lane_id, turn) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX turns_by_lane ON turns (lane_id, turn);",
     )?;
     Ok(())
 }

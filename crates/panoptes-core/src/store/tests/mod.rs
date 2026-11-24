@@ -10,6 +10,7 @@ mod migrations;
 mod preferences;
 mod projects;
 mod sessions;
+mod turns;
 
 fn settings(name: &str, copy_files: &[&str]) -> ProjectSettings {
     ProjectSettings {
@@ -93,6 +94,9 @@ fn the_schema_refuses_rows_that_break_its_rules() {
         "INSERT INTO project_copy_files (project_id, position, path) VALUES (99, 0, '.env')",
         "INSERT INTO lanes (project_id, name, task, branch, state, created_at) VALUES (99, 'a', 'A', 'b', 'active', 0)",
         "INSERT INTO lanes (project_id, name, task, branch, state, created_at) VALUES (1, '', 'A', 'b', 'active', 0)",
+        "INSERT INTO turns (lane_id, turn, session_id, prompt, queued, started_at) VALUES (1, 1, 1, '', 0, 0)",
+        "INSERT INTO turns (lane_id, turn, session_id, prompt, queued, started_at, outcome) VALUES (1, 1, 1, 'P', 0, 0, 'maybe')",
+        "INSERT INTO turn_worktrees (lane_id, turn, project_id, before_ref, after_ref, boundary) VALUES (1, 1, 1, 'b', 'a', 'guess')",
     ];
     for sql in bad {
         assert!(store.conn.execute(sql, []).is_err(), "{sql}");

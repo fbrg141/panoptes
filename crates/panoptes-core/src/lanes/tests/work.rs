@@ -1,4 +1,5 @@
 use super::*;
+use crate::store::NewLaneWorktree;
 
 #[test]
 fn work_counts_changed_files_and_commits_ahead_of_the_base() {
@@ -96,4 +97,49 @@ fn concurrent_snapshots_use_independent_indexes() {
     for reader in readers {
         assert_eq!(reader.join().unwrap().unwrap(), expected);
     }
+}
+
+#[test]
+fn snapshots_retain_large_files() {
+    let f = fixture(None);
+    let new = create_lane(&f);
+    let lane = lane(&f, 1, &new);
+    let path = PathBuf::from(&new.worktrees[0].path);
+    std::fs::write(path.join("large.txt"), "x".repeat(1_100_000)).unwrap();
+    let tree = snapshot_tree(&path, &lane).unwrap();
+    let shown = git(&f.repo, &["show", &format!("{tree}:large.txt")]);
+    assert_eq!(shown.len(), 1_100_000);
+}
+
+#[test]
+#[ignore = "benchmark; run explicitly with --ignored --nocapture"]
+fn a_no_change_10k_file_snapshot_is_measured() {
+    let f = fixture(None);
+    let many = f.repo.join("many");
+    std::fs::create_dir_all(&many).unwrap();
+    for i in 0..10_000 {
+        std::fs::write(many.join(format!("{i:05}.txt")), "x").unwrap();
+    }
+    git(&f.repo, &["add", "-A"]);
+    git(&f.repo, &["commit", "--quiet", "-m", "many files"]);
+    let new = NewLane {
+        project_id: f.project.id,
+        name: "bench".into(),
+        task: "Benchmark".into(),
+        branch: "trunk".into(),
+        worktrees: vec![NewLaneWorktree {
+            project_id: f.project.id,
+            path: f.repo.to_string_lossy().into_owned(),
+            main_checkout: true,
+        }],
+    };
+    let lane = lane(&f, 99, &new);
+    let started = std::time::Instant::now();
+    let first = snapshot_tree(&f.repo, &lane).unwrap();
+    let before = started.elapsed();
+    let started = std::time::Instant::now();
+    let second = snapshot_tree(&f.repo, &lane).unwrap();
+    let after = started.elapsed();
+    println!("10k-file no-change snapshots: {before:?}, {after:?}");
+    assert_eq!(first, second);
 }

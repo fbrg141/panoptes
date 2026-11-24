@@ -45,6 +45,7 @@ mod registry;
 mod sessions;
 mod status;
 mod store;
+mod turns;
 mod writers;
 
 pub use error::{ErrorKind, ServiceError, ServiceResult};
@@ -73,6 +74,8 @@ pub struct Service {
     busy_lanes: Arc<std::sync::Mutex<HashSet<i64>>>,
     /// Panoptes' own record of what happened; disabled unless given one.
     log: EventLog,
+    /// Durable, lane-level before/after boundaries for writable runs.
+    turns: turns::TurnCoordinator,
     /// Where each working directory sits in git, so each is looked up once.
     locations: std::sync::Mutex<HashMap<String, Location>>,
     emit: Emit,
@@ -85,13 +88,15 @@ impl Service {
         lanes_root: PathBuf,
         emit: Emit,
     ) -> Self {
+        let shared_store = SharedStore::new(store);
         Self {
             registry: Registry::new(),
             harnesses: harnesses
                 .into_iter()
                 .map(|harness| (harness.id().to_string(), harness))
                 .collect(),
-            store: SharedStore::new(store),
+            store: shared_store.clone(),
+            turns: turns::TurnCoordinator::new(shared_store),
             lanes_root,
             lane_cancellations: Arc::default(),
             busy_lanes: Arc::default(),

@@ -395,6 +395,46 @@ fn a_populated_v3_store_keeps_its_lanes_and_takes_sessions() {
     assert!(store.add_session(archived.id, "pi").is_err());
 }
 
+/// A store from before turn boundaries keeps its existing rows and gains
+/// empty turn tables, then reopens without another migration.
+#[test]
+fn a_store_from_before_turns_keeps_its_lanes_and_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (lane, session) = {
+        let store = Store::open_with(dir.path(), &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        let project = store
+            .add_project("/code/app", &settings("App", &[".env"]))
+            .unwrap();
+        let lane = store
+            .add_lane(&NewLane {
+                project_id: project.id,
+                name: "one".into(),
+                task: "Do one".into(),
+                branch: "panoptes/one".into(),
+                worktrees: vec![NewLaneWorktree {
+                    project_id: project.id,
+                    path: "/lanes/one/app".into(),
+                    main_checkout: false,
+                }],
+            })
+            .unwrap();
+        let session = store.add_session(lane.id, "pi").unwrap();
+        (lane, session)
+    };
+
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(version(dir.path()), MIGRATIONS.len() as u32);
+    assert_eq!(store.lanes().unwrap(), [lane]);
+    assert_eq!(store.sessions().unwrap(), [session]);
+    assert!(store.unfinished_turns().unwrap().is_empty());
+    let backup = format!("panoptes.db.v{}.bak", MIGRATIONS.len() - 1);
+    assert!(dir.path().join(backup).exists());
+    drop(store);
+    assert_eq!(version(dir.path()), MIGRATIONS.len() as u32);
+    let store = Store::open(dir.path()).unwrap();
+    assert!(store.unfinished_turns().unwrap().is_empty());
+}
+
 #[test]
 fn a_v1_store_migrates_to_projects_and_lanes_and_keeps_its_pins() {
     let dir = tempfile::tempdir().unwrap();

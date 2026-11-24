@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use panoptes_harness::{HarnessEvent, Role};
+use panoptes_harness::{HarnessEvent, Role, SessionStatus};
 use serde_json::json;
 use tokio::sync::Mutex;
 
 use super::registry::{EarlyExit, OpenSession};
 use super::status::{Tracker, now_ms};
 use super::store::SharedStore;
+use super::turns::TurnCoordinator;
 use super::writers::LaneWriters;
 use super::{Emit, LaneWritesChanged, SessionEvent, SessionUpdate, StatusChanged};
 use crate::eventlog::EventLog;
@@ -27,6 +28,7 @@ pub(super) struct Forwarder {
     /// open, with what it last wrote to stderr.
     pub(super) early_exit: EarlyExit,
     pub(super) log: EventLog,
+    pub(super) turns: TurnCoordinator,
 }
 
 /// What a forwarder needs to notice its session editing other lanes.
@@ -151,6 +153,9 @@ impl Forwarder {
                     // has not listed the session yet, it reads this under
                     // the same lock and refuses to list a dead process.
                     *self.early_exit.lock().unwrap() = Some(stderr_tail.clone());
+                    self.turns
+                        .handle_event(&self.key, self.generation, &event, SessionStatus::Failed)
+                        .await;
                     continue;
                 }
                 open.remove(&self.key);
@@ -172,11 +177,15 @@ impl Forwarder {
                 ),
                 _ => {}
             }
+            let turn_event = turn_relevant(&event).then(|| event.clone());
+            let turn_status;
             {
                 // Holding the tracker while emitting keeps statuses in
-                // order with the ones `answer` sends.
+                // order with the ones `answer` sends. Turn checkpoints run
+                // after the event is forwarded but before the next event.
                 let mut tracker = self.status.lock().unwrap();
                 let changed = tracker.apply(&event, now_ms());
+                turn_status = tracker.status();
                 (self.emit)(SessionEvent {
                     key: self.key.clone(),
                     event: SessionUpdate::Harness(event),
@@ -190,8 +199,27 @@ impl Forwarder {
                     });
                 }
             }
+            if let Some(event) = &turn_event {
+                self.turns
+                    .handle_event(&self.key, self.generation, event, turn_status)
+                    .await;
+            }
         }
     }
+}
+
+/// Which neutral events the turn coordinator needs; cloning a tool update
+/// or text delta for every event would be needless work.
+fn turn_relevant(event: &HarnessEvent) -> bool {
+    matches!(
+        event,
+        HarnessEvent::RunStarted
+            | HarnessEvent::RunSettled { .. }
+            | HarnessEvent::Exited { .. }
+            | HarnessEvent::QueueChanged { .. }
+            | HarnessEvent::MessageStarted { .. }
+            | HarnessEvent::MessageCompleted { .. }
+    )
 }
 
 #[cfg(test)]

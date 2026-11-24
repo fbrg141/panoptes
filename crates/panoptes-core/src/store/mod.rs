@@ -22,6 +22,7 @@ mod migrations;
 mod preferences;
 mod projects;
 mod sessions;
+pub(crate) mod turns;
 
 pub use lanes::{Lane, LaneState, LaneWorktree, NewLane, NewLaneWorktree};
 pub use preferences::{
@@ -29,6 +30,7 @@ pub use preferences::{
     NotificationPreferences, Preferences, ProfileInput,
 };
 pub use projects::{Project, ProjectSettings};
+pub use turns::{Boundary, TurnOutcome};
 
 use migrate::{check, explain, migrate};
 use migrations::{MIGRATIONS, Migration};
