@@ -25,6 +25,10 @@ fn main() {
 
     gpui_kit::application()
         .with_assets(assets::Assets)
+        // Panoptes is a single-window app without dock-reopen support, so
+        // closing the last window quits instead of leaving a headless app
+        // that no click brings back.
+        .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_kit::init(cx);
             cx.set_app_identity("dev.panoptes.app", "Panoptes");
@@ -43,6 +47,9 @@ fn main() {
             views::composer::init(cx);
             views::shortcuts::init(cx);
             views::review::init(cx);
+            // The menu's key equivalents are looked up from the bindings that
+            // the inits above registered, so it is set after them.
+            cx.set_menus(views::shortcuts::menus());
             let backend = started.backend.clone();
             cx.on_app_quit(move |_| {
                 let backend = backend.clone();

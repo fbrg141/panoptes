@@ -29,9 +29,9 @@ use crate::views::resume::ResumeSession;
 use crate::views::review::ReviewPane;
 use crate::views::settings::Settings;
 use crate::views::shortcuts::{
-    self as keys, AddProject, JumpToLatest, NewLane as NewLaneAction, NewLaneSession, Search,
-    Shortcuts, ShowShortcuts, SplitHorizontal, SplitVertical, ToggleReview, ZoomIn, ZoomOut,
-    ZoomReset,
+    self as keys, AddProject, CloseWindow, HideApp, HideOthers, JumpToLatest,
+    NewLane as NewLaneAction, NewLaneSession, Quit, Search, Shortcuts, ShowAll, ShowShortcuts,
+    SplitHorizontal, SplitVertical, ToggleReview, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 use crate::views::startup;
@@ -721,6 +721,13 @@ impl Render for Workspace {
                 ui,
                 SplitDirection::Horizontal,
             ))
+            // The app-menu keys. Quit runs the on_app_quit cleanup in main;
+            // closing the last window quits through the app's quit mode.
+            .on_action(|_: &Quit, _, cx| cx.quit())
+            .on_action(|_: &CloseWindow, window, _| window.remove_window())
+            .on_action(|_: &HideApp, _, cx| cx.hide())
+            .on_action(|_: &HideOthers, _, cx| cx.hide_other_apps())
+            .on_action(|_: &ShowAll, _, cx| cx.unhide_other_apps())
             .relative()
             .flex()
             .flex_col()
