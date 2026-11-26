@@ -4718,7 +4718,7 @@ dependencies = [
 
 [[package]]
 name = "panoptes-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4735,7 +4735,7 @@ dependencies = [
 
 [[package]]
 name = "panoptes-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4752,7 +4752,7 @@ dependencies = [
 
 [[package]]
 name = "panoptes-harness"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4763,7 +4763,7 @@ dependencies = [
 
 [[package]]
 name = "panoptes-pi"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
