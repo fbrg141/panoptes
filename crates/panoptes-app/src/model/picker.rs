@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use panoptes_core::store::{AgentProfile, Preferences};
-use panoptes_harness::ModelInfo;
+use panoptes_harness::{ModelInfo, SessionSettings};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PickerItem {
@@ -152,6 +152,45 @@ pub fn model_groups(
     groups
 }
 
+/// The composer chip's model list: every model but the harness default row.
+/// Clicking the chip and its shortcut both open on these groups, so the
+/// highlight lands on the same row either way.
+pub fn chip_model_groups(
+    models: &[ModelInfo],
+    model_id: &str,
+    preferences: &Preferences,
+) -> Vec<PickerGroup> {
+    model_groups(models, model_id, Some(preferences))
+        .into_iter()
+        .skip(1)
+        .collect()
+}
+
+/// The chip's groups for the ⌘M shortcut, or `None` when the session has no
+/// settings yet: the chip is not drawn then, so the shortcut does nothing
+/// rather than open a list with nowhere to show.
+pub fn shortcut_model_groups(
+    settings: Option<&SessionSettings>,
+    models: &[ModelInfo],
+    preferences: &Preferences,
+) -> Option<Vec<PickerGroup>> {
+    let settings = settings?;
+    let current = settings.model.as_ref().map_or("", |m| m.id.as_str());
+    Some(chip_model_groups(models, current, preferences))
+}
+
+/// The highlight after a list's rows arrive or change while it is open:
+/// until the user moves it (`moved`, by arrow, pointer or typing), it follows
+/// the current item, so a reload that adds or reorders rows never leaves it
+/// on another one. A closed list, an empty one or a moved highlight is kept.
+pub fn settle_pick(open: bool, picked: usize, moved: bool, groups: &[PickerGroup]) -> usize {
+    if !open || moved || pickable(groups).is_empty() {
+        picked
+    } else {
+        initial_pick(groups)
+    }
+}
+
 /// The model's default before its thinking levels.
 pub fn thinking_groups(levels: &[String], level: &str) -> Vec<PickerGroup> {
     let mut items = vec![PickerItem {
@@ -294,6 +333,53 @@ mod tests {
             items: vec![item("a", "A"), b],
         }];
         assert_eq!(initial_pick(&two), 1);
+    }
+
+    /// The chip leaves out the harness default row, and the highlight must
+    /// count rows the same way, or ⌘M would open one row past the model.
+    #[test]
+    fn the_chip_opens_on_the_current_model() {
+        let models = [model("a/1", "One", "a"), model("a/2", "Two", "a")];
+        let groups = chip_model_groups(&models, "a/2", &preferences(&[], &[]));
+        assert!(!ids(&groups).contains(&DEFAULT_CHOICE.to_string()));
+        assert_eq!(pickable(&groups)[initial_pick(&groups)].id, "a/2");
+    }
+
+    /// Without session settings there is no chip, so ⌘M opens nothing.
+    #[test]
+    fn the_shortcut_needs_session_settings() {
+        let models = [model("a/1", "One", "a"), model("a/2", "Two", "a")];
+        let prefs = preferences(&[], &[]);
+        assert!(shortcut_model_groups(None, &models, &prefs).is_none());
+        let settings = SessionSettings {
+            model: Some(models[1].clone()),
+            ..Default::default()
+        };
+        let groups = shortcut_model_groups(Some(&settings), &models, &prefs).unwrap();
+        assert_eq!(groups, chip_model_groups(&models, "a/2", &prefs));
+    }
+
+    /// A list opened while its models load lands on the current model when
+    /// they arrive, and a reload that adds a row above it keeps it there.
+    #[test]
+    fn the_highlight_follows_the_current_model_until_moved() {
+        let prefs = preferences(&[], &[]);
+        let empty = chip_model_groups(&[], "a/2", &prefs);
+        assert_eq!(settle_pick(true, 0, false, &empty), 0);
+        let models = [model("a/1", "One", "a"), model("a/2", "Two", "a")];
+        let groups = chip_model_groups(&models, "a/2", &prefs);
+        let picked = settle_pick(true, 0, false, &groups);
+        assert_eq!(pickable(&groups)[picked].id, "a/2");
+        let reloaded = [
+            model("a/0", "Zero", "a"),
+            models[0].clone(),
+            models[1].clone(),
+        ];
+        let groups = chip_model_groups(&reloaded, "a/2", &prefs);
+        let picked = settle_pick(true, picked, false, &groups);
+        assert_eq!(pickable(&groups)[picked].id, "a/2");
+        assert_eq!(settle_pick(true, 0, true, &groups), 0);
+        assert_eq!(settle_pick(false, 0, false, &groups), 0);
     }
 
     fn model(id: &str, name: &str, provider: &str) -> ModelInfo {

@@ -128,7 +128,7 @@ setup runs.
 
 Panoptes is early and used daily by its author. What's planned next:
 
-- Per-turn checkpoints (#204)
+- The remaining lane-review scopes: attribution, marks, comments, reverts (#201)
 - Nested Pi subagents (#227)
 
 Only Pi is supported today. The UI only ever sees harness-neutral types, so

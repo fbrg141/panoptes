@@ -19,11 +19,14 @@ use crate::ds::{
     option_toggle, panel,
 };
 use crate::model::composer::{
-    LaneRequest, Query, available_commands, command_at, compose_prompt, context_label,
-    continue_list, insert_command, insert_mention, lane_request, match_commands, match_files,
-    mention_at, mention_label, next_level, restore_unsent, segments,
+    EnterKey, EscapeKey, LaneRequest, Query, available_commands, command_at, compose_prompt,
+    context_label, continue_list, enter_key, escape_key, insert_command, insert_mention,
+    lane_request, match_commands, match_files, mention_at, mention_label, next_level,
+    restore_unsent, segments,
 };
-use crate::model::picker::{model_groups, session_thinking_groups, short_model_id};
+use crate::model::picker::{
+    chip_model_groups, session_thinking_groups, short_model_id, shortcut_model_groups,
+};
 use crate::model::usage::{session_usage_detail, session_usage_label, sum_usage};
 use crate::store::{AppStore, Draft};
 use crate::theme::{Palette, PaletteExt as _};
@@ -34,12 +37,19 @@ use crate::zoom::px;
 /// Mentions offered at once; typing narrows them.
 const MENTION_ROWS: usize = 8;
 
-actions!(composer, [Queue]);
+actions!(composer, [Queue, PickModel]);
 
 const CONTEXT: &str = "Composer";
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("alt-enter", Queue, Some(CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("alt-enter", Queue, Some(CONTEXT)),
+        // The model menu without leaving the keyboard; the picker's own
+        // return focus puts the caret back in the field. ⌘M is also macOS's
+        // usual Minimize, so the app menu must not give Minimize that key, or
+        // the menu would take it before the composer sees it.
+        KeyBinding::new("cmd-m", PickModel, Some(CONTEXT)),
+    ]);
 }
 
 pub enum ComposerEvent {
@@ -90,6 +100,9 @@ pub struct Composer {
     commands: Option<Vec<CommandInfo>>,
     dragging: bool,
     model_picker: Entity<PickerState>,
+    /// Counts the model list's openings, so a load answers only the
+    /// opening that started it.
+    model_opening: u64,
     thinking_picker: Entity<PickerState>,
     placeholder_busy: bool,
     /// A New lane composer lists files from the project's checkout.
@@ -120,32 +133,67 @@ impl Composer {
         let focus = input.read(cx).focus_handle(cx);
         let model_picker =
             cx.new(|cx| PickerState::new("Model", window, cx).return_focus(focus.clone()));
-        cx.subscribe(&model_picker, |this, _, event, cx| match event {
-            PickerEvent::Opened => {
-                let key = this.key.clone();
-                this.store
-                    .update(cx, |store, cx| store.load_models(key, cx).detach());
-            }
-            PickerEvent::Selected(id) => {
-                let key = this.key.clone();
-                let current = this
-                    .store
-                    .read(cx)
-                    .state
-                    .settings
-                    .get(&key)
-                    .and_then(|s| s.model.as_ref().map(|m| m.id.clone()));
-                if current.as_deref() != Some(id.as_str()) {
-                    let id = id.clone();
-                    this.store
-                        .update(cx, |store, cx| store.set_model(key, id, cx));
+        cx.subscribe_in(
+            &model_picker,
+            window,
+            |this, _, event, window, cx| match event {
+                PickerEvent::Opened => {
+                    // One menu at a time.
+                    this.thinking_picker
+                        .update(cx, |picker, cx| picker.close(window, cx));
+                    this.model_opening += 1;
+                    let opening = this.model_opening;
+                    let key = this.key.clone();
+                    let load = this
+                        .store
+                        .update(cx, |store, cx| store.load_models(key, cx));
+                    cx.spawn_in(window, async move |this, cx| {
+                        let result = load.await;
+                        this.update_in(cx, |this, window, cx| {
+                            // A later opening has its own load.
+                            if this.model_opening != opening {
+                                return;
+                            }
+                            // A failed load is in the error banner, so the
+                            // list must not keep saying it loads.
+                            if result == Some(false) {
+                                // The caret goes back to the field, not to
+                                // the list's search, which closing hides.
+                                this.model_picker
+                                    .update(cx, |picker, cx| picker.back_out(window, cx));
+                            } else {
+                                this.settle_model_pick(cx);
+                            }
+                        })
+                        .ok();
+                    })
+                    .detach();
                 }
-            }
-        })
+                PickerEvent::Selected(id) => {
+                    let key = this.key.clone();
+                    let current = this
+                        .store
+                        .read(cx)
+                        .state
+                        .settings
+                        .get(&key)
+                        .and_then(|s| s.model.as_ref().map(|m| m.id.clone()));
+                    if current.as_deref() != Some(id.as_str()) {
+                        let id = id.clone();
+                        this.store
+                            .update(cx, |store, cx| store.set_model(key, id, cx));
+                    }
+                }
+            },
+        )
         .detach();
         let thinking_picker =
             cx.new(|cx| PickerState::new("Thinking", window, cx).return_focus(focus));
-        cx.subscribe(&thinking_picker, |this, _, event, cx| {
+        cx.subscribe_in(&thinking_picker, window, |this, _, event, window, cx| {
+            if matches!(event, PickerEvent::Opened) {
+                this.model_picker
+                    .update(cx, |picker, cx| picker.close(window, cx));
+            }
             if let PickerEvent::Selected(level) = event {
                 let key = this.key.clone();
                 let current = this
@@ -178,6 +226,7 @@ impl Composer {
             commands: None,
             dragging: false,
             model_picker,
+            model_opening: 0,
             thinking_picker,
             placeholder_busy: false,
             file_root: None,
@@ -442,6 +491,43 @@ impl Composer {
         .detach();
     }
 
+    /// Opens the model picker from the keyboard, so choosing a model never
+    /// leaves the text field: the picker's own `Opened` event loads the
+    /// models and its return focus puts the caret back afterwards.
+    /// Without the session's settings the chip is not drawn, so neither is
+    /// the list: the shortcut does nothing rather than hide focus in it.
+    fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = &self.store.read(cx).state;
+        let models = state.models.get(&self.key).cloned().unwrap_or_default();
+        let Some(groups) =
+            shortcut_model_groups(state.settings.get(&self.key), &models, &state.preferences)
+        else {
+            return;
+        };
+        self.model_picker
+            .update(cx, |picker, cx| picker.open(&groups, window, cx));
+    }
+
+    /// Once the models arrive, the open list's highlight moves to the
+    /// current model, unless the user has already moved it.
+    fn settle_model_pick(&mut self, cx: &mut Context<Self>) {
+        let state = &self.store.read(cx).state;
+        let models = state.models.get(&self.key).cloned().unwrap_or_default();
+        let Some(groups) =
+            shortcut_model_groups(state.settings.get(&self.key), &models, &state.preferences)
+        else {
+            return;
+        };
+        self.model_picker
+            .update(cx, |picker, cx| picker.settle(&groups, cx));
+    }
+
+    /// Whether the text field has the focus, rather than a menu opened from
+    /// the composer.
+    fn field_focused(&self, window: &Window, cx: &App) -> bool {
+        self.input.read(cx).focus_handle(cx).is_focused(window)
+    }
+
     fn cycle_thinking(&mut self, cx: &mut Context<Self>) {
         let Some(settings) = self.store.read(cx).state.settings.get(&self.key) else {
             return;
@@ -575,6 +661,7 @@ impl Render for Composer {
         let on_up = this.clone();
         let on_down = this.clone();
         let on_queue = this.clone();
+        let on_model = this.clone();
         let on_paste = this.clone();
         let on_drop = this.clone();
         let store = self.store.clone();
@@ -601,24 +688,33 @@ impl Render for Composer {
             .bg(p.surface)
             .capture_action(move |action: &Enter, window, cx| {
                 let _ = on_enter.update(cx, |this, cx| {
-                    if action.shift {
-                        let text = this.text(cx);
-                        let range = this.input.read(cx).selected_range();
-                        if let Some(next) = continue_list(&text, range.start, range.end) {
-                            cx.stop_propagation();
-                            this.set_text(&next.text, next.caret, window, cx);
+                    let focused = this.field_focused(window, cx);
+                    match enter_key(focused, action.shift, action.secondary, rows) {
+                        EnterKey::PassOn => {}
+                        EnterKey::ContinueList => {
+                            let text = this.text(cx);
+                            let range = this.input.read(cx).selected_range();
+                            if let Some(next) = continue_list(&text, range.start, range.end) {
+                                cx.stop_propagation();
+                                this.set_text(&next.text, next.caret, window, cx);
+                            }
                         }
-                        return;
+                        EnterKey::Pick => {
+                            cx.stop_propagation();
+                            this.pick(picked, window, cx);
+                        }
+                        EnterKey::Submit => {
+                            cx.stop_propagation();
+                            this.submit(busy && action.secondary, window, cx);
+                        }
                     }
-                    cx.stop_propagation();
-                    if rows > 0 && !action.secondary {
-                        return this.pick(picked, window, cx);
-                    }
-                    this.submit(busy && action.secondary, window, cx);
                 });
             })
             .on_action(move |_: &Queue, window, cx| {
                 let _ = on_queue.update(cx, |this, cx| this.submit(busy, window, cx));
+            })
+            .on_action(move |_: &PickModel, window, cx| {
+                let _ = on_model.update(cx, |this, cx| this.open_model_picker(window, cx));
             })
             .capture_action(move |_: &IndentInline, window, cx| {
                 if rows > 0 {
@@ -626,9 +722,14 @@ impl Render for Composer {
                     let _ = on_tab.update(cx, |this, cx| this.pick(picked, window, cx));
                 }
             })
-            .capture_action(move |_: &OutdentInline, _, cx| {
-                cx.stop_propagation();
-                let _ = on_shift_tab.update(cx, |this, cx| this.cycle_thinking(cx));
+            .capture_action(move |_: &OutdentInline, window, cx| {
+                let _ = on_shift_tab.update(cx, |this, cx| {
+                    // Inside an open menu, Shift+Tab is the menu's.
+                    if this.field_focused(window, cx) {
+                        cx.stop_propagation();
+                        this.cycle_thinking(cx);
+                    }
+                });
             })
             .capture_action(move |_: &MoveUp, _, cx| {
                 if rows > 0 {
@@ -648,16 +749,20 @@ impl Render for Composer {
                     });
                 }
             })
-            .capture_action(move |_: &Escape, _, cx| {
+            .capture_action(move |_: &Escape, window, cx| {
                 let _ = on_escape.update(cx, |this, cx| {
-                    if rows > 0 {
-                        cx.stop_propagation();
-                        this.dismissed = true;
-                        cx.notify();
-                    } else if busy {
-                        cx.stop_propagation();
-                        let key = this.key.clone();
-                        this.store.update(cx, |store, cx| store.abort(key, cx));
+                    match escape_key(this.field_focused(window, cx), rows, busy) {
+                        EscapeKey::PassOn => {}
+                        EscapeKey::CloseList => {
+                            cx.stop_propagation();
+                            this.dismissed = true;
+                            cx.notify();
+                        }
+                        EscapeKey::StopRun => {
+                            cx.stop_propagation();
+                            let key = this.key.clone();
+                            this.store.update(cx, |store, cx| store.abort(key, cx));
+                        }
                     }
                 });
             })
@@ -783,14 +888,8 @@ impl Render for Composer {
             ))
             .children(settings.as_ref().map(|settings| {
                 let current = settings.model.as_ref();
-                let groups = model_groups(
-                    &models,
-                    current.map_or("", |m| m.id.as_str()),
-                    Some(&preferences),
-                )
-                .into_iter()
-                .skip(1)
-                .collect();
+                let groups =
+                    chip_model_groups(&models, current.map_or("", |m| m.id.as_str()), &preferences);
                 let value = current.map_or("No model".to_string(), |m| {
                     short_model_id(&m.id, &m.provider)
                 });
@@ -1145,3 +1244,7 @@ fn toolbar_button(
         .tooltip(move |window, cx| Tooltip::new(title).build(window, cx))
         .child(content)
 }
+
+#[cfg(test)]
+#[path = "composer_tests.rs"]
+mod window_tests;

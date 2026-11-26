@@ -22,3 +22,10 @@ panoptes-harness.workspace = true
 panoptes-pi.workspace = true
 # GPUI is pre-1.0 and breaks often: pin exactly and upgrade on purpose.
 gpui-kit = "=0.10.0"
+
+[dev-dependencies]
+# Headless windows, so tests can drive real views with keystrokes. This is
+# the GPUI engine gpui-kit itself uses, pinned with it; only its test
+# platform is added.
+gpui-pre = { version = "=0.3.12", features = ["test-support"] }
+tempfile = "3"
