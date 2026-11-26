@@ -408,10 +408,84 @@ pub fn restore_unsent(unsent: Draft, current: Option<&Draft>) -> Draft {
     }
 }
 
+/// What Enter does in the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnterKey {
+    /// Not the composer's: a menu opened from it has the focus.
+    PassOn,
+    /// Shift+Enter: continue a list item if there is one, else a new line.
+    ContinueList,
+    /// Take the highlighted mention or command.
+    Pick,
+    /// Send the message.
+    Submit,
+}
+
+/// What Escape does in the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscapeKey {
+    /// Not the composer's, or nothing to do.
+    PassOn,
+    /// Close the mention or command list.
+    CloseList,
+    /// Stop the running agent.
+    StopRun,
+}
+
+/// The composer's keys act only while its text field has the focus. Its
+/// model and thinking menus are drawn inside it, and their Enter and Escape
+/// must reach them rather than send the draft or stop the run.
+pub fn enter_key(field_focused: bool, shift: bool, secondary: bool, rows: usize) -> EnterKey {
+    if !field_focused {
+        EnterKey::PassOn
+    } else if shift {
+        EnterKey::ContinueList
+    } else if rows > 0 && !secondary {
+        EnterKey::Pick
+    } else {
+        EnterKey::Submit
+    }
+}
+
+/// See [`enter_key`] for why the field must have the focus.
+pub fn escape_key(field_focused: bool, rows: usize, busy: bool) -> EscapeKey {
+    if !field_focused {
+        EscapeKey::PassOn
+    } else if rows > 0 {
+        EscapeKey::CloseList
+    } else if busy {
+        EscapeKey::StopRun
+    } else {
+        EscapeKey::PassOn
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use panoptes_harness::CommandKind;
+
+    /// A menu opened from the composer (⌘M's model list) keeps Enter and
+    /// Escape: they neither send the draft nor stop a run.
+    #[test]
+    fn keys_reach_a_menu_that_has_the_focus() {
+        for (shift, secondary, rows) in [(false, false, 0), (false, true, 0), (true, false, 3)] {
+            assert_eq!(enter_key(false, shift, secondary, rows), EnterKey::PassOn);
+        }
+        assert_eq!(escape_key(false, 0, true), EscapeKey::PassOn);
+        assert_eq!(escape_key(false, 3, false), EscapeKey::PassOn);
+    }
+
+    #[test]
+    fn keys_in_the_field_pick_submit_close_or_stop() {
+        assert_eq!(enter_key(true, true, false, 3), EnterKey::ContinueList);
+        assert_eq!(enter_key(true, false, false, 3), EnterKey::Pick);
+        assert_eq!(enter_key(true, false, true, 3), EnterKey::Submit);
+        assert_eq!(enter_key(true, false, false, 0), EnterKey::Submit);
+        assert_eq!(escape_key(true, 3, true), EscapeKey::CloseList);
+        assert_eq!(escape_key(true, 0, true), EscapeKey::StopRun);
+        assert_eq!(escape_key(true, 0, false), EscapeKey::PassOn);
+    }
 
     fn q(start: usize, query: &str) -> Option<Query> {
         Some(Query {

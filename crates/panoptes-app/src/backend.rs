@@ -230,6 +230,36 @@ fn bundled_pi() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+impl Backend {
+    /// A backend with no harness and its own store in `dir`. With `stalled`
+    /// no call ever answers, so a test sees the app while work is in flight;
+    /// otherwise calls answer, and any that need a session fail.
+    pub fn for_tests(dir: &Path, stalled: bool) -> Arc<Self> {
+        let runtime = if stalled {
+            // Nothing drives a current-thread runtime, so its tasks wait.
+            tokio::runtime::Builder::new_current_thread()
+        } else {
+            tokio::runtime::Builder::new_multi_thread()
+        }
+        .enable_all()
+        .build()
+        .expect("a test runtime");
+        let store = Store::open(dir).expect("a test store");
+        let service = {
+            let _runtime = runtime.enter();
+            Service::new(Vec::new(), store, dir.join("lanes"), Arc::new(|_| {}))
+        };
+        Arc::new(Self {
+            runtime,
+            service: Arc::new(service),
+            harness_errors: Vec::new(),
+            unsupported: None,
+            logs_dir: dir.join("logs"),
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
