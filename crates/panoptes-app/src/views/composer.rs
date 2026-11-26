@@ -23,7 +23,7 @@ use crate::model::composer::{
     continue_list, insert_command, insert_mention, lane_request, match_commands, match_files,
     mention_at, mention_label, next_level, restore_unsent, segments,
 };
-use crate::model::picker::{model_groups, session_thinking_groups, short_model_id};
+use crate::model::picker::{chip_model_groups, session_thinking_groups, short_model_id};
 use crate::model::usage::{session_usage_detail, session_usage_label, sum_usage};
 use crate::store::{AppStore, Draft};
 use crate::theme::{Palette, PaletteExt as _};
@@ -450,23 +450,16 @@ impl Composer {
     /// Opens the model picker from the keyboard, so choosing a model never
     /// leaves the text field: the picker's own `Opened` event loads the
     /// models and its return focus puts the caret back afterwards.
+    /// Without the session's settings the chip is not drawn, so neither is
+    /// the list: the shortcut does nothing rather than hide focus in it.
     fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.store.read(cx);
-        let models = state
-            .state
-            .models
-            .get(&self.key)
-            .cloned()
-            .unwrap_or_default();
-        let current = state
-            .state
-            .settings
-            .get(&self.key)
-            .and_then(|s| s.model.as_ref())
-            .map(|m| m.id.clone())
-            .unwrap_or_default();
-        let preferences = state.state.preferences.clone();
-        let groups = model_groups(&models, &current, Some(&preferences));
+        let state = &self.store.read(cx).state;
+        let Some(settings) = state.settings.get(&self.key) else {
+            return;
+        };
+        let models = state.models.get(&self.key).cloned().unwrap_or_default();
+        let current = settings.model.as_ref().map_or("", |m| m.id.as_str());
+        let groups = chip_model_groups(&models, current, &state.preferences);
         self.model_picker
             .update(cx, |picker, cx| picker.open(&groups, window, cx));
     }
@@ -816,14 +809,8 @@ impl Render for Composer {
             ))
             .children(settings.as_ref().map(|settings| {
                 let current = settings.model.as_ref();
-                let groups = model_groups(
-                    &models,
-                    current.map_or("", |m| m.id.as_str()),
-                    Some(&preferences),
-                )
-                .into_iter()
-                .skip(1)
-                .collect();
+                let groups =
+                    chip_model_groups(&models, current.map_or("", |m| m.id.as_str()), &preferences);
                 let value = current.map_or("No model".to_string(), |m| {
                     short_model_id(&m.id, &m.provider)
                 });

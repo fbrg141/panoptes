@@ -108,8 +108,9 @@ mod tests {
         assert!(filter_shortcuts(shortcut_groups(), "nothing like this").is_empty());
     }
 
-    /// The composer offers the model menu on ⌘M, and the cheatsheet is where
-    /// a user would learn that. The entry and the binding must not drift.
+    /// The composer offers the model menu on ⌘M (`cmd-m` in
+    /// `views/composer.rs`), and the cheatsheet is where a user would learn
+    /// that. This pins the entry; change both together.
     #[test]
     fn the_composer_offers_its_model_menu() {
         let found = filter_shortcuts(shortcut_groups(), "composer model");

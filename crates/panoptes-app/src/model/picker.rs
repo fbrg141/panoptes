@@ -152,6 +152,20 @@ pub fn model_groups(
     groups
 }
 
+/// The composer chip's model list: every model but the harness default row.
+/// Clicking the chip and its shortcut both open on these groups, so the
+/// highlight lands on the same row either way.
+pub fn chip_model_groups(
+    models: &[ModelInfo],
+    model_id: &str,
+    preferences: &Preferences,
+) -> Vec<PickerGroup> {
+    model_groups(models, model_id, Some(preferences))
+        .into_iter()
+        .skip(1)
+        .collect()
+}
+
 /// The model's default before its thinking levels.
 pub fn thinking_groups(levels: &[String], level: &str) -> Vec<PickerGroup> {
     let mut items = vec![PickerItem {
@@ -294,6 +308,16 @@ mod tests {
             items: vec![item("a", "A"), b],
         }];
         assert_eq!(initial_pick(&two), 1);
+    }
+
+    /// The chip leaves out the harness default row, and the highlight must
+    /// count rows the same way, or ⌘M would open one row past the model.
+    #[test]
+    fn the_chip_opens_on_the_current_model() {
+        let models = [model("a/1", "One", "a"), model("a/2", "Two", "a")];
+        let groups = chip_model_groups(&models, "a/2", &preferences(&[], &[]));
+        assert!(!ids(&groups).contains(&DEFAULT_CHOICE.to_string()));
+        assert_eq!(pickable(&groups)[initial_pick(&groups)].id, "a/2");
     }
 
     fn model(id: &str, name: &str, provider: &str) -> ModelInfo {
