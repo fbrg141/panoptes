@@ -1244,3 +1244,7 @@ fn toolbar_button(
         .tooltip(move |window, cx| Tooltip::new(title).build(window, cx))
         .child(content)
 }
+
+#[cfg(test)]
+#[path = "composer_tests.rs"]
+mod window_tests;
