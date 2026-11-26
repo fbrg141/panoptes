@@ -556,12 +556,50 @@ impl Workspace {
     }
 }
 
+/// Closes the window, which quits through the app's quit mode and stops
+/// every session, so a session that is Running or Waiting asks first.
+fn close_window(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) {
+    if !store.read(cx).state.has_active_run() {
+        window.remove_window();
+        return;
+    }
+    let answer = window.prompt(
+        PromptLevel::Warning,
+        "Close Panoptes?",
+        Some(
+            "Closing the window quits Panoptes and stops the sessions that are Running or Waiting.",
+        ),
+        &["Close", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if answer.await == Ok(0) {
+                cx.update(|window, _| window.remove_window()).ok();
+            }
+        })
+        .detach();
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *cx.palette();
         let state = &self.store.read(cx).state;
         if state.startup != Startup::Ready {
-            return startup::startup_gate(&state.startup, self.show_loader, &self.store, &p)
+            // ⌘W closes the window on the startup screen too.
+            let close_store = self.store.clone();
+            return div()
+                .size_full()
+                .track_focus(&self.focus)
+                .on_action(move |_: &CloseWindow, window, cx| {
+                    close_window(&close_store, window, cx)
+                })
+                .child(startup::startup_gate(
+                    &state.startup,
+                    self.show_loader,
+                    &self.store,
+                    &p,
+                ))
                 .into_any_element();
         }
         let error = state.error.clone();
@@ -722,29 +760,9 @@ impl Render for Workspace {
                 ui,
                 SplitDirection::Horizontal,
             ))
-            // Closing the last window quits through the app's quit mode and
-            // stops every session, so a run in progress asks first. The other
-            // app-menu keys are handled globally in `shortcuts::init`.
-            .on_action(move |_: &CloseWindow, window, cx| {
-                if !close_store.read(cx).state.has_active_run() {
-                    window.remove_window();
-                    return;
-                }
-                let answer = window.prompt(
-                    PromptLevel::Warning,
-                    "Close Panoptes?",
-                    Some("Closing the window quits Panoptes and stops the sessions that are Running or Waiting."),
-                    &["Close", "Cancel"],
-                    cx,
-                );
-                window
-                    .spawn(cx, async move |cx| {
-                        if answer.await == Ok(0) {
-                            cx.update(|window, _| window.remove_window()).ok();
-                        }
-                    })
-                    .detach();
-            })
+            // The other app-menu keys are handled globally in
+            // `shortcuts::init`.
+            .on_action(move |_: &CloseWindow, window, cx| close_window(&close_store, window, cx))
             .relative()
             .flex()
             .flex_col()
@@ -857,3 +875,7 @@ fn zoom_by(store: &Entity<AppStore>, command: ZoomCommand, window: &mut Window, 
         store.update(cx, |store, cx| store.set_font_size(percent, cx));
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_tests.rs"]
+mod window_tests;
