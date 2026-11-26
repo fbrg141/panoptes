@@ -29,9 +29,9 @@ use crate::views::resume::ResumeSession;
 use crate::views::review::ReviewPane;
 use crate::views::settings::Settings;
 use crate::views::shortcuts::{
-    self as keys, AddProject, JumpToLatest, NewLane as NewLaneAction, NewLaneSession, Search,
-    Shortcuts, ShowShortcuts, SplitHorizontal, SplitVertical, ToggleReview, ZoomIn, ZoomOut,
-    ZoomReset,
+    self as keys, AddProject, CloseWindow, JumpToLatest, NewLane as NewLaneAction, NewLaneSession,
+    Search, Shortcuts, ShowShortcuts, SplitHorizontal, SplitVertical, ToggleReview, ZoomIn,
+    ZoomOut, ZoomReset,
 };
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 use crate::views::startup;
@@ -556,12 +556,50 @@ impl Workspace {
     }
 }
 
+/// Closes the window, which quits through the app's quit mode and stops
+/// every session, so a session that is Running or Waiting asks first.
+fn close_window(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) {
+    if !store.read(cx).state.has_active_run() {
+        window.remove_window();
+        return;
+    }
+    let answer = window.prompt(
+        PromptLevel::Warning,
+        "Close Panoptes?",
+        Some(
+            "Closing the window quits Panoptes and stops the sessions that are Running or Waiting.",
+        ),
+        &["Close", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if answer.await == Ok(0) {
+                cx.update(|window, _| window.remove_window()).ok();
+            }
+        })
+        .detach();
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *cx.palette();
         let state = &self.store.read(cx).state;
         if state.startup != Startup::Ready {
-            return startup::startup_gate(&state.startup, self.show_loader, &self.store, &p)
+            // ⌘W closes the window on the startup screen too.
+            let close_store = self.store.clone();
+            return div()
+                .size_full()
+                .track_focus(&self.focus)
+                .on_action(move |_: &CloseWindow, window, cx| {
+                    close_window(&close_store, window, cx)
+                })
+                .child(startup::startup_gate(
+                    &state.startup,
+                    self.show_loader,
+                    &self.store,
+                    &p,
+                ))
                 .into_any_element();
         }
         let error = state.error.clone();
@@ -663,6 +701,7 @@ impl Render for Workspace {
         let (zoom_in_store, zoom_out_store, zoom_reset_store) =
             (self.store.clone(), self.store.clone(), self.store.clone());
         let (review_store, review_ui) = (self.store.clone(), self.ui.clone());
+        let close_store = self.store.clone();
         div()
             .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
@@ -721,6 +760,9 @@ impl Render for Workspace {
                 ui,
                 SplitDirection::Horizontal,
             ))
+            // The other app-menu keys are handled globally in
+            // `shortcuts::init`.
+            .on_action(move |_: &CloseWindow, window, cx| close_window(&close_store, window, cx))
             .relative()
             .flex()
             .flex_col()
@@ -833,3 +875,7 @@ fn zoom_by(store: &Entity<AppStore>, command: ZoomCommand, window: &mut Window, 
         store.update(cx, |store, cx| store.set_font_size(percent, cx));
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_tests.rs"]
+mod window_tests;

@@ -150,6 +150,14 @@ impl Default for State {
 }
 
 impl State {
+    /// Whether any session is Running or Waiting, which closing the window
+    /// would stop.
+    pub fn has_active_run(&self) -> bool {
+        self.statuses
+            .values()
+            .any(|status| matches!(status, SessionStatus::Running | SessionStatus::Waiting))
+    }
+
     pub fn status(&self, key: &str) -> SessionStatus {
         self.statuses
             .get(key)
@@ -1760,6 +1768,25 @@ mod tests {
         SessionEvent {
             key: key.into(),
             event: SessionUpdate::Harness(event),
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn only_running_or_waiting_sessions_count_as_an_active_run() {
+        let mut state = State::default();
+        assert!(!state.has_active_run());
+        for (status, active) in [
+            (SessionStatus::Idle, false),
+            (SessionStatus::Done, false),
+            (SessionStatus::Failed, false),
+            (SessionStatus::Waiting, true),
+            (SessionStatus::Running, true),
+        ] {
+            state.on_event(SessionEvent {
+                key: "k".into(),
+                event: SessionUpdate::Status(StatusChanged { status }),
+            });
+            assert_eq!(state.has_active_run(), active, "{status:?}");
         }
     }
 

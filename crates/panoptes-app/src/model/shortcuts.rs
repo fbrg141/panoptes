@@ -61,6 +61,15 @@ pub fn shortcut_groups() -> Vec<ShortcutGroup> {
                 entry("Reset the zoom", &["⌘", "0"]),
             ],
         },
+        ShortcutGroup {
+            label: "Window",
+            entries: vec![
+                entry("Close the window, which quits", &["⌘", "W"]),
+                entry("Hide Panoptes", &["⌘", "H"]),
+                entry("Hide other apps", &["⌥", "⌘", "H"]),
+                entry("Quit Panoptes", &["⌘", "Q"]),
+            ],
+        },
     ]
 }
 
