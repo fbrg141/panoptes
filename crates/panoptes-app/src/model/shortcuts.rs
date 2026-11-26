@@ -41,6 +41,7 @@ pub fn shortcut_groups() -> Vec<ShortcutGroup> {
                 entry("Queue for after the run", &["⌥", "↵"]),
                 entry("Stop the agent", &["Esc"]),
                 entry("Mention a file", &["@"]),
+                entry("Choose the model", &["⌘", "M"]),
                 entry("Cycle the thinking level", &["⇧", "Tab"]),
             ],
         },
@@ -105,5 +106,17 @@ mod tests {
         let split = filter_shortcuts(shortcut_groups(), "split pane");
         assert_eq!(split[0].entries.len(), 2);
         assert!(filter_shortcuts(shortcut_groups(), "nothing like this").is_empty());
+    }
+
+    /// The composer offers the model menu on ⌘M (`cmd-m` in
+    /// `views/composer.rs`), and the cheatsheet is where a user would learn
+    /// that. This pins the entry; change both together.
+    #[test]
+    fn the_composer_offers_its_model_menu() {
+        let found = filter_shortcuts(shortcut_groups(), "composer model");
+        assert_eq!(found.len(), 1);
+        let entry = &found[0].entries[0];
+        assert_eq!(entry.label, "Choose the model");
+        assert_eq!(entry.keys, &["⌘", "M"]);
     }
 }
