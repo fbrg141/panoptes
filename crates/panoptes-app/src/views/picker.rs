@@ -12,7 +12,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::ds::{CONTROL, CONTROL_LG, CONTROL_SM, RADIUS_SM, Type as _, icon, kbd, panel};
-use crate::model::picker::{PickerGroup, filter_picker, initial_pick, pickable};
+use crate::model::picker::{PickerGroup, filter_picker, initial_pick, pickable, settle_pick};
 use crate::theme::Palette;
 use crate::zoom::px;
 
@@ -22,6 +22,9 @@ pub struct PickerState {
     open: bool,
     search: Entity<InputState>,
     picked: usize,
+    /// Whether the user moved the highlight (arrow, pointer or typing);
+    /// until then it follows the current row as the rows load or change.
+    moved: bool,
     scroll: ScrollHandle,
     /// Where focus goes after a pick or Escape.
     return_focus: Option<FocusHandle>,
@@ -40,7 +43,10 @@ impl PickerState {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         cx.subscribe(&search, |this, _, event, cx| {
             if matches!(event, InputEvent::Change) {
+                // Typing places the highlight on the top match, so rows
+                // that arrive later do not move it.
                 this.picked = 0;
+                this.moved = true;
                 cx.notify();
             }
         })
@@ -49,6 +55,7 @@ impl PickerState {
             open: false,
             search,
             picked: 0,
+            moved: false,
             scroll: ScrollHandle::new(),
             return_focus: None,
         }
@@ -73,6 +80,34 @@ impl PickerState {
         }
     }
 
+    /// Keeps the highlight on the current row after the rows arrive or
+    /// change, until the user moves it.
+    pub fn settle(&mut self, groups: &[PickerGroup], cx: &mut Context<Self>) {
+        let query = self.search.read(cx).value().to_string();
+        let visible = filter_picker(groups, &query);
+        let picked = settle_pick(self.open, self.picked, self.moved, &visible);
+        if picked != self.picked {
+            self.picked = picked;
+            self.scroll.scroll_to_item(picked);
+            cx.notify();
+        }
+    }
+
+    /// Closes the list without moving focus, so another picker can take it.
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open {
+            self.dismiss(false, window, cx);
+        }
+    }
+
+    /// Closes the list and puts focus back where it came from, as Escape
+    /// does, for a list that has nothing left to offer.
+    pub fn back_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open {
+            self.dismiss(true, window, cx);
+        }
+    }
+
     fn toggle(&mut self, groups: &[PickerGroup], window: &mut Window, cx: &mut Context<Self>) {
         if self.open {
             return self.dismiss(false, window, cx);
@@ -80,6 +115,7 @@ impl PickerState {
         cx.emit(PickerEvent::Opened);
         self.open = true;
         self.picked = initial_pick(groups);
+        self.moved = false;
         self.scroll.scroll_to_item(self.picked);
         self.search.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
@@ -104,6 +140,7 @@ impl PickerState {
             return;
         }
         self.picked = (self.picked as isize + by).rem_euclid(rows as isize) as usize;
+        self.moved = true;
         cx.notify();
     }
 }
@@ -315,6 +352,7 @@ impl Picker {
                             hover.update(cx, |s, cx| {
                                 if s.picked != at {
                                     s.picked = at;
+                                    s.moved = true;
                                     cx.notify();
                                 }
                             })
