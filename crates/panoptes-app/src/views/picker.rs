@@ -63,6 +63,13 @@ impl PickerState {
         self.open
     }
 
+    /// Opens the list from the keyboard, with the groups that decide where
+    /// the highlight starts. Focus returns to `return_focus` on a pick or
+    /// Escape, as when the trigger is clicked.
+    pub fn open(&mut self, groups: &[PickerGroup], window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle(groups, window, cx);
+    }
+
     fn toggle(&mut self, groups: &[PickerGroup], window: &mut Window, cx: &mut Context<Self>) {
         if self.open {
             return self.dismiss(false, window, cx);

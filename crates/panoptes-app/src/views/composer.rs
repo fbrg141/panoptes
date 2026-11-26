@@ -34,12 +34,17 @@ use crate::zoom::px;
 /// Mentions offered at once; typing narrows them.
 const MENTION_ROWS: usize = 8;
 
-actions!(composer, [Queue]);
+actions!(composer, [Queue, PickModel]);
 
 const CONTEXT: &str = "Composer";
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("alt-enter", Queue, Some(CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("alt-enter", Queue, Some(CONTEXT)),
+        // The model menu without leaving the keyboard; the picker's own
+        // return focus puts the caret back in the field.
+        KeyBinding::new("cmd-m", PickModel, Some(CONTEXT)),
+    ]);
 }
 
 pub enum ComposerEvent {
@@ -442,6 +447,30 @@ impl Composer {
         .detach();
     }
 
+    /// Opens the model picker from the keyboard, so choosing a model never
+    /// leaves the text field: the picker's own `Opened` event loads the
+    /// models and its return focus puts the caret back afterwards.
+    fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.store.read(cx);
+        let models = state
+            .state
+            .models
+            .get(&self.key)
+            .cloned()
+            .unwrap_or_default();
+        let current = state
+            .state
+            .settings
+            .get(&self.key)
+            .and_then(|s| s.model.as_ref())
+            .map(|m| m.id.clone())
+            .unwrap_or_default();
+        let preferences = state.state.preferences.clone();
+        let groups = model_groups(&models, &current, Some(&preferences));
+        self.model_picker
+            .update(cx, |picker, cx| picker.open(&groups, window, cx));
+    }
+
     fn cycle_thinking(&mut self, cx: &mut Context<Self>) {
         let Some(settings) = self.store.read(cx).state.settings.get(&self.key) else {
             return;
@@ -575,6 +604,7 @@ impl Render for Composer {
         let on_up = this.clone();
         let on_down = this.clone();
         let on_queue = this.clone();
+        let on_model = this.clone();
         let on_paste = this.clone();
         let on_drop = this.clone();
         let store = self.store.clone();
@@ -619,6 +649,9 @@ impl Render for Composer {
             })
             .on_action(move |_: &Queue, window, cx| {
                 let _ = on_queue.update(cx, |this, cx| this.submit(busy, window, cx));
+            })
+            .on_action(move |_: &PickModel, window, cx| {
+                let _ = on_model.update(cx, |this, cx| this.open_model_picker(window, cx));
             })
             .capture_action(move |_: &IndentInline, window, cx| {
                 if rows > 0 {
