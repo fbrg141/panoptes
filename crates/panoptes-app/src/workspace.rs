@@ -29,9 +29,9 @@ use crate::views::resume::ResumeSession;
 use crate::views::review::ReviewPane;
 use crate::views::settings::Settings;
 use crate::views::shortcuts::{
-    self as keys, AddProject, CloseWindow, HideApp, HideOthers, JumpToLatest,
-    NewLane as NewLaneAction, NewLaneSession, Quit, Search, Shortcuts, ShowAll, ShowShortcuts,
-    SplitHorizontal, SplitVertical, ToggleReview, ZoomIn, ZoomOut, ZoomReset,
+    self as keys, AddProject, CloseWindow, JumpToLatest, NewLane as NewLaneAction, NewLaneSession,
+    Search, Shortcuts, ShowShortcuts, SplitHorizontal, SplitVertical, ToggleReview, ZoomIn,
+    ZoomOut, ZoomReset,
 };
 use crate::views::sidebar::{Sidebar, SidebarEvent};
 use crate::views::startup;
@@ -663,6 +663,7 @@ impl Render for Workspace {
         let (zoom_in_store, zoom_out_store, zoom_reset_store) =
             (self.store.clone(), self.store.clone(), self.store.clone());
         let (review_store, review_ui) = (self.store.clone(), self.ui.clone());
+        let close_store = self.store.clone();
         div()
             .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
@@ -721,13 +722,29 @@ impl Render for Workspace {
                 ui,
                 SplitDirection::Horizontal,
             ))
-            // The app-menu keys. Quit runs the on_app_quit cleanup in main;
-            // closing the last window quits through the app's quit mode.
-            .on_action(|_: &Quit, _, cx| cx.quit())
-            .on_action(|_: &CloseWindow, window, _| window.remove_window())
-            .on_action(|_: &HideApp, _, cx| cx.hide())
-            .on_action(|_: &HideOthers, _, cx| cx.hide_other_apps())
-            .on_action(|_: &ShowAll, _, cx| cx.unhide_other_apps())
+            // Closing the last window quits through the app's quit mode and
+            // stops every session, so a run in progress asks first. The other
+            // app-menu keys are handled globally in `shortcuts::init`.
+            .on_action(move |_: &CloseWindow, window, cx| {
+                if !close_store.read(cx).state.has_active_run() {
+                    window.remove_window();
+                    return;
+                }
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    "Close Panoptes?",
+                    Some("Closing the window quits Panoptes and stops the sessions that are Running or Waiting."),
+                    &["Close", "Cancel"],
+                    cx,
+                );
+                window
+                    .spawn(cx, async move |cx| {
+                        if answer.await == Ok(0) {
+                            cx.update(|window, _| window.remove_window()).ok();
+                        }
+                    })
+                    .detach();
+            })
             .relative()
             .flex()
             .flex_col()

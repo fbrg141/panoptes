@@ -39,9 +39,16 @@ pub const CONTEXT: &str = "Workspace";
 /// Window shortcuts use ⌘ because this is a macOS app; pane splits also
 /// accept Ctrl, which a text field's own Ctrl+D binding still wins over.
 /// The app-menu keys are bound without a context, so they fire wherever the
-/// focus is and the menu finds them for its key equivalents.
+/// focus is and the menu finds them for its key equivalents. Their handlers
+/// are global too, so they work whatever holds the focus; only Close needs
+/// the window, and the workspace handles it.
 pub fn init(cx: &mut App) {
     cx.bind_keys(bindings());
+    // Quit runs the on_app_quit cleanup in main.
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &HideApp, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
 }
 
 /// Every binding that `init` registers. A menu item's shortcut is looked up
@@ -242,13 +249,26 @@ impl Render for Shortcuts {
 
 #[cfg(test)]
 mod tests {
-    use super::{bindings, menus};
-    use gpui_kit::MenuItem;
+    use super::{ShowAll, bindings, menus};
+    use gpui_kit::{Action as _, MenuItem};
     use std::collections::HashSet;
+
+    /// Every action item in `items`, submenus included, as (label, action).
+    fn menu_actions(items: Vec<MenuItem>, into: &mut Vec<(String, String)>) {
+        for item in items {
+            match item {
+                MenuItem::Action { name, action, .. } => {
+                    into.push((name.to_string(), action.name().to_string()));
+                }
+                MenuItem::Submenu(menu) => menu_actions(menu.items, into),
+                _ => {}
+            }
+        }
+    }
 
     /// A menu item's key equivalent is looked up from the bindings, so a
     /// menu action without a binding shows up dead, with no shortcut. The
-    /// one exception is "Show All", which macOS never gives a shortcut.
+    /// one exception is Show All, which macOS never gives a shortcut.
     #[test]
     fn every_menu_action_is_bound() {
         let bound: HashSet<&'static str> = bindings()
@@ -257,15 +277,9 @@ mod tests {
             .collect();
         let mut actions = Vec::new();
         for menu in menus() {
-            for item in menu.items {
-                match item {
-                    MenuItem::Action { name, action, .. } if name != "Show All" => {
-                        actions.push((name.to_string(), action.name().to_string()));
-                    }
-                    _ => {}
-                }
-            }
+            menu_actions(menu.items, &mut actions);
         }
+        actions.retain(|(_, action)| action != ShowAll.name());
         assert!(
             actions.iter().any(|(name, _)| name == "Quit Panoptes"),
             "the application menu is missing its Quit item"
