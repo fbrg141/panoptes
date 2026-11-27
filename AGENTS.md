@@ -27,10 +27,14 @@ Read [docs/decisions.md](docs/decisions.md) for why it is built this way.
 
 ## Issue intake
 
-Until the bet review on 2026-12-05, file GitHub issues for bugs only. Put
-feature ideas in the [observation log](docs/bets.md#observation-log), where
-parked features wait for the review. The one exception is a small fix for pain
-hit in daily use that the observation log records. See [the direction
+Until the bet review on 2026-12-05, file GitHub issues for bugs only. Existing
+feature issues, milestones and the linked
+[Panoptes product track](https://github.com/fbrg141/panoptes/projects) are
+planning artefacts: Project Status controls commitment, and feature work stays
+parked. Put new feature ideas in the
+[observation log](docs/bets.md#observation-log), where they wait for the
+review. The one exception is a small fix for pain hit in daily use that the
+observation log records. See [the direction
 decision](docs/decisions.md#observe-pi-do-not-orchestrate-agents).
 
 ## Rules

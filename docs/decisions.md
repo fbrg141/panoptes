@@ -2,8 +2,10 @@
 
 The durable choices that shape Panoptes, and why. Change one deliberately and
 record the change here. Current behaviour belongs in
-[domain-model.md](domain-model.md); implementation history and work tracking
-belong in GitHub.
+[domain-model.md](domain-model.md); the [product bet review](bets.md) holds the
+proposed direction and evidence. Implementation history, milestones, issue
+status and delivery commitment belong in GitHub, not in a second Markdown
+backlog.
 
 ## One Rust app with a GPUI UI
 
@@ -79,9 +81,16 @@ work understandable rather than adding autonomy. Multi-agent coordination,
 Panoptes-owned subsessions, deferred unattended approvals and cross-lane
 coordination were rejected under this direction.
 
-Until the bet review on 2026-12-05, GitHub issue intake is bug-only. Feature
-ideas go to the [observation log](bets.md#observation-log), except for a small
-fix for pain recorded there during daily use.
+Showing a harness-owned subagent read-only is visibility, not orchestration:
+the harness retains its lifecycle and execution control. A later product track
+may broaden session scope to projects or groups, but the user initiates that
+work and the harness still executes it. The proposed sequence is recorded in
+[bets.md](bets.md); it is not a commitment to implementation before #226.
+
+Until the bet review on 2026-12-05, GitHub issue intake is bug-only. Existing
+feature issues and milestones are planning artefacts, not approved work. New
+feature ideas go to the [observation log](bets.md#observation-log), except for
+a small fix for pain recorded there during daily use.
 
 ## Make the lane the unit of work
 
@@ -108,7 +117,10 @@ durable unit the user organises and reviews.
   Code, Zed and Cargo.
 
 Nested groups, multi-repo creation and Panoptes-owned subsessions are not part
-of the model. Any Pi subagent presentation remains observational and read-only.
+of the **current** model. The third proposed track in [bets.md](bets.md) would
+deliberately revisit groups and scoped sessions after #226, with explicit
+per-repository boundaries. Any Pi subagent presentation remains observational
+and read-only.
 
 ## Review lanes from git trees
 
@@ -155,15 +167,22 @@ Jujutsu was rejected because its workspace, operation and bookmark models would
 add another dependency and interfere with ordinary git tooling while duplicating
 what a few git plumbing operations already provide.
 
-## Choose one product bet after real use
+## Review the product direction after real use
 
-*Decided 2026-11-07.*
+*Decided 2026-11-07; proposed track recorded 2026-11-27, pending #226.*
 
 A dependable worktree-per-task spine is necessary but not a differentiator.
-Panoptes will choose one product bet from observed daily use rather than build
-several partial bets. The active candidate, review date and evidence are in
-[bets.md](bets.md). Until that review, bet work stays parked except for shared
-foundations and the documented daily-use exception.
+Panoptes will confirm, reject or extend one coherent product direction from
+observed daily use rather than build several partial bets.
+
+The proposed order is **depth first, completeness second, breadth third**:
+reviewable lanes, read-only visibility into harness-owned subagents, then
+project groups and user-initiated sessions at group, project or lane scope. The
+evidence and boundaries are in [bets.md](bets.md). GitHub milestones group
+proposed outcomes, while Project Status controls commitment: feature issues
+stay `Parked` until #226, even when a milestone names the proposed track. The
+third track would supersede the earlier rejection of groups and multi-repo
+work only after a deliberate decision.
 
 ## Keep composer behaviour close to Pi
 

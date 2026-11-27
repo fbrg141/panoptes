@@ -2,8 +2,9 @@
 
 The current Panoptes model: what the app owns, how the pieces relate, and the
 rules that protect work. The reasons behind these choices are in
-[decisions.md](decisions.md); planned changes are tracked in GitHub rather than
-in this document.
+[decisions.md](decisions.md). The proposed product direction is in
+[bets.md](bets.md); GitHub issues, milestones and the linked Project own
+delivery work and its status, rather than this document.
 
 ## Principles
 
@@ -241,3 +242,10 @@ compatibility risk and can be replaced if Pi adds an RPC listing command.
 Panoptes currently runs locally. It does not automatically rebase or merge a
 lane when its base branch advances; it reports freshness and a merge preview.
 Remote execution and automatic base-branch integration remain undecided.
+
+Project groups, group-level sessions, project-level sessions outside a lane,
+and multi-repository lane creation are not current behaviour. They belong to
+the third proposed product track, which needs a deliberate decision at #226
+and explicit per-repository boundaries before implementation. Harness-owned
+subagent visibility, if introduced, remains read-only and adds no independent
+Panoptes-owned conversation or worktree lifecycle.

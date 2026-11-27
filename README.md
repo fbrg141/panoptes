@@ -126,9 +126,14 @@ setup runs.
 
 ## Status
 
-Panoptes is early and used daily by its author. The next product-direction
-decision is the [bet review](docs/bets.md) on 2026-12-05; planned work and its
-status live in [GitHub issues](https://github.com/fbrg141/panoptes/issues).
+Panoptes is early and used daily by its author. The [bet review](docs/bets.md)
+(#226) on 2026-12-05 will confirm, reject or extend the proposed product
+track: reviewable lanes, read-only visibility into harness-owned subagents,
+then project groups and scoped sessions. Planned work, milestones and
+commitment status live in [GitHub issues](https://github.com/fbrg141/panoptes/issues),
+[milestones](https://github.com/fbrg141/panoptes/milestones) and the
+[repository's Projects tab](https://github.com/fbrg141/panoptes/projects).
+Feature issues remain parked until the review.
 
 Only Pi is supported today. The UI only ever sees harness-neutral types, so
 another agent needs a new adapter crate and nothing else.
@@ -214,9 +219,10 @@ More: [AGENTS.md](AGENTS.md) (contributor and agent guide),
 
 Bug reports are very welcome: please
 [open an issue](https://github.com/fbrg141/panoptes/issues) with what you did,
-what you expected and your Pi version. Feature ideas are collected and
-reviewed in batches (see [docs/bets.md](docs/bets.md)), so they may take a
-while to get a reply.
+what you expected and your Pi version. Until #226, new feature ideas go to the
+[observation log](docs/bets.md#observation-log) and are reviewed as a batch;
+existing feature issues and milestones are planning artefacts, not approved
+work.
 
 ## License
 
