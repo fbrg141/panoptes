@@ -126,10 +126,9 @@ setup runs.
 
 ## Status
 
-Panoptes is early and used daily by its author. What's planned next:
-
-- The remaining lane-review scopes: attribution, marks, comments, reverts (#201)
-- Nested Pi subagents (#227)
+Panoptes is early and used daily by its author. The next product-direction
+decision is the [bet review](docs/bets.md) on 2026-12-05; planned work and its
+status live in [GitHub issues](https://github.com/fbrg141/panoptes/issues).
 
 Only Pi is supported today. The UI only ever sees harness-neutral types, so
 another agent needs a new adapter crate and nothing else.

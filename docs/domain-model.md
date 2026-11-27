@@ -1,32 +1,22 @@
 # Domain model
 
-*Proposed 2026-11-06, revised for retained lane session history 2026-11-19 (#228).
-Projects (#19), lanes (#20) and their sessions are built; groups were dropped
-(#21).*
-
-What Panoptes works with, how the pieces relate, and how they live and die.
-It answers the "domain model" parts of #8 and #9 and sets up the tool-call
-work in #11. The harness contract in `panoptes-harness` stays the boundary
-described in [decisions.md](decisions.md); this note adds what sits above it.
-Why the model is shaped this way is recorded in
-[decisions.md](decisions.md#lanes-are-the-unit-of-work).
+The current Panoptes model: what the app owns, how the pieces relate, and the
+rules that protect work. The reasons behind these choices are in
+[decisions.md](decisions.md); planned changes are tracked in GitHub rather than
+in this document.
 
 ## Principles
 
-- **The harness owns the conversation. Panoptes owns the organisation.**
-  Messages stay in each harness's own storage (Pi's session files). Projects,
-  lanes, titles, tags and archiving live in Panoptes, because they must work
-  the same across every harness. Reusable session profiles and model-picker
-  preferences live here too; they never rewrite the harness's own settings.
-- **The lane is the durable unit with session history.** A lane owns a
-  worktree, a branch, a task and its session records. Closing a session never
-  touches the lane's work. `/new` starts a fresh conversation in the same lane;
-  `/resume` reopens one of its earlier conversations.
-- **Decisions live in Rust; the UI only renders.** Lane state, session
-  membership and what appears where in the sidebar are worked out in the core
-  and sent to the UI.
-- **Harness-neutral, not protocol-shaped.** The model follows what Panoptes
-  needs. It borrows from other protocols where they fit, and copies none.
+- **The harness owns conversations. Panoptes owns organisation.** Messages stay
+  in harness storage. Projects, lanes, session records, tags, profiles and
+  preferences live in Panoptes and work through harness-neutral types.
+- **The lane is the durable unit.** It retains its worktree, branch, task and
+  conversations when any one session closes.
+- **Rust owns behaviour; views render.** The service determines lane state,
+  membership, lifecycle and session status. Pure app models own testable UI
+  state.
+- **Missing evidence stays visible.** Failed snapshots, diffs or merge previews
+  are unavailable, not silently empty or successful.
 
 ## Entities
 
@@ -34,353 +24,220 @@ Why the model is shaped this way is recorded in
 graph TD
   P[Project] -->|has| L[Lane]
   L -->|owns| W[Worktree]
-  L -->|runs one| S[Session]
+  L -->|retains| S[Session]
   S -->|references| H[(Harness session)]
-  S -->|labelled by| T[Tag]
+  L -->|records| T[Turn]
+  T -->|snapshots| W
 ```
-
-*(Groups were designed and then dropped; the section below keeps the
-record.)*
 
 ### Project
 
-A local git repository registered in Panoptes. Built in #19.
+A local git repository registered in Panoptes.
 
 | Field | Meaning |
 |---|---|
-| `id` | Panoptes' own id |
-| `name` | Display name, defaults to the folder name |
+| `id`, `name` | Panoptes identity and display name |
 | `repo` | Path of the main checkout |
-| `baseBranch` | What new lanes branch from, defaults to the repo's default branch |
-| `copyFiles` | Untracked files copied into every new worktree, defaults to `[".env"]` |
-| `setup` | Optional command run in a new worktree, such as `pnpm install` |
+| `baseBranch` | Base for new lanes, defaulting to the repository's default branch |
+| `copyFiles` | Untracked files copied into new worktrees, initially `.env` |
+| `setup` | Optional command run in a new worktree |
 
-A project's settings live on the project, never on a group, so a project
-behaves the same whichever group it is used from.
+Project settings belong to the project. Moving between views never changes its
+behaviour.
 
 ### Lane
 
-One line of work on a project: a task, the branch it happens on, the
-worktree it happens in, and its current and earlier sessions. The name was chosen over
-"workspace", which already means something else in VS Code, Zed and Cargo.
+One line of work on a project: its task, branch, worktree and session history.
 
 | Field | Meaning |
 |---|---|
-| `id`, `name` | Panoptes' own id, and a slug used for the folder |
-| `project` | The project it belongs to |
-| `task` | What the lane is for, in your words |
-| `branch` | The branch its worktree is on |
-| `worktrees` | For each worktree: project id, path, and whether it is the main checkout |
+| `id`, `name` | Panoptes identity and the slug used in generated paths |
+| `project` | Owning project |
+| `task` | The user's description of the work |
+| `branch` | The lane branch |
+| `worktrees` | Project id, path and main-checkout flag for each worktree |
 | `state` | `active` or `archived` |
 
-- **One worktree, room for more.** The schema lets a lane hold several
-  worktrees (one-to-many), so multi-repo lanes (#21) need no migration. The
-  service and UI only ever create one for now.
-- **A fresh worktree by default.** All lane worktrees live under one central
-  folder, `~/Panoptes/lanes/<lane>/<repo>`, on a new
-  `panoptes/<lane>` branch. Files listed in `copyFiles` are **copied**, not
-  linked, from the main checkout, because git never puts
-  untracked files into a new worktree and each worktree may need its own
-  values (ports, database names). Their current lane values are preserved
-  across archive and restore, rather than copied back from the main checkout.
-- **The main checkout, on purpose.** For big repos where a fresh worktree is
-  too slow or too large, a lane can point at the project's own checkout. It
-  is an explicit opt-in, marked clearly wherever the lane is shown. Panoptes
-  neither creates nor removes that folder.
-- **One live session, one writer.** The store retains earlier session records;
-  the service permits at most one open process per lane. `/new` and `/resume`
-  stop the current process before starting another, and only while it is idle
-  with no pending questions, approvals or queued messages. Parallel work means
-  separate lanes.
+The service and UI currently create one worktree per lane. Storage keeps a
+one-to-many relationship so the review and checkpoint contracts can use stable
+`(lane, project)` worktree identities without assuming paths are unique.
 
-### Lane review
+A normal worktree lives at `~/Panoptes/lanes/<lane>/<repo>` on a
+`panoptes/<lane>` branch. Debug builds use `~/Panoptes/dev/lanes`. Files in
+`copyFiles` are copied rather than linked, allowing each worktree to have its
+own local configuration. Their current values are preserved across archive and
+restore; other ignored files are not captured.
 
-The first review surface is a read-only, workspace-level pane for the lane's
-whole tree against each project's merge-base. The file list and lazy hunks come
-from `changes.rs`, so shell edits and untracked files are included; edit-tool
-records remain explanations in the transcript rather than the lane's source of
-truth. Active lanes snapshot disk without touching the user's index, while
-archived lanes read their checkpoint or clean branch.
+A lane may explicitly use the project's main checkout instead. Panoptes neither
+creates nor removes that checkout, and the choice is visible in the UI.
 
-Review state is keyed by lane, worktree and path, with explicit tree ranges and
-generation-checked responses. The service already returns one ordered section
-per lane worktree and resolves every hunk request against its named project,
-although lane creation still creates only one worktree. The pane follows the
-focused session, offers stable file and hunk navigation, and refreshes after a
-run settles. Each worktree also carries base freshness and a read-only merge
-preview: clean, named conflicts, or explicitly unavailable. It uses the local
-base without fetching and never merges into the actual worktree.
+### Session
 
-Turn scopes, per-turn checkpoints, attribution, review marks, comments and
-reverts remain later work in #201.
+One conversation, run by one harness, within a lane's history.
 
-### Turn checkpoints
+| Field | Meaning |
+|---|---|
+| `id` | Panoptes identity, assigned before the harness starts |
+| `harnessRef` | Harness name, harness session id and adapter-owned locator |
+| `lane` | Owning lane |
+| `parent` | Parent conversation for a nested harness session, when supported |
+| `title` | Panoptes title, falling back to the harness title or first message |
+| `tags`, `pinned`, `archived` | Panoptes organisation |
 
-A turn begins at `Service::prompt`; a harness-only `RunStarted` with no prompt does not invent one. A lane has durable, lane-wide turn numbers. Each turn is represented once in
-`turns` and once per worktree in `turn_worktrees` (schema v12). A turn owns a
-short prompt label in Panoptes' own store, never the event log, plus a status,
-outcome and timestamps. Each worktree row holds deterministic before/after
-refs, tree ids, boundary quality, human-edit detection, recovery and errors.
-The first UI scope is not part of #204; #205 reads these rows as tree ranges.
+A session record references a harness conversation; it never copies or rewrites
+it. A lane retains many records over time but permits only one live writer.
+`/new` starts a fresh conversation in the same lane, and `/resume` reopens one
+of that lane's earlier records. Opening an earlier record as a preview is
+read-only; sending from it stops the live session and resumes the previewed
+conversation.
 
-An immediate writable prompt takes its before snapshot before the harness
-receives it and records an exact boundary. A queued prompt reserves intent,
-then refreshes on its real `RunStarted` and records an observed boundary; a
-steer does not create a turn. Human edits between turns are detected by
-comparing a new before tree with the previous after tree. A read-only preview,
-raw session, handled command or failed prompt creates no running turn.
+Changing the live session is refused while the agent streams, waits for a
+question or approval, or has queued messages. Read-only previews and raw
+harness sessions do not take lane checkpoints.
+
+The service, not the UI, determines status:
+
+| Status | Meaning |
+|---|---|
+| Running | The agent is working |
+| Waiting | The agent needs an answer to a question or approval |
+| Failed | The process ended unexpectedly or the last run errored |
+| Done | Idle and ready for another prompt |
+
+A process that has started but not run is `idle` on the wire and has no status
+word. A closed process has no live status; its conversation can be reopened.
+
+### Tag
+
+A flat label on a session. Tags do not form a hierarchy or alter harness
+behaviour.
+
+### Profile
+
+A named, reusable setup for a new session. Model, thinking level and additional
+instructions are optional; empty fields preserve harness defaults. A new-lane
+form applies a profile before its first prompt and permits individual overrides.
+
+Additional instructions are appended to, never substituted for, the harness's
+system prompt. They are stored on the session record and restored when its
+process resumes. Editing a profile later does not change existing sessions.
+
+### Model preferences
+
+Favourite and hidden model ids are Panoptes presentation preferences. Ordered
+favourites lead the model picker; hidden models are omitted from pickers but
+remain configured in the harness and valid for existing sessions and profiles.
+Neither preference changes harness defaults or CLI behaviour.
+
+## Navigation
+
+The sidebar has two views:
+
+- **Lanes** is a collapsible hierarchy of projects, active lanes and their
+  retained sessions. Running or pinned sessions remain in their lane. Archived
+  lanes and sessions have expandable archive views.
+- **All sessions** is a flat, reverse-chronological list of every harness
+  conversation found on disk, including terminal-started conversations and
+  those already associated with lanes.
+
+Adopting an unassociated conversation creates a Panoptes session record in an
+eligible active lane. It never copies or rewrites the harness file, and lane
+membership never relies on guessing from a working directory.
+
+## Lane review
+
+The current review pane is a read-only, lane-wide comparison against each
+worktree's merge-base. File lists and lazily loaded hunks come from git trees,
+so shell edits and untracked files are included. Active lanes are snapshotted
+through private indexes; archived lanes use their checkpoint or clean branch.
+
+Review state is keyed by lane, worktree, path and explicit tree range.
+Generation-checked responses prevent stale asynchronous results from replacing
+newer state. The pane follows the focused session, supports stable file and
+hunk navigation, and refreshes after a run settles.
+
+Each worktree also reports base freshness and a read-only merge preview: clean,
+named conflicts or unavailable. The preview uses the local base without
+fetching or merging into the real worktree. Later review scopes and actions are
+tracked under #201.
+
+## Turn checkpoints
+
+Every writable prompt-driven lane run has a lane-level turn and one snapshot
+record per worktree. Turn checkpoints were added in schema v13. Each turn stores
+its session, short prompt label, outcome and timestamps. Each worktree row stores
+deterministic before/after refs, tree ids, boundary quality, human-edit
+detection, recovery state and errors.
 
 ```text
 LaneTurn
 ├── session id, prompt label, outcome
 └── WorktreeTurn[]
-    ├── project id, deterministic before/after refs
-    ├── before/after trees, parent chain
+    ├── project id and deterministic before/after refs
+    ├── before/after trees and parent chain
     ├── exact | observed | unavailable boundary
-    ├── human edits before, recovered, before/after errors
-    └── no atomic cross-repository claim
+    └── human edits, recovery and errors
 ```
 
-Startup reconciles unfinished rows: existing generated refs are adopted, an
-existing active worktree is snapshotted, an archived worktree uses its archive
-checkpoint, unrecoverable rows say unavailable with a reason, and generated
-orphan refs are removed. Attributed edits, review marks, comments and reverts
-remain later work in #201.
+An immediate prompt takes its before snapshot before the harness receives it. A
+queued prompt reserves intent, then refreshes its boundary on its actual
+`RunStarted` and marks it observed. Steering creates no turn. Human edits are
+detected by comparing a new before tree with the previous after tree.
 
-### Profile
+Settled, stopped, failed and exited runs share an idempotent after path. A late
+event from a replaced process cannot settle a newer turn. Startup adopts valid
+generated refs, snapshots readable worktrees, uses archive checkpoints where
+available, marks unrecoverable state unavailable, and removes only generated
+orphan refs.
 
-A named, reusable setup for a new session, owned by Panoptes rather than the
-harness. Its model, thinking level and additional instructions are all
-optional; an empty field keeps the harness default. The new lane form applies
-a profile before its first prompt, and its individual fields can still be
-overridden.
-
-Additional instructions are appended to the harness's system prompt at
-startup, never used to replace it. Panoptes stores the chosen instructions on
-its session record and appends them again when the process resumes, so closing
-the app does not silently drop them. Later profile edits do not change an
-existing session. The harness adapter owns how this neutral request maps to
-its CLI or protocol.
-
-### Model preferences
-
-Favorite and hidden model ids are Panoptes presentation preferences. Ordered
-favorites form the first model-picker group; hidden models are omitted from
-pickers but remain configured in the harness and valid for existing sessions
-or saved profiles. Neither preference changes harness defaults or CLI
-behaviour.
-
-### Session
-
-One conversation, run by one harness, inside one lane.
-
-| Field | Meaning |
-|---|---|
-| `id` | Panoptes' own id, assigned before the harness starts |
-| `harnessRef` | Harness name, the harness's session id, and its locator (for Pi, the session file) |
-| `lane` | The lane it runs in |
-| `parent` | For a nested Pi subagent, its parent conversation; not a Panoptes subsession |
-| `title` | Set by you in Panoptes; when empty, the harness's title or first message |
-| `tags`, `pinned`, `archived` | Panoptes' organisation |
-
-- **A Panoptes session is its own record.** It references a harness session
-  through `harnessRef` and is never the Pi session itself. Pi sessions stay
-  an implementation detail of the adapter.
-- **One conversation per lane.** Close and reopen the same session rather
-  than replacing it. A stale conversation can be discarded; a new task gets a
-  new lane.
-- **Pi subagents, when exposed (#227),** will appear nested under this session
-  as read-only activity owned by Pi. They are not additional Panoptes sessions
-  and have no composer or independent lifecycle.
-
-**Status** is sent by the backend, not worked out in the UI, using the design
-system's words:
-
-| Status | Meaning |
-|---|---|
-| Running | The agent is working |
-| Waiting | The agent needs you (a question or an approval) |
-| Failed | The process ended unexpectedly, or the last run errored |
-| Done | Idle and ready for the next prompt |
-
-A session whose process has just started and has not run yet is sent as
-`idle`, which the UI shows as a plain dot with no status word (#114).
-
-A session whose process is not running has no status. It is simply closed and
-can be reopened.
-
-### Group
-
-*Not built, and not planned: #21 was closed with the observer direction on
-2026-11-11. The section stays as the record of what was designed.*
-
-A named folder for projects, for example "Panoptes" holding the app and the
-design system.
-
-- Groups nest: a group has at most one parent group, so groups form a tree.
-- A group references projects. A project can be referenced by several groups,
-  because shared repos (a design system, a common library) are normal.
-- A group can't contain itself, directly or through a subgroup.
-- A lane started from a group holds one worktree per repo underneath it.
-
-### Tag
-
-A flat label on sessions, for organising work inside a project ("auth",
-"bugs"). Tags don't nest; groups are the only hierarchy.
-
-## Navigation
-
-The sidebar has two tabs (#57):
-
-- **Lanes** is the primary, collapsible hierarchy: projects, their active
-  lanes, and each lane's current session with earlier sessions folded under it.
-  Pi subagents will nest under their parent when #227 lands. Sessions stay in their lane while running or pinned;
-  there are no separate Open or Pinned sections. Archived lanes and sessions
-  have expandable archive views.
-- **All sessions** is one flat, reverse-chronological list of every harness
-  session found on disk, including ones started from the terminal and ones
-  already shown under Lanes. You can adopt an unassociated conversation into
-  an active lane that has no session, which creates its one Panoptes session
-  record. Adoption never copies or rewrites the harness's files. Lane
-  membership comes from these records, never from a cwd guess.
+Snapshots use private indexes and generated refs. They do not change HEAD, the
+lane branch, real index, stash or config. Large files are retained, ignored
+files remain excluded, and unsafe nested repositories fail explicitly.
 
 ## Lifecycles
 
 ### Lane
 
-1. **Create from a project `+` and a prompt.** Panoptes adds a worktree on a
-   new branch from `baseBranch`, copies `copyFiles` from the main checkout,
-   runs `setup`, then creates the lane's first session and sends the prompt.
-   With the main-checkout opt-in, it uses the project's checkout instead.
-2. If worktree setup fails or you cancel, Panoptes removes the worktree and
-   the new branch it created (#9). A cleanup step that itself fails is not
-   reported, so in that rare case a folder or branch can be left behind. If session startup fails, its record is
-   discarded and the empty lane offers a retry.
-3. **Use:** close and reopen the current session, start a fresh one with
-   `/new`, or resume one of the lane's own earlier records with `/resume`.
-4. **Archive**, on request. Archiving never touches the branch.
-   - A clean tree: the worktree is removed.
-   - A dirty tree never loses work. Panoptes offers three ways out and does
-     nothing until you pick one: **commit** the changes on the lane's branch,
-     **stash** them into the repository's stash (named after the lane;
-     restoring does not reapply it), or **keep it as a checkpoint**: the tree
-     is saved to a checkpoint ref and the worktree is removed, and restoring
-     creates a fresh worktree with the same uncommitted changes, without
-     moving the branch (see
-     [decisions.md](decisions.md#per-turn-checkpoints-on-plain-git-not-jujutsu)).
-   - A main-checkout lane: only the lane record is archived; the checkout is
-     left as it is.
-   - Before any worktree is removed, the current contents of `copyFiles` are
-     saved under `refs/panoptes/lanes/<lane>/copy-files`. Restore writes them
-     back without staging them, before the normal copy and setup steps.
-   - Other ignored files are not captured and may be deleted with the
-     worktree. Local state that must survive archive belongs in `copyFiles`.
-   - **Delete**, after explicit confirmation, is separate from archive. Close
-     the lane's session first. Deleting a worktree lane permanently removes
-     its worktree (including uncommitted changes), local branch and recovery
-     refs, then its lane and Panoptes session records. A main-checkout lane
-     deletes only those records. Harness conversation files are never
-     deleted. Once its last lane is deleted, the project can be removed.
-     If the repository has been moved or deleted, deleting a lane removes
-     only its worktree folder, since the branch and refs went with the
-     repository.
+1. **Create:** the project `+` action takes a prompt, prepares a worktree or
+   uses the explicit main-checkout option, applies copy/setup settings, creates
+   the first session and sends the prompt.
+2. **Use:** close and reopen the current conversation, start a fresh one with
+   `/new`, or resume an earlier one with `/resume`.
+3. **Archive:** close the live session and preserve work according to the tree:
+   - A clean worktree is removed; its branch remains.
+   - Dirty work is committed, stashed or saved as a checkpoint before removal.
+     Restoring a checkpoint recreates the worktree with uncommitted changes.
+   - A main-checkout lane archives only its Panoptes record.
+   - Current `copyFiles` values are saved under the lane's generated refs and
+     restored without staging. Other ignored files may be lost with removal.
+4. **Restore:** recreate an archived worktree and restore its configured files
+   and checkpoint where present.
+5. **Delete:** after confirmation, close sessions and permanently remove the
+   worktree, local branch, generated recovery refs and Panoptes records as
+   applicable. Harness conversations are never deleted. A main-checkout lane
+   deletes only its Panoptes records.
 
 ### Session
 
-1. **New:** created with its lane from the project `+` prompt, or adopted into
-   an empty active lane. The session gets its Panoptes id before the harness
-   starts, so every event it sends carries that id.
-2. **Open:** one harness process runs it. Each prompt is one run, Running then
-   Done (or Waiting, or Failed). The lane has no write lock or queue.
-3. **Close or crash:** the process ends. The conversation stays in the harness
-   and the same session can be reopened; archived lanes reopen it read-only.
-4. **Archive:** hidden from the lane. Archiving a session never archives its
-   lane and does not permit a second session to replace it.
+1. **New:** created with its lane, through `/new`, or by adoption. Its Panoptes
+   id exists before harness events arrive.
+2. **Open:** one harness process owns the live conversation. Each prompt runs
+   through Running to Done, Waiting or Failed.
+3. **Close or crash:** the process ends; harness history and the Panoptes record
+   remain. The session can be reopened, while an archived lane is read-only.
+4. **Archive:** hides the session from the lane without archiving the lane or
+   permitting another live writer.
 
-## Deferred
+## Storage and harness limits
 
-Left open on purpose, not forgotten:
+Panoptes stores projects, lanes, worktrees, session records, turns, tags,
+profiles and preferences in SQLite. Schema changes are append-only migrations;
+installed and debug builds use separate stores and lane roots.
 
-- **The base branch moving underneath a lane.** Whether Panoptes rebases,
-  merges, warns or does nothing is decided once lanes are in real use.
-- **Remote or cloud execution.** Lanes and sessions run locally for now. The
-  harness adapter boundary keeps a remote runner possible without changing
-  the model.
+Pi's RPC protocol cannot list sessions. `panoptes-pi` therefore reads Pi's
+session folder behind `Harness::list_sessions`. This is an adapter-owned
+compatibility risk and can be replaced if Pi adds an RPC listing command.
 
-## Storage
-
-The Panoptes store holds projects, lanes, worktrees, session records, tags,
-profiles and model-picker preferences. It is SQLite in the app data folder,
-built in #18 (see [decisions.md](decisions.md)); new tables arrive as
-migrations.
-
-## Changes to the harness contract
-
-Smaller fixes from the backend review, needed by the model above:
-
-1. **One session identity.** Panoptes' own session id is known before the
-   harness reports anything. The service no longer holds early events back
-   until the harness id arrives, and the three overlapping shapes
-   (`SessionSummary`, `SessionRef`, `SidebarSession`) become one session plus
-   its `harnessRef` (#22).
-2. **Explicit status.** A `StatusChanged` event from the service, with the
-   four statuses above.
-3. **Tool calls as one entity.** Done in #24: a `ToolCall` holds its kind,
-   subject, input, status and output (text, file edits, or shell output with
-   an exit code). The adapter folds results into their calls, live and in
-   history, and `ToolCallUpdated` replaces the call in place.
-4. **Approvals as their own type.** Done in #25: an `Approval` names its tool
-   call and is answered with allow or reject, and puts the session in
-   Waiting. Pi has no permission system of its own; its extensions ask
-   through dialogs from their `tool_call` hook. Over RPC such a dialog looks
-   the same as a question a tool asks while it runs, so Panoptes starts Pi
-   with a small extension of its own (`crates/panoptes-pi/src/approvals.js`)
-   that tags each confirm or select a `tool_call` hook raises with the call's
-   id. The Pi adapter treats a tagged confirm, or a tagged select offering
-   both an allow and a reject option (the permission system asks with
-   "Allow Once", "Allow Always", "Reject" and "Reject with Reason"), as the
-   call's approval, and leaves every other dialog a question. Its allow
-   option is the lasting one, and the approval carries a `subject` naming the
-   action it covers ("execute: rm -rf build"), so one allow settles the
-   matching repeats: the adapter answers them itself, and the service keeps
-   the subject per lane, or per conversation when no lane owns it, so a
-   reopened session does not ask again.
-5. **Stable message ids and images.** Done in #26: a message keeps the id it
-   streamed under while the session is open (the Pi adapter finds each
-   history entry's live id by the message's role and timestamp), the harness
-   reports its queue with an id per prompt, and image blocks carry their data.
-6. **Typed errors.** Done: errors cross into the UI as `{ kind, message }`
-   and adapters mark theirs with `HarnessError`, so the kind survives
-   ("not open" is no longer indistinguishable from "the harness rejected
-   it").
-
-## Effect on existing issues
-
-- **#8:** the lane is the main unit; groups and subgroups are defined above;
-  per-worktree `.env` is a copy made at creation. Folder context is still
-  open.
-- **#9:** the default target is a new lane with a fresh worktree. The main
-  checkout is an explicit, marked opt-in.
-- **#11:** the tool-call entity and approvals come first.
-- **#46:** one live session per lane answers who may write in a worktree, and the
-  archive rules answer "never destroy user work". Checkpoints and crash
-  recovery stay with #46.
-- **#48:** the product bet is chosen through [bets.md](bets.md).
-
-## Build order
-
-Build the spine fast and solid, not polished; the reason is in
-[bets.md](bets.md).
-
-| Step | Issue | Covers |
-|---|---|---|
-| done | #18 | Versioned Panoptes store |
-| done | #19 | Projects and their settings |
-| done | #20 | Lanes: create a worktree, archive without losing work, main-checkout opt-in |
-| done | #22 | Sessions inside a lane: Panoptes identity; lock model superseded by #228 |
-| done | #57 | Collapsible Lanes hierarchy, flat All sessions list and adoption |
-| done | #228 | One live session per lane, retained history, /new and /resume |
-| dropped | #58 | Panoptes-owned subsessions; Pi subagent observation moves to #227 |
-| dropped | #21 | Nested groups and multi-repo lanes |
-
-The contract fixes (#23 to #27) can go in any order alongside.
+Panoptes currently runs locally. It does not automatically rebase or merge a
+lane when its base branch advances; it reports freshness and a merge preview.
+Remote execution and automatic base-branch integration remain undecided.
